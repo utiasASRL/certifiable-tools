@@ -1,0 +1,23 @@
+# Test Problem Descriptions
+
+This file describes the test problems that appear in this test directory. All test problems store dictionaries with the following variables:
+
+| Variable | Description |
+| ---------| ------------|
+| Q | Quadratic cost matrix|
+| Q_norm | Normalized/preconditioned quadratic cost matrix |
+| Constraints | List of 2-tuples (A,b) that describe constraints $\left< A, X\right> = b$|
+| adjust | 2-tuple with scale and offset for preconditioning Q | 
+| X | Solution to SDP|
+|cost| optimal SDP cost|
+
+
+| Filename | Description |
+| ---------| ------------|
+| test_prob_1.pkl | 1-pose localization problem with isotropic weights. Tight without redundant constraints. No redundant constraints present (Just orthogonality and homogenizing constraints)|
+| test_prob_2.pkl | Same as test_prob_1.pkl, but with redundant constraints included|
+| test_prob_3.pkl | 1-pose stereo localization (map to euclidean). Not-tight without redundant constraints. 2 m standoff 0.5 m bounding box on 10 landmarks.|
+| test_prob_4.pkl | Same as test_prob_3.pkl, but with redundant constraints.|
+| test_prob_5.pkl | 10 pose SLAM on dataset 3 with variance 6e-2 on relative-pose measurements. No redundant constraints, not tight|
+| test_prob_6.pkl | Same as test_prob_5.pkl, but with redundant constraints. Should be tight.|
+
