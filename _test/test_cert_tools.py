@@ -24,8 +24,9 @@ def run_mosek_solve(prob_file="test_prob_1.pkl"):
         data = pickle.load(file)
     
     # Run mosek solver
-    X, cost = solve_sdp_mosek(Q=data['Q'],
+    X, info = solve_sdp_mosek(Q=data['Q'],
                               Constraints=data['Constraints'])
+    cost = info["cost"]
     # Get singular values
     u,s,v = np.linalg.svd(X)
     print(f"SVR:  {s[0]/s[1]}")
@@ -49,10 +50,13 @@ def low_rank_solve(prob_file="test_prob_1.pkl",rank=2):
     u,s,v = np.linalg.svd(data['X'])
     Y_0 = u[:,:rank] * np.sqrt(s[:rank])
     Y_0 = Y_0.reshape((-1,1),order='F')
-    Y, X, H, cost = solve_low_rank_sdp(Q=data['Q'],
+    Y, info = solve_low_rank_sdp(Q=data['Q'],
                             Constraints=data['Constraints'],
                             rank=rank,
                             Y_0=Y_0)
+    X = info["X"]
+    H = info["H"]
+    cost = info["cost"]
     
     # Check solution rank
     u,s,v = np.linalg.svd(X)
@@ -84,7 +88,7 @@ def test_p3_low_rank():
 
     
 if __name__ == "__main__":
-    # test_p1_low_rank()
+    test_p1_low_rank()
     test_p3_low_rank()
     
     
