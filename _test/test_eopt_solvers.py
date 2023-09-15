@@ -52,8 +52,6 @@ def test_subgradient_mult2():
     # Check subgradient
     np.testing.assert_allclose(subgrad,subgrad_true, rtol=0 , atol=1e-8)
     
-    
-    
 if __name__ == "__main__":
     test_subgradient()
     test_subgradient_mult2()
