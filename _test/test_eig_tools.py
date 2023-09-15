@@ -61,7 +61,7 @@ def test_shifted_lanczos():
     rand_sym_mat_test(method='shifted-lanczos', n=5, k=2)
     
 if __name__ == '__main__':
-    # test_direct()
-    # test_scipy_lanczos()
+    test_direct()
+    test_lanczos()
     test_shifted_lanczos()
     
