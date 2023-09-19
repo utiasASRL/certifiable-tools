@@ -3,7 +3,7 @@ import numpy as np
 import scipy.sparse as sp
 
 
-def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-6, **kwargs):
+def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-6, which="SA", **kwargs):
     """Wrapper function for calling different minimum eigenvalue methods"""
     if method == "direct":
         if sp.issparse(H):
@@ -13,9 +13,10 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-6, **kwargs):
         if not sp.issparse(H):
             H = sp.csr_array(H)
         eig_vals, eig_vecs = sp.linalg.eigsh(
-            H, k=k, which="SA", return_eigenvectors=True
+            H, k=k, which=which, return_eigenvectors=True
         )
     elif method == "shifted-lanczos":
+        assert which == "SA"
         if not sp.issparse(H):
             H = sp.csr_array(H)
         eig_vals, eig_vecs = min_eigs_lanczos(H, k=k, tol=tol, **kwargs)

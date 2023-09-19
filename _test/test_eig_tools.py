@@ -9,7 +9,6 @@ sys.path.append(dirname(__file__) + "/../")
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 print("appended:", sys.path[-1])
 
-from poly_matrix import PolyMatrix, sorted_dict
 from cert_tools.eig_tools import get_min_eigpairs
 
 def rand_sym_mat_test(method='direct', n=5, k=1, tol=1e-8):
