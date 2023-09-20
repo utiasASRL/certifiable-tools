@@ -3,8 +3,13 @@ import numpy as np
 import scipy.sparse as sp
 
 
-def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-6, which="SA", **kwargs):
+def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-6, **kwargs):
     """Wrapper function for calling different minimum eigenvalue methods"""
+
+    if k == H.shape[0] and "lanczos" in method:
+        print(f"Defaulting to direct instead of {method} because k==n(={k})")
+        method = "direct"
+
     if method == "direct":
         if sp.issparse(H):
             H = H.todense()
@@ -13,10 +18,9 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-6, which="SA", **kwargs):
         if not sp.issparse(H):
             H = sp.csr_array(H)
         eig_vals, eig_vecs = sp.linalg.eigsh(
-            H, k=k, which=which, return_eigenvectors=True
+            H, k=k, which="SA", return_eigenvectors=True
         )
     elif method == "shifted-lanczos":
-        assert which == "SA"
         if not sp.issparse(H):
             H = sp.csr_array(H)
         eig_vals, eig_vecs = min_eigs_lanczos(H, k=k, tol=tol, **kwargs)
@@ -27,7 +31,8 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-6, which="SA", **kwargs):
     sortind = np.argsort(eig_vals)
     eig_vals = eig_vals[sortind[:k]]
     eig_vecs = eig_vecs[:, sortind[:k]]
-    return eig_vals, eig_vecs
+    # make sure return type is not "matrix"
+    return np.array(eig_vals), np.array(eig_vecs)
 
 
 def min_eigs_lanczos(H, k=6, tol=1e-6, **kwargs):

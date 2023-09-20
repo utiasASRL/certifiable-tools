@@ -17,10 +17,10 @@ def test_eopt_qp():
     A_list = [A1, A2(kappa)]
     x_init = [1.0, 2.0]
 
-    l_max = f_Eopt(Q, A_list, x_init)
+    l_max = f_Eopt(Q, A_list, x_init, lmin=False)
     assert abs(l_max - 12.32) < 0.01
 
-    x_sol, info = solve_Eopt_QP(Q, A_list, x_init, verbose=2)
+    x_sol, info = solve_Eopt_QP(Q, A_list, x_init, verbose=2, lmin=False)
     U = info["U"]
     np.testing.assert_allclose(x_sol, 0.0, rtol=1e-7, atol=1e-8)
     if U is not None:

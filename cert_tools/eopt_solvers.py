@@ -1,6 +1,9 @@
+from copy import deepcopy
+
 # Optimization
 import cvxpy as cp
 import numpy as np
+
 
 from cert_tools.eig_tools import get_min_eigpairs
 from cert_tools.sdp_solvers import sdp_opts_dflt
@@ -32,7 +35,8 @@ def get_min_multiplicity(eigs, tau):
     # t is where diff_t <= 0, diff_{t+1} >= 0
     valid_idx = np.argwhere(diff >= 0)
     if len(valid_idx):
-        t_p1 = int(valid_idx[-1])
+        # t_p1 = int(valid_idx[-1])
+        t_p1 = int(valid_idx[0])
     else:
         t_p1 = len(eigs)
     assert diff[t_p1 - 1] <= 0
@@ -46,7 +50,7 @@ def solve_d_from_indefinite_U(U, Q_1, A_list, verbose=False):
     """
     m = len(A_list)
     t = Q_1.shape[1]
-    eig, vec = get_min_eigpairs(U, method="direct", k=1)
+    eig, vec = get_min_eigpairs(U, method="lanczos", k=1)
 
     d = cp.Variable(m)
     delta = cp.Variable()
@@ -62,7 +66,7 @@ def solve_d_from_indefinite_U(U, Q_1, A_list, verbose=False):
     return d.value, info
 
 
-def solve_inner_QP(vecs, eigs, A_list, t, rho, W, verbose=False):
+def solve_inner_QP(vecs, eigs, A_list, t, rho, W, verbose=False, lmin=False):
     """
     Solve the direction-finding QP (Overton 1992, equations (24) - (27)).
 
@@ -166,17 +170,29 @@ def compute_current_W(vecs, eigs, A_list, t, w):
     return W
 
 
-def f_Eopt(Q, A_list, x):
+def f_Eopt(Q, A_list, x, lmin=False):
     """Objective of E-OPT"""
-    H_t = Q + np.sum([x_i * Ai[None] for x_i, Ai in zip(x, A_list)], axis=0)[0]
-    eigs, __ = get_min_eigpairs(H_t, k=Q.shape[0], method="direct", which="LA")
-    return eigs[-1]  # maximum eigenvalue
+    # below doesn't work for sparse matrices.
+    # H = Q + np.sum([x_i * Ai[None] for x_i, Ai in zip(x, A_list)], axis=0)[0]
+    H = deepcopy(Q)
+    for i in range(len(A_list)):
+        H += x[i] * A_list[i]
+    if lmin:
+        eigs, __ = get_min_eigpairs(H, k=1, method="lanczos")
+        return eigs[0]
+    else:
+        eigs, __ = get_min_eigpairs(-H, k=1, method="lanczos")
+        return -eigs[0]
 
 
-def solve_Eopt_QP(Q, A_list, x_init=None, max_iters=100, gtol=1e-10, verbose=1):
+def solve_Eopt_QP(
+    Q, A_list, x_init=None, max_iters=1000, gtol=1e-10, verbose=1, lmin=False
+):
     """Solve E_OPT: min_x sigma_max (Q + sum_i (x_i * A_i)), using the QP algorithm
                              ----------H(x)---------
     provided by Overton 1992 (adaptation of Overton 1988).
+
+    :param lmin: solve instead max_x sigma_min (Q + sum_i (x_i * A_i))
     """
     m = len(A_list)
     n = Q.shape[0]
@@ -195,27 +211,40 @@ def solve_Eopt_QP(Q, A_list, x_init=None, max_iters=100, gtol=1e-10, verbose=1):
     U = None
 
     x = x_init
-    k = min(n, 10)
+    k = min(n, 5)
+    method = "direct" if k == n else "lanczos"
 
     i = 0
     while i <= max_iters:
-        H = Q + np.sum([x_i * Ai[None] for x_i, Ai in zip(x, A_list)], axis=0)[0]
-        eigs, vecs = get_min_eigpairs(H, k=k, method="direct")
-        eigs = eigs[::-1]
-        vecs = vecs[:, ::-1]
-        t = get_min_multiplicity(eigs, tau)
+        H = deepcopy(Q)
+        for j in range(m):
+            H += x[j] * A_list[j]
+
+        if lmin:
+            eigs, vecs = get_min_eigpairs(-H, k=k, method=method)
+            eigs = -eigs
+            vecs = -vecs
+            t = get_max_multiplicity(eigs, tau)
+        else:
+            eigs, vecs = get_min_eigpairs(H, k=k, method=method)
+            eigs = eigs[::-1]
+            vecs = vecs[:, ::-1]
+            t = get_min_multiplicity(eigs, tau)
         Q_1 = vecs[:, :t]
 
         if t == 1:
             grad = np.concatenate([Q_1.T @ A_i @ Q_1 for A_i in A_list]).flatten()
-            d = -grad / np.linalg.norm(grad)
+            if lmin:
+                d = grad / np.linalg.norm(grad)
+            else:
+                d = -grad / np.linalg.norm(grad)
 
             # backgracking, using Nocedal Algorithm 3.1
             alpha = backtrack_start
-            l_max_old = f_Eopt(Q, A_list, x)
+            l_old = f_Eopt(Q, A_list, x, lmin=lmin)
             while np.linalg.norm(alpha * d) > gtol:
-                l_max = f_Eopt(Q, A_list, x + alpha * d)
-                if l_max <= l_max_old + backtrack_cutoff * alpha * grad.T @ d:
+                l_new = f_Eopt(Q, A_list, x + alpha * d, lmin=lmin)
+                if l_new <= l_old + backtrack_cutoff * alpha * grad.T @ d:
                     break
                 alpha *= backtrack_factor
 
@@ -253,7 +282,7 @@ def solve_Eopt_QP(Q, A_list, x_init=None, max_iters=100, gtol=1e-10, verbose=1):
             else:
                 print("Warning: U not p.s.d.")
                 d, info = solve_d_from_indefinite_U(U, Q_1, A_list)
-                l_max = f_Eopt(Q, A_list, x + d)
+                l_new = f_Eopt(Q, A_list, x + d)
                 if d is not None:
                     x += d
                 else:
@@ -261,13 +290,13 @@ def solve_Eopt_QP(Q, A_list, x_init=None, max_iters=100, gtol=1e-10, verbose=1):
                     rho = 0.5 * rho
 
         if verbose > 1:
-            print(f"it {i} \t eigs {eigs} \t t {t} \t d {d} \t l_max {l_max}")
+            print(f"it {i} \t eigs {eigs} \t t {t} \t d {d} \t l_max {l_new}")
 
         i += 1
         if i == max_iters:
             msg = "Reached maximum iterations"
             success = False
-    info = {"success": success, "msg": msg, "U": U, "l_max": l_max}
+    info = {"success": success, "msg": msg, "U": U, "l_max": l_new}
     return x, info
 
 
@@ -296,7 +325,7 @@ def solve_Eopt_backtrack(Q, A_list, x_init=None, max_iters=10, gtol=1e-7):
     while i <= max_iters:
         H = Q + np.sum([x_i * Ai for x_i, Ai in zip(x, A_list)])
         k = min(n, 10)
-        eigs, vecs = get_min_eigpairs(H, k=k, method="direct")
+        eigs, vecs = get_min_eigpairs(H, k=k, method=method)
         eigs = eigs[::-1]
         vecs = vecs[:, ::-1]
         t = get_min_multiplicity(eigs, tau)
