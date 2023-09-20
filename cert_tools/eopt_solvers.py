@@ -26,12 +26,29 @@ def get_subgradient(Q, A_list, a):
     return eig_vecs @ U @ eig_vecs.T
 
 
-def get_min_multiplicity(eigs, tau):
+def get_max_multiplicity(eigs, tau):
     "See equations (22), Overton 1992."
     eig_max = eigs[0]
     assert eig_max == np.max(eigs), "eigenvalues not sorted!"
 
     diff = eig_max - eigs - tau * max(1, abs(eig_max))
+    # t is where diff_t <= 0, diff_{t+1} >= 0
+    valid_idx = np.argwhere(diff >= 0)
+    if len(valid_idx):
+        # t_p1 = int(valid_idx[-1])
+        t_p1 = int(valid_idx[0])
+    else:
+        t_p1 = len(eigs)
+    assert diff[t_p1 - 1] <= 0
+    return t_p1
+
+
+def get_min_multiplicity(eigs, tau):
+    "See equations (22), Overton 1992."
+    eig_min = eigs[0]
+    assert eig_min == np.min(eigs), "eigenvalues not sorted!"
+
+    diff = eigs - eig_min - tau * max(1, abs(eig_min))
     # t is where diff_t <= 0, diff_{t+1} >= 0
     valid_idx = np.argwhere(diff >= 0)
     if len(valid_idx):
@@ -186,7 +203,14 @@ def f_Eopt(Q, A_list, x, lmin=False):
 
 
 def solve_Eopt_QP(
-    Q, A_list, x_init=None, max_iters=1000, gtol=1e-10, verbose=1, lmin=False
+    Q,
+    A_list,
+    x_init=None,
+    max_iters=1000,
+    gtol=1e-10,
+    verbose=1,
+    lmin=False,
+    l_threshold=None,
 ):
     """Solve E_OPT: min_x sigma_max (Q + sum_i (x_i * A_i)), using the QP algorithm
                              ----------H(x)---------
@@ -215,21 +239,24 @@ def solve_Eopt_QP(
     method = "direct" if k == n else "lanczos"
 
     i = 0
+
     while i <= max_iters:
         H = deepcopy(Q)
         for j in range(m):
             H += x[j] * A_list[j]
 
         if lmin:
+            eigs, vecs = get_min_eigpairs(H, k=k, method=method)
+            t = get_min_multiplicity(eigs, tau)
+        else:
             eigs, vecs = get_min_eigpairs(-H, k=k, method=method)
             eigs = -eigs
             vecs = -vecs
             t = get_max_multiplicity(eigs, tau)
-        else:
-            eigs, vecs = get_min_eigpairs(H, k=k, method=method)
-            eigs = eigs[::-1]
-            vecs = vecs[:, ::-1]
-            t = get_min_multiplicity(eigs, tau)
+
+        if i == 0 and verbose > 1:
+            print(f"start \t eigs {eigs} \t t {t} \t \t lambda {eigs[0]}")
+
         Q_1 = vecs[:, :t]
 
         if t == 1:
@@ -244,7 +271,12 @@ def solve_Eopt_QP(
             l_old = f_Eopt(Q, A_list, x, lmin=lmin)
             while np.linalg.norm(alpha * d) > gtol:
                 l_new = f_Eopt(Q, A_list, x + alpha * d, lmin=lmin)
-                if l_new <= l_old + backtrack_cutoff * alpha * grad.T @ d:
+                # trying to minimize lambda
+                if not lmin and l_new <= l_old + backtrack_cutoff * alpha * grad.T @ d:
+                    break
+
+                # trying to maximize l_min
+                elif lmin and l_new >= l_old + backtrack_cutoff * alpha * grad.T @ d:
                     break
                 alpha *= backtrack_factor
 
@@ -266,11 +298,11 @@ def solve_Eopt_QP(
             eigs_U = np.linalg.eigvalsh(U)
 
             if eigs_U[0] >= -TOL_EIG:
-                l_max_emp = eigs[0] + info["delta"]
-                l_max = f_Eopt(Q, A_list, x + d)
-                if abs(l_max - l_max_emp) > 1e-10:
+                l_emp = eigs[0] + info["delta"]
+                l_new = f_Eopt(Q, A_list, x + d)
+                if abs(l_new - l_emp) > 1e-10:
                     print(
-                        f"Expected l_max not equal to actual l_max! {l_max:.6e}, {l_max_emp:.6e}",
+                        f"Expected lambda not equal to actual lambda! {l_new:.6e}, {l_emp:.6e}"
                     )
 
                 if np.linalg.norm(d) < gtol:
@@ -290,13 +322,18 @@ def solve_Eopt_QP(
                     rho = 0.5 * rho
 
         if verbose > 1:
-            print(f"it {i} \t eigs {eigs} \t t {t} \t d {d} \t l_max {l_new}")
+            print(f"it {i} \t eigs {eigs} \t t {t} \t d {d} \t lambda {l_new}")
+
+        if l_threshold and (l_new >= l_threshold):
+            msg = "Found valid certificate"
+            success = True
+            break
 
         i += 1
         if i == max_iters:
             msg = "Reached maximum iterations"
             success = False
-    info = {"success": success, "msg": msg, "U": U, "l_max": l_new}
+    info = {"success": success, "msg": msg, "U": U, "lambda": l_new}
     return x, info
 
 
