@@ -129,17 +129,35 @@ def run_eopt_project(prob_file="test_prob_1.pkl"):
     u,s,v = np.linalg.svd(data['X'])
     x_0 = u[:,[0]] * np.sqrt(s[0])
     # Run optimizer
-    H, info = solve_eopt_project(Q=data['Q_norm'],
+    H, info = solve_eopt_project(Q=data['Q'],
                                 Constraints=data['Constraints'],
                                 x_cand=x_0,
                                 )
 
+def run_eopt_sqp(prob_file="test_prob_1.pkl"):
+    # Test SQP method
+    # Load data from file
+    with open(os.path.join(root_dir,"_test",prob_file),'rb') as file:
+        data = pickle.load(file)
+    # Get global solution
+    u,s,v = np.linalg.svd(data['X'])
+    x_0 = u[:,[0]] * np.sqrt(s[0])
+    # Run optimizer
+    H, info = solve_eopt_sqp(Q=data['Q'],
+                            Constraints=data['Constraints'],
+                            x_cand=x_0,
+                            )
+
 def test_eopt_project():
     run_eopt_project(prob_file="test_prob_4.pkl")
+
+def test_eopt_sqp():
+    run_eopt_sqp(prob_file="test_prob_6.pkl")
     
 if __name__ == "__main__":
     # test_subgradient_analytic()
     # test_subgradient_mult2()
-    test_grad_hess_numerical()
+    # test_grad_hess_numerical()
     # test_eopt_project()
-    #  test_eopt_penalty()
+    # test_eopt_penalty()
+    test_eopt_sqp()

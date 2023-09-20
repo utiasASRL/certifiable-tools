@@ -42,7 +42,15 @@ def min_eigs_lanczos(H, k=6, tol=1e-6, **kwargs):
         # Shift the certificate matrix by 2 lambda max. This improves
         # conditioning of the matrix.
         H_shift = H - 2 * sp.eye(H.shape[0]) * max_eig
-        eig_vals, eig_vecs = sp.linalg.eigsh(H_shift, **eig_opts)
+        # try to converge to the requested number of eigenpairs
+        try:
+            eig_vals, eig_vecs = sp.linalg.eigsh(H_shift, **eig_opts)
+        except sp.linalg.ArpackNoConvergence as err:
+            # Retrieve converged values
+            print(err)
+            print('Retrieving converged eigenpairs')
+            eig_vals = err.eigenvalues
+            eig_vecs = err.eigenvectors
         eig_vals = eig_vals + 2 * max_eig
     else:
         # Largest eigenvalue is already negative. Rerun with lower tolerance
