@@ -20,4 +20,5 @@ This file describes the test problems that appear in this test directory. All te
 | test_prob_4.pkl | Same as test_prob_3.pkl, but with redundant constraints.|
 | test_prob_5.pkl | 10 pose SLAM on dataset 3 with variance 6e-2 on relative-pose measurements. No redundant constraints, not tight|
 | test_prob_6.pkl | Same as test_prob_5.pkl, but with redundant constraints. Should be tight.|
+| test_prob_7.pkl | Same as test_prob_4, but with 5 poses and 30 landmarks | 
 
