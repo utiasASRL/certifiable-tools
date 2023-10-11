@@ -205,12 +205,12 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl"):
     u,s,v = np.linalg.svd(data['X'])
     x_0 = u[:,[0]] * np.sqrt(s[0])
     # Run optimizer
-    output = solve_eopt_cuts(Q=data['Q'],
+    output = solve_eopt_cuts(C=data['Q'],
                             Constraints=data['Constraints'],
                             x_cand=x_0,
                             ) 
     
-def test_eopt_cuts_simple():    
+def test_eopt_cuts_poly():    
     # Run Optimizer
     solve_eopt_cuts(**poly6_test())
 
@@ -243,14 +243,14 @@ def poly6_test():
     # Candidate solution
     x_cand = np.array([[1.0000,-1.4871,2.2115,-3.2888]]).T
     # Dual optimal
-    mults = np.array([[-3.1937],
+    mults = -np.array([[-3.1937],
                     [ 2.5759],
                     [-0.0562],
                     [ 0.8318]])
 
     # output
     output = dict(Constraints=Constraints,
-                  Q=Q,
+                  C=Q,
                   x_cand=x_cand,
                   opt_mults = mults)
     return output
@@ -262,7 +262,7 @@ def test_eopt_sqp():
     run_eopt_sqp(prob_file="test_prob_7.pkl")
     
 def test_eopt_cuts():
-    run_eopt_cuts(prob_file="test_prob_1.pkl")
+    run_eopt_cuts(prob_file="test_prob_7.pkl")
         
 if __name__ == "__main__":
     # GRADIENT TESTS
@@ -277,5 +277,5 @@ if __name__ == "__main__":
     # test_eopt_project()
     # test_eopt_penalty()
     # test_eopt_sqp()
-    # test_eopt_cuts()
-    test_eopt_cuts_simple()
+    test_eopt_cuts()
+    # test_eopt_cuts_poly()

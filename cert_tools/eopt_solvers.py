@@ -2,6 +2,7 @@
 import mosek
 import cvxpy as cp
 from scipy.optimize import linprog
+import gurobipy as gp
 
 # Maths
 import numpy as np
@@ -23,10 +24,12 @@ opts_dflt = dict(tol_eig = 1e-8,
                     )
 
 # Default options for cutting plane method
-opts_cut_dflt = dict(tol_eig = 1e-8,
-                     max_iter=100,
+opts_cut_dflt = dict(tol_eig = 1e-6,
+                     max_iter=1e3,
                      method = 'level',
-                     level=1e1)
+                     level=0.,
+                     tol_affine = 1e-5,
+                     tol_relgap = 1e-8)
 
 
 def solve_eopt_penalty(Q, Constraints, x_cand, opts=opts_dflt, verbose=True):
@@ -337,25 +340,24 @@ def solve_eopt_sqp(Q, Constraints, x_cand, opts=opts_dflt, verbose=True):
                 res_constr=res_constr)
     return H, info
 
-def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**kwargs):
+def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**kwargs):
     """Solve the certificate/eigenvalue optimization problem using a cutting plane algorithm.
     Current algorithm uses the level method with the target level at a tolerance below zero"""
     # Get affine constraint from constraints and candidate solution
     A_bar = np.hstack([A @ x_cand for A,b in Constraints])
-    b_bar = -Q @ x_cand
+    b_bar = -C @ x_cand
     A_list = [A for A,b in Constraints]
     # Truncate eigenvalues of A_bar to make nullspace more defined
     Q,R = np.linalg.qr(A_bar)
-    b_eq = Q.T@b_bar
-    tol = 1e-5
     for i,r in enumerate(np.diag(R)):
-        if np.abs(r) < tol:
+        if np.abs(r) < opts['tol_affine']:
+            i-=1
             break
+    Q1 = Q[:,:i+1]
+    R1 = R[:i+1,:]
     # Define affine constraints in epigraph form
-    A_eq = np.hstack([np.zeros((i, 1)), R[:i,:]])
-    b_eq = Q.T@b_bar
-    b_eq = b_eq[:i,:]
-
+    A_eq = np.hstack([np.zeros((R1.shape[0], 1)), R1])
+    b_eq = Q1.T @ b_bar
     # INITIALIZE
     status = 'RUNNING'
     header_printed=False
@@ -363,8 +365,9 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
     t_max = np.inf
     t_min = -np.inf
     # Initialize multiplier variables
-    # x = np.linalg.lstsq(R[:i,:], b_eq)[0]
-    x = np.zeros((len(Constraints),1))
+    x = np.linalg.lstsq(R1, b_eq)[0]
+    # x = np.zeros((len(Constraints),1))
+    # x = kwargs['opt_mults']
     # Init cutting plane constraints 
     #    t <= level
     # <==>   [ 1 0 ]@[t;x] <= level
@@ -373,15 +376,33 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
     b_cut = None
     # LOOP
     while status == "RUNNING":
+        # SOLVE CUT PLANE PROGRAM WITH MAX LEVEL
+        # Cost: maximize t
+        c = np.hstack([-one, np.zeros((1,len(x)))])
+        # Set bounds on t level only
+        bounds = [(None,opts['level'])] + [(None,None)]*len(x)
+        # Solve problem
+        res = linprog(c=c.squeeze(),
+                      A_eq=A_eq,
+                      b_eq=b_eq.squeeze(),
+                      A_ub=A_cut,
+                      b_ub=b_cut,
+                      method='highs-ds',
+                      bounds=bounds,
+                      )
+        if res.success:
+            t_opt, x_opt = res.x[0],res.x[1:]
+            x_opt = np.expand_dims(x_opt,axis=1)
+        else:
+            raise ValueError("Linear subproblem failed.")
         # CUT PLANE UPDATE
         # Construct Current Certificate matrix
-        H = Q.copy()
-        for i,(A, b) in enumerate(Constraints):
-            H += x[i] * A
+        H = get_cert_mat(C, Constraints, x)
         # current gradient and minimum eig
-        grad_info = get_grad_info(H=H, A_list=A_list, k=4,method="direct")
+        grad_info = get_grad_info(H=H, A_list=A_list, k=H.shape[0],method="direct")
         if grad_info['min_eig'] > t_min:
             t_min = grad_info['min_eig']
+        # Add Cuts
         # NOTE: t <= grad @ (x-x_bar) + f(x_bar) <==> 
         # [1 -grad] @ [t; x] <= f(x_bar) -grad @ x_bar  
         a_cut = np.hstack([one, -grad_info['subgrad'].T])
@@ -391,29 +412,7 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
             b_cut = b_val
         else:
             A_cut = np.vstack([A_cut, a_cut])
-            b_cut = np.vstack([b_cut, b_val])
-        # SOLVE CUT PLANE PROGRAM WITH MAX LEVEL
-        # Warm start        
-        x0 = np.vstack([t_min-1e-4, x])
-        # Cost: maximize t
-        c = np.hstack([-one, np.zeros((1,len(x)))])
-        # Solve problem
-        options=dict(tol=1e-5, autoscale=True, disp=False)
-        # Set bounds on t level only
-        bounds = [(None,opts['level'])] + [(None,None)]*len(x)
-        res = linprog(c=c.squeeze(),
-                      A_eq=A_eq,
-                      b_eq=b_eq.squeeze(),
-                      A_ub=A_cut,
-                      b_ub=b_cut.squeeze(),
-                      method='highs',
-                      bounds=bounds,
-                      options=options)
-        if res.success:
-            t_opt, x_opt = res.x[0],res.x[1:]
-            x_opt = np.expand_dims(x_opt,axis=1)
-        else:
-            raise ValueError("Linear subproblem failed.")
+            b_cut = np.hstack([b_cut, b_val])
         # STATUS UPDATE
         # update upper bound
         if t_opt <= t_max: 
@@ -421,21 +420,25 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
         # define gap
         gap = (t_max-t_min)/np.abs(t_min)
         # termination criteria
-        if t_min >= -opts['tol_eig']:
+        if gap <= opts['tol_relgap']:
+            status = "REL_GAP"
+        elif t_min >= -opts['tol_eig']:
             status = "POS_LB"
         elif t_max < -2*opts['tol_eig']:
             status = "NEG_UB"
+        elif n_iter >= opts['max_iter']:
+            status = "MAX_ITER"
         # Update vars
         n_iter += 1
         delta_x = x_opt - x
-        delta_sqr = (delta_x.T@delta_x)[0,0]
+        delta_norm = np.linalg.norm(delta_x)
         x = x_opt
         # PRINT
         if verbose:
             if header_printed is False:
-                print(' N   | delta_sqr |   t_max   |   t_min     |   gap    |')
+                print(' N   | delta_nrm |  eig val  |   t_max   |   t_min     |   gap    |')
                 header_printed=True
-            print(f" {n_iter:3d} | {delta_sqr:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e}")
+            print(f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e}")
     
     # Set outputs
     output = dict(H=H,
@@ -447,7 +450,16 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
                 )
     
     return output
-    
+
+def get_cert_mat(C, Constraints, mults):
+    """Generate certificate matrix from cost, constraints and multipliers"""
+    H = C.copy()
+    for i,(A, b) in enumerate(Constraints):
+        if sp.issparse(A):
+            A = A.todense()
+        H += mults[i,0] * A
+    return H
+
 def cvxpy_qp(P, q, G, h, A=None, b=None, verbose=False):
     x = cp.Variable((P.shape[0],1),'x')
     eps = cp.Variable((A.shape[0],1),'eps')
