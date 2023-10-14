@@ -2,7 +2,9 @@
 import mosek
 import cvxpy as cp
 from scipy.optimize import linprog
+import scipy
 import gurobipy as gp
+import quadprog
 
 # Maths
 import numpy as np
@@ -27,7 +29,8 @@ opts_dflt = dict(tol_eig = 1e-8,
 opts_cut_dflt = dict(tol_eig = 1e-6,
                      max_iter=1e3,
                      method = 'level',
-                     level=0.,
+                     min_eig_ub = 1.0,
+                     level_fraction = 0.9,
                      tol_affine = 1e-5,
                      tol_relgap = 1e-8)
 
@@ -310,7 +313,7 @@ def solve_eopt_sqp(Q, Constraints, x_cand, opts=opts_dflt, verbose=True):
                     header_printed=True
                 print(f" {n_iter:3d} | {cost_delta:5.4e} | {cost_prev:5.4e} | {alpha_prev:5.4e} | {grad_info['multplct']:4d}")
             # Check termination criteria
-            if False:#n_iter>0:
+            if n_iter>0:
                 if cost >= -opts['tol_eig']:
                     status = 'POS_MIN_EIG'
                 elif cost_delta < opts['tol_cost']:
@@ -348,7 +351,7 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
     b_bar = -C @ x_cand
     A_list = [A for A,b in Constraints]
     # Truncate eigenvalues of A_bar to make nullspace more defined
-    Q,R = np.linalg.qr(A_bar)
+    Q,R,P = scipy.linalg.qr(A_bar, pivoting=True)
     for i,r in enumerate(np.diag(R)):
         if np.abs(r) < opts['tol_affine']:
             i-=1
@@ -356,7 +359,10 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
     Q1 = Q[:,:i+1]
     R1 = R[:i+1,:]
     # Define affine constraints in epigraph form
-    A_eq = np.hstack([np.zeros((R1.shape[0], 1)), R1])
+    Pinv = np.zeros(len(P),int)
+    for k,p in enumerate(P):
+        Pinv[p] = k
+    A_eq = np.hstack([np.zeros((R1.shape[0], 1)),R1[:,Pinv]])
     b_eq = Q1.T @ b_bar
     # INITIALIZE
     status = 'RUNNING'
@@ -365,8 +371,8 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
     t_max = np.inf
     t_min = -np.inf
     # Initialize multiplier variables
-    x = np.linalg.lstsq(R1, b_eq)[0]
-    # x = np.zeros((len(Constraints),1))
+    #x = np.linalg.lstsq(R1, b_eq)[0]
+    x = np.zeros((len(Constraints),1))
     # x = kwargs['opt_mults']
     # Init cutting plane constraints 
     #    t <= level
@@ -380,8 +386,8 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
         # Cost: maximize t
         c = np.hstack([-one, np.zeros((1,len(x)))])
         # Set bounds on t level only
-        bounds = [(None,opts['level'])] + [(None,None)]*len(x)
-        # Solve problem
+        bounds = [(None,opts['min_eig_ub'])] + [(None,None)]*len(x)
+        # Solve opt problem
         res = linprog(c=c.squeeze(),
                       A_eq=A_eq,
                       b_eq=b_eq.squeeze(),
@@ -391,22 +397,36 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
                       bounds=bounds,
                       )
         if res.success:
-            t_opt, x_opt = res.x[0],res.x[1:]
-            x_opt = np.expand_dims(x_opt,axis=1)
+            t_lp, x_lp = res.x[0],res.x[1:]
+            x_lp = np.expand_dims(x_lp,axis=1)
         else:
             raise ValueError("Linear subproblem failed.")
+        # COMPUTE LEVEL PROJECTION
+        if n_iter > 0:
+            level = t_min + opts['level_fraction']*(t_lp - t_min)
+            t_x = level_project(x_prox=x,
+                                level=level,
+                                A_eq=A_eq,
+                                b_eq=b_eq,
+                                A_ub=A_cut,
+                                b_ub=b_cut,)
+            t_qp, x_new = t_x[0,:],t_x[1:,:]
+        else:
+            x_new = x_lp
         # CUT PLANE UPDATE
         # Construct Current Certificate matrix
-        H = get_cert_mat(C, Constraints, x)
+        H = get_cert_mat(C, Constraints, x_new)
+        # Number of eigenvalues to compute
+        k = 4
         # current gradient and minimum eig
-        grad_info = get_grad_info(H=H, A_list=A_list, k=H.shape[0],method="direct")
+        grad_info = get_grad_info(H=H, A_list=A_list, k=k,method="direct")
         if grad_info['min_eig'] > t_min:
             t_min = grad_info['min_eig']
         # Add Cuts
         # NOTE: t <= grad @ (x-x_bar) + f(x_bar) <==> 
         # [1 -grad] @ [t; x] <= f(x_bar) -grad @ x_bar  
         a_cut = np.hstack([one, -grad_info['subgrad'].T])
-        b_val = grad_info['min_eig'] - grad_info['subgrad'].T @ x
+        b_val = grad_info['min_eig'] - grad_info['subgrad'].T @ x_new
         if A_cut is None:
             A_cut = a_cut
             b_cut = b_val
@@ -414,13 +434,13 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
             A_cut = np.vstack([A_cut, a_cut])
             b_cut = np.hstack([b_cut, b_val])
         # STATUS UPDATE
-        # update upper bound
-        if t_opt <= t_max: 
-            t_max = t_opt
+        # update model upper bound
+        if t_lp <= t_max: 
+            t_max = t_lp
         # define gap
         gap = (t_max-t_min)/np.abs(t_min)
         # termination criteria
-        if gap <= opts['tol_relgap']:
+        if gap <= opts['tol_relgap'] and False:# Off for now
             status = "REL_GAP"
         elif t_min >= -opts['tol_eig']:
             status = "POS_LB"
@@ -428,18 +448,22 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
             status = "NEG_UB"
         elif n_iter >= opts['max_iter']:
             status = "MAX_ITER"
+
         # Update vars
         n_iter += 1
-        delta_x = x_opt - x
+        delta_x = x_new - x
         delta_norm = np.linalg.norm(delta_x)
-        x = x_opt
+        x = x_new
+        
         # PRINT
         if verbose:
+            if n_iter % 10 == 1:
+                header_printed=False
             if header_printed is False:
-                print(' N   | delta_nrm |  eig val  |   t_max   |   t_min     |   gap    |')
+                print(' N   | delta_nrm |  eig val  |   t_max   |   t_min     |   gap    | mult. |')
                 header_printed=True
-            print(f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e}")
-    
+            print(f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e} | {grad_info['multplct']:4d} ")
+            
     # Set outputs
     output = dict(H=H,
                   status=status,
@@ -451,6 +475,32 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
     
     return output
 
+def level_project(x_prox, level, A_eq, b_eq, A_ub, b_ub):
+    """Solve level set projection problem: return the closest point to x_prox 
+    (the prox-center) such that the acheived model value is above the provided
+    level"""
+    # Cost:
+    q = np.vstack([0., -x_prox])
+    P = np.eye(len(x_prox)+1)
+    P[0,0] = 0.
+    # Modify constraints to add level lower bound
+    # -t <= level
+    a_ub = np.vstack([-1., np.zeros(x_prox.shape)]).T
+    if A_ub is None:
+        G = a_ub
+        h = -level
+    else:
+        G = np.vstack([a_ub, A_ub])
+        h = np.hstack([np.array([[-level]]), b_ub]).T
+    # Solve Quadratic Program:
+    x = cp.Variable((len(x_prox)+1,1),'x')
+    prob = cp.Problem(cp.Minimize(cp.norm2(x[1:,:]-x_prox)),
+                    [G @ x <= h,
+                    A_eq @ x == b_eq])
+    prob.solve(solver='MOSEK', verbose=False)
+    # Get solution
+    return x.value
+    
 def get_cert_mat(C, Constraints, mults):
     """Generate certificate matrix from cost, constraints and multipliers"""
     H = C.copy()
@@ -459,16 +509,6 @@ def get_cert_mat(C, Constraints, mults):
             A = A.todense()
         H += mults[i,0] * A
     return H
-
-def cvxpy_qp(P, q, G, h, A=None, b=None, verbose=False):
-    x = cp.Variable((P.shape[0],1),'x')
-    eps = cp.Variable((A.shape[0],1),'eps')
-    prob = cp.Problem(cp.Minimize(cp.quad_form(x, P) + 2*q.T @ x + 500*cp.quad_form(eps,np.eye(eps.shape[0]))),
-                    [G @ x <= h,
-                    A @ x - b == eps])
-    options = dict(feastol=1e-5,reltol=1e-5,abstol=1e-5)
-    prob.solve(verbose=verbose, solver='CVXOPT', **options)
-    return x.value
 
 def quadprog_solve_qp(P, q, G, h, A=None, b=None):
     """ Solves the quadratic program:
@@ -488,3 +528,13 @@ def quadprog_solve_qp(P, q, G, h, A=None, b=None):
     res = quadprog.solve_qp(qp_G, qp_a, qp_C, qp_b, meq)
     return res[0]
         
+def cvxpy_qp(P, q, G, h, A=None, b=None, verbose=True):
+    x = cp.Variable((P.shape[0],1),'x')
+    prob = cp.Problem(cp.Minimize(0.5*cp.quad_form(x, P) + q.T @ x),
+                    [G @ x <= h,
+                    A @ x == b])
+    options = dict(feastol=1e-5,reltol=1e-5,abstol=1e-5)
+    options = dict()
+    prob.solve(verbose=verbose, solver='CVXOPT', **options)
+    return x.value
+

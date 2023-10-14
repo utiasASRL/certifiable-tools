@@ -208,7 +208,19 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl"):
     output = solve_eopt_cuts(C=data['Q'],
                             Constraints=data['Constraints'],
                             x_cand=x_0,
-                            ) 
+                            method='direct'
+                            )
+    
+    # Verify certificate
+    H = output['H']
+    if sp.issparse(H):
+        H = H.todense()
+    y = H @ x_0
+    min_eig = np.min(np.linalg.eig(H)[0])
+    
+    np.testing.assert_allclose(y,np.zeros(y.shape),atol=5e-4,rtol=0)
+    assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not possitive")
+    return output
     
 def test_eopt_cuts_poly():    
     # Run Optimizer
@@ -256,13 +268,15 @@ def poly6_test():
     return output
     
 def test_eopt_project():
-    run_eopt_project(prob_file="test_prob_4.pkl")
+    run_eopt_project(prob_file="test_prob_6.pkl")
 
 def test_eopt_sqp():
     run_eopt_sqp(prob_file="test_prob_7.pkl")
     
 def test_eopt_cuts():
-    run_eopt_cuts(prob_file="test_prob_7.pkl")
+    run_eopt_cuts(prob_file="test_prob_6.pkl")
+
+    
         
 if __name__ == "__main__":
     # GRADIENT TESTS
@@ -277,5 +291,6 @@ if __name__ == "__main__":
     # test_eopt_project()
     # test_eopt_penalty()
     # test_eopt_sqp()
+    
     test_eopt_cuts()
     # test_eopt_cuts_poly()
