@@ -13,11 +13,13 @@ import sparseqr as sqr
 from cert_tools.eig_tools import get_min_eigpairs
 # Plotting
 import matplotlib.pyplot as plt
+# Data storage
+import pandas as pd
 
 # Default options for penalty optimization
 opts_dflt = dict(tol_eig = 1e-8,
                     tol_pen = 1e-8,
-                    max_iter = 100,
+                    max_iter = 1000,
                     rho = 100,
                     btrk_c = 0.5,
                     btrk_rho = 0.5,
@@ -27,10 +29,11 @@ opts_dflt = dict(tol_eig = 1e-8,
 
 # Default options for cutting plane method
 opts_cut_dflt = dict(tol_eig = 1e-6,
-                     max_iter=1e3,
+                     max_iter=1000,
                      method = 'level',
-                     min_eig_ub = 1.0,
-                     level_fraction = 0.9,
+                     min_eig_ub = 0.0,
+                     lambda_level = 0.95,
+                     level_method_bound =1e4,
                      tol_affine = 1e-5,
                      tol_relgap = 1e-8)
 
@@ -183,12 +186,12 @@ def solve_eopt_project(Q, Constraints, x_cand, opts=opts_dflt, verbose=True):
 # SEQUENTIAL GRADIENT DESCENT METHOD
 
 def get_grad_info(H,
-                    A_list,
-                    U=None,
-                    tau=1e-8,
-                    get_hessian=False,
-                    damp_hessian=True,
-                    **kwargs):
+                A_list,
+                U=None,
+                tau=1e-8,
+                get_hessian=False,
+                damp_hessian=True,
+                **kwargs):
     eig_vals, eig_vecs = get_min_eigpairs(H, **kwargs)
     # get minimum eigenvalue     
     min_eig = np.min(eig_vals)
@@ -343,6 +346,7 @@ def solve_eopt_sqp(Q, Constraints, x_cand, opts=opts_dflt, verbose=True):
                 res_constr=res_constr)
     return H, info
 
+# @profile
 def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**kwargs):
     """Solve the certificate/eigenvalue optimization problem using a cutting plane algorithm.
     Current algorithm uses the level method with the target level at a tolerance below zero"""
@@ -350,6 +354,7 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
     A_bar = np.hstack([A @ x_cand for A,b in Constraints])
     b_bar = -C @ x_cand
     A_list = [A for A,b in Constraints]
+    A_vec = sp.hstack([A.reshape((-1,1),order='F') for A,b in Constraints])
     # Truncate eigenvalues of A_bar to make nullspace more defined
     Q,R,P = scipy.linalg.qr(A_bar, pivoting=True)
     for i,r in enumerate(np.diag(R)):
@@ -358,18 +363,22 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
             break
     Q1 = Q[:,:i+1]
     R1 = R[:i+1,:]
-    # Define affine constraints in epigraph form
+    # Define affine constraints in epigraph form (with col of zeros)
     Pinv = np.zeros(len(P),int)
     for k,p in enumerate(P):
         Pinv[p] = k
     A_eq = np.hstack([np.zeros((R1.shape[0], 1)),R1[:,Pinv]])
     b_eq = Q1.T @ b_bar
+    # Get orthogonal vector to x_cand
+    x_rand = np.random.rand(*x_cand.shape)-1
+    x_orth = x_rand - x_cand.T@x_rand / (x_cand.T@x_cand)
     # INITIALIZE
     status = 'RUNNING'
     header_printed=False
     n_iter = 0
     t_max = np.inf
     t_min = -np.inf
+    iter_info = []
     # Initialize multiplier variables
     #x = np.linalg.lstsq(R1, b_eq)[0]
     x = np.zeros((len(Constraints),1))
@@ -402,8 +411,9 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
         else:
             raise ValueError("Linear subproblem failed.")
         # COMPUTE LEVEL PROJECTION
-        if n_iter > 0:
-            level = t_min + opts['level_fraction']*(t_lp - t_min)
+        level = t_min + opts['lambda_level']*(t_lp - t_min)
+        # Condition on level required for now for solving projection
+        if n_iter > 0 and np.abs(level) <= opts['level_method_bound'] and opts['lambda_level'] < 1:
             t_x = level_project(x_prox=x,
                                 level=level,
                                 A_eq=A_eq,
@@ -415,11 +425,11 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
             x_new = x_lp
         # CUT PLANE UPDATE
         # Construct Current Certificate matrix
-        H = get_cert_mat(C, Constraints, x_new)
+        H = get_cert_mat(C, A_vec, x_new)
         # Number of eigenvalues to compute
-        k = 4
+        k = 10
         # current gradient and minimum eig
-        grad_info = get_grad_info(H=H, A_list=A_list, k=k,method="direct")
+        grad_info = get_grad_info(H=H, A_list=A_list, k=k,method="direct",v0=x_orth)
         if grad_info['min_eig'] > t_min:
             t_min = grad_info['min_eig']
         # Add Cuts
@@ -438,7 +448,7 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
         if t_lp <= t_max: 
             t_max = t_lp
         # define gap
-        gap = (t_max-t_min)/np.abs(t_min)
+        gap = (t_max-t_min)
         # termination criteria
         if gap <= opts['tol_relgap'] and False:# Off for now
             status = "REL_GAP"
@@ -463,6 +473,17 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
                 print(' N   | delta_nrm |  eig val  |   t_max   |   t_min     |   gap    | mult. |')
                 header_printed=True
             print(f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e} | {grad_info['multplct']:4d} ")
+            # Store data
+            info=dict(n_iter=n_iter,
+                    delta_norm=delta_norm,
+                    min_eig_curr=grad_info['min_eig'],
+                    t_max=t_max,
+                    t_min=t_min,
+                    gap=gap,
+                    mult=grad_info['multplct']
+                    )
+            iter_info+=[info]
+            
             
     # Set outputs
     output = dict(H=H,
@@ -471,6 +492,7 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
                   gap=gap,
                   t_min=t_min,
                   t_max=t_max,
+                  iter_info=pd.DataFrame(iter_info)
                 )
     
     return output
@@ -501,13 +523,23 @@ def level_project(x_prox, level, A_eq, b_eq, A_ub, b_ub):
     # Get solution
     return x.value
     
-def get_cert_mat(C, Constraints, mults):
-    """Generate certificate matrix from cost, constraints and multipliers"""
-    H = C.copy()
-    for i,(A, b) in enumerate(Constraints):
-        if sp.issparse(A):
-            A = A.todense()
-        H += mults[i,0] * A
+def get_cert_mat(C, A_vec, mults, sparsify=True):
+    """Generate certificate matrix from cost, constraints and multipliers
+    C is the cost matrix amd A_vec is expected to be a vectorized version
+    of the constraint matrices"""
+    if sp.issparse(C) and not sparsify:
+        H = C.todense()
+    elif not sp.issparse(C) and sparsify:
+        H = sp.csc_array(C)
+    else:
+        H = C.copy()
+    # Loop through A matrices
+    if sp.issparse(A_vec) and not sparsify:
+        A_vec = A_vec.todense()
+    elif not sp.issparse(A_vec) and sparsify:
+        A_vec = sp.csc_array(A_vec)
+    # Update H
+    H += (A_vec @ mults).reshape(H.shape,order='F')
     return H
 
 def quadprog_solve_qp(P, q, G, h, A=None, b=None):

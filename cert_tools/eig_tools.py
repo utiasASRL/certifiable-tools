@@ -2,7 +2,7 @@
 import numpy as np
 import scipy.sparse as sp
 
-def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, **kwargs):
+def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, v0=None,**kwargs):
     """Wrapper function for calling different minimum eigenvalue methods"""
     if method == "direct":
         if sp.issparse(H):
@@ -12,12 +12,18 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, **kwargs):
         if not sp.issparse(H):
             H = sp.csr_array(H)
         eig_vals, eig_vecs = sp.linalg.eigsh(
-            H, k=k, which="SA", return_eigenvectors=True
+            H, k=k, which="SA", return_eigenvectors=True,v0=v0
         )
-    elif method == "shifted-lanczos":
+    elif method == "lanczos-shifted":
         if not sp.issparse(H):
             H = sp.csr_array(H)
-        eig_vals, eig_vecs = min_eigs_lanczos(H, k=k, tol=tol, **kwargs)
+        eig_vals, eig_vecs = min_eigs_lanczos(H, k=k, tol=tol, v0=v0, **kwargs)
+    elif method == "precond-lanczos":
+        pass
+    elif method == "lobpcg":
+        if not sp.issparse(H):
+            H = sp.csr_array(H)
+        eig_vals, eig_vecs = sp.linalg.lobpcg(H,X=v0,largest=False)
     else:
         raise ValueError(f"method {method} not recognized.")
 
@@ -28,13 +34,13 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, **kwargs):
     return eig_vals, eig_vecs
 
 
-def min_eigs_lanczos(H, k=6, tol=1e-6, **kwargs):
+def min_eigs_lanczos(H, k=6, tol=1e-6, v0=None, **kwargs):
     """Use the Lanczos process to get an approximation of minimum eigenpairs.
     For now just returning only one pair, even if the eigenspace has dimension > 1
     TODO: Address higher dimensional min eigenspace.
     """
     # Compute Coarse Max Eig
-    eig_opts = dict(k=k, which="LM", return_eigenvectors=True)
+    eig_opts = dict(k=k, which="LM", return_eigenvectors=True, v0=v0)
     vals, V = sp.linalg.eigsh(H, tol=1e-3, **eig_opts)
     max_eig = np.max(vals)
     if max_eig > -tol:
