@@ -285,7 +285,7 @@ def test_eopt_cuts_poly(plot=True):
         A_vec = output["A_vec"]
         A_vec_null = output["A_vec_null"]
         mults = output["mults"]
-        A_cut, b_cut = output["cuts"]
+        model = output["model"]
         x = output["x"]
         vals = output["iter_info"]["min_eig_curr"].values
         x_iter = output["iter_info"]["x"].values
@@ -302,11 +302,19 @@ def test_eopt_cuts_poly(plot=True):
         plt.figure()
         plt.plot(alphas, mneigs, ".-r")
         # Plot Hyperplanes
-        for i in range(A_cut.shape[0]):
-            plt.plot(alphas, -A_cut[i, 1] * (alphas + x) + b_cut[0, i])
+        for i in range(len(model.gradients)):
+            cut = model.values[i] + model.gradients[i] * (
+                x + alphas - model.eval_pts[i]
+            )
+            plt.plot(alphas, cut)
             plt.plot(x_iter[i] - x, vals[i], ".k")
+
+        # Plot model
         plt.figure()
-        plt.plot(output["iter_info"]["curv"].values)
+        plt.plot(alphas, mneigs, ".-r")
+        mvals = [model.evaluate(alphas[i, :] + x) for i in range(len(alphas))]
+        mvals = np.expand_dims(np.array(mvals), axis=1)
+        plt.plot(alphas, mvals, "--")
         plt.show()
 
     # Verify certificate
@@ -338,13 +346,10 @@ if __name__ == "__main__":
     # test_subgradient_mult2()
     # test_grad_hess_numerical()
 
-    # QUADRATIC SUBPROBLEM TESTS
-    # test_qp_subproblem()
-
     # EOPT TESTS
     # test_eopt_project()
     # test_eopt_penalty()
     # test_eopt_sqp()
 
-    # test_eopt_cuts()
-    test_eopt_cuts_poly()
+    test_eopt_cuts()
+    # test_eopt_cuts_poly()
