@@ -32,11 +32,12 @@ opts_dflt = dict(tol_eig = 1e-8,
 # Default options for cutting plane method
 opts_cut_dflt = dict(tol_eig = 1e-6,            # Eigenvalue tolerance
                      max_iter=1000,             # Maximum iterations
-                     min_eig_ub = 0.0,          # Upper bound for cutting plane
-                     lambda_level = 0.95,       # level multiplier (for level method)
-                     level_method_bound =1e4,   # below this level, default to vanilla cut plane
+                     min_eig_ub = 1.,          # Upper bound for cutting plane
+                     lambda_level = 0.9,        # level multiplier (for level method)
+                     level_method_bound = 1e5,   # above this level, default to vanilla cut plane
                      tol_null = 1e-5,           # null space tolerance for first order KKT constraints
-                     use_null = False,          # if true, reparameterize problem using null space
+                     use_null = True,           # if true, reparameterize problem using null space
+                     cut_buffer = 30,           # number of cuts stored at once, FIFO
                      )            
 
 # PROJECTED GRADIENT METHOD
@@ -188,8 +189,8 @@ def preprocess_constraints(C, Constraints, x_cand, use_null=False, opts=opts_cut
     
     # Perform QR decomposition to characterize and work with null space
     Q,R,P = scipy.linalg.qr(A_bar, pivoting=True)
-    r = np.diag(R)
-    rank = np.sum(np.abs(r) > opts['tol_null'])
+    r = np.abs(np.diag(R))
+    rank = np.sum(r > opts['tol_null'])
     Q1 = Q[:,:rank]
     R1 = R[:rank,:]   
     # Inverse permutation
@@ -212,7 +213,7 @@ def preprocess_constraints(C, Constraints, x_cand, use_null=False, opts=opts_cut
     A_eq = np.hstack([np.zeros((R1.shape[0], 1)),R1[:,Pinv]])
     b_eq = Q1.T @ b_bar
     # Output 
-    return A_vec, A_eq, b_eq, A_vec_null
+    return A_vec, A_eq, b_eq, A_vec_null, basis.T
     
 # @profile
 def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**kwargs):
@@ -225,7 +226,7 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
                                         x_cand,
                                         use_null=use_null,
                                         opts=opts)
-    A_vec, A_eq, b_eq, A_vec_null = constr_info
+    A_vec, A_eq, b_eq, A_vec_null,basis = constr_info
     # Get orthogonal vector to x_cand
     x_rand = np.random.rand(*x_cand.shape)-1
     x_orth = x_rand - x_cand.T@x_rand / (x_cand.T@x_cand)
@@ -233,7 +234,7 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
      # Initialize multiplier variables
     if use_null:
         x_bar = la.lstsq(A_eq[:,1:], b_eq)[0]
-        x = np.zeros((A_vec_null.shape[1],1))
+        x = 2*np.ones((A_vec_null.shape[1],1))
     else:
         x = la.lstsq(A_eq[:,1:], b_eq)[0]
     # Init cutting plane constraints 
@@ -290,9 +291,11 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
         else:
             x_new = x_lp
         # CUT PLANE UPDATE
+        # Store previous gradient information
+        if n_iter > 0:
+            grad_info_prev = grad_info.copy()
         # Number of eigenvalues to compute
         k = 10
-        
         if use_null:
             # Construct Current Certificate matrix
             H = get_cert_mat(C, A_vec, x_bar,A_vec_null, x_new)
@@ -303,7 +306,7 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
             H = get_cert_mat(C, A_vec, x_new)
             # current gradient and minimum eig
             grad_info = get_grad_info(H=H, A_vec=A_vec, k=k,method="direct",v0=x_orth)
-        
+        # Check minimum eigenvalue
         if grad_info['min_eig'] > t_min:
             t_min = grad_info['min_eig']
         # Add Cuts
@@ -313,10 +316,13 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
         b_val = grad_info['min_eig'] - grad_info['subgrad'].T @ x_new
         if A_cut is None:
             A_cut = a_cut
-            b_cut = b_val
+            b_cut = np.array(b_val)
         else:
             A_cut = np.vstack([A_cut, a_cut])
             b_cut = np.hstack([b_cut, b_val])
+            if A_cut.shape[0] > opts['cut_buffer']:
+                A_cut = A_cut[1:,:]
+                b_cut = b_cut[:,1:]
         # STATUS UPDATE
         # update model upper bound
         if t_lp <= t_max: 
@@ -330,41 +336,57 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True,**k
             status = "NEG_UB"
         elif n_iter >= opts['max_iter']:
             status = "MAX_ITER"
-
+        # Gradient delta
+        if n_iter > 0:
+            delta_grad = grad_info['subgrad'] - grad_info_prev['subgrad']
+        else:
+            delta_grad = np.zeros(grad_info['subgrad'].shape)
         # Update vars
         n_iter += 1
         delta_x = x_new - x
         delta_norm = la.norm(delta_x)
+        #plot_along_grad(C, A_vec, x_bar,A_vec_null, x_new,grad_info['subgrad'],1)
         x = x_new
-        
+        # Curvature
+        curv = (delta_grad.T @ delta_x)[0,0] / delta_norm
         # PRINT
         if verbose:
             if n_iter % 10 == 1:
                 header_printed=False
             if header_printed is False:
-                print(' N   | delta_nrm |  eig val  |   t_max   |   t_min     |   gap    | mult. |')
+                print(' N   | delta_nrm |  eig val  |   t_max   |   t_min     |   gap    |   curv   | mult. |')
                 header_printed=True
-            print(f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e} | {grad_info['multplct']:4d} ")
+            print(f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['multplct']:4d} ")
             # Store data
             info=dict(n_iter=n_iter,
                     delta_norm=delta_norm,
+                    x = x,
                     min_eig_curr=grad_info['min_eig'],
                     t_max=t_max,
                     t_min=t_min,
                     gap=gap,
-                    mult=grad_info['multplct']
+                    mult=grad_info['multplct'],
+                    curv = curv,
                     )
             iter_info+=[info]
-            
-            
+    # Final set of multipliers
+    if use_null:
+        mults = x_bar + basis @ x   
+    else:
+        mults = x 
+    
     # Set outputs
     output = dict(H=H,
                   status=status,
-                  mults=x,
+                  mults=mults,
                   gap=gap,
                   t_min=t_min,
                   t_max=t_max,
-                  iter_info=pd.DataFrame(iter_info)
+                  iter_info=pd.DataFrame(iter_info),
+                  cuts = (A_cut, b_cut),
+                  A_vec = A_vec,
+                  A_vec_null = A_vec_null,
+                  x=x
                 )
     
     return output
@@ -451,3 +473,22 @@ def cvxpy_qp(P, q, G, h, A=None, b=None, verbose=True):
     prob.solve(verbose=verbose, solver='CVXOPT', **options)
     return x.value
 
+def plot_along_grad(C, A_vec, mults, A_vec_null, mults_null,step, alpha_max):
+    alphas = np.linspace(0,alpha_max,100)
+    min_eigs = np.zeros(alphas.shape)
+    for i in range(len(alphas)):
+        step_alpha = mults_null + alphas[i]*step
+        # Apply step
+        H_alpha = get_cert_mat(C, A_vec, mults, A_vec_null, step_alpha)
+        # Check new minimum eigenvalue
+        grad_info = get_grad_info(H_alpha,A_vec,k=10,method="direct")
+        min_eigs[i] = grad_info['min_eig']
+        
+    # Plot min eig
+    plt.figure()
+    plt.plot(alphas, min_eigs, color='r')
+    plt.show()
+        
+    
+    
+    return f

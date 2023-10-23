@@ -209,7 +209,7 @@ def run_eopt_project(prob_file="test_prob_1.pkl"):
                                 x_cand=x_0,
                                 )
     
-def run_eopt_cuts(prob_file="test_prob_1.pkl"):
+def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt):
     # Test SQP method
     # Load data from file
     with open(os.path.join(root_dir,"_test",prob_file),'rb') as file:
@@ -222,6 +222,7 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl"):
     output = solve_eopt_cuts(C=C,
                             Constraints=data['Constraints'],
                             x_cand=x_0,
+                            opts=opts
                             )
     
     # Verify certificate
@@ -235,27 +236,48 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl"):
     assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not possitive")
     return output
     
-def test_eopt_cuts_poly():    
+def test_eopt_cuts_poly(plot=True):    
     # Get inputs
     inputs = poly6_test()
-    # define options
-    opts = dict(tol_eig = 1e-6,            # Eigenvalue tolerance
-                     max_iter=1000,             # Maximum iterations
-                     min_eig_ub = 0.0,          # Upper bound for cutting plane
-                     lambda_level = 0.95,       # level multiplier (for level method)
-                     level_method_bound =1e4,   # below this level, default to vanilla cut plane
-                     tol_null = 1e-5,           # null space tolerance for first order KKT constraints
-                     use_null = True,          # if true, reparameterize problem using null space
-                     )            
-
-    output = solve_eopt_cuts(**inputs, opts=opts)
+    output = solve_eopt_cuts(**inputs)
+    
+    if plot:
+        # Plot Algorithm results
+        C = inputs['C']
+        A_vec = output['A_vec']
+        A_vec_null = output['A_vec_null']
+        mults = output['mults']
+        A_cut,b_cut = output['cuts']
+        x = output['x']
+        vals = output['iter_info']['min_eig_curr'].values
+        x_iter = output['iter_info']['x'].values
+        # Plot the stuff
+        alpha_max = 5
+        alphas = np.expand_dims(np.linspace(-alpha_max,alpha_max,500),axis=1)
+        mneigs = np.zeros(alphas.shape)
+        for i in range(len(alphas)):
+            # Apply step
+            H_alpha = get_cert_mat(C, A_vec, mults, A_vec_null, alphas[i,:])
+            # Check new minimum eigenvalue
+            gi = get_grad_info(H_alpha,A_vec,k=10,method="direct")
+            mneigs[i] = gi['min_eig']
+        plt.figure()
+        plt.plot(alphas, mneigs, '.-r')
+        # Plot Hyperplanes
+        for i in range(A_cut.shape[0]):
+            plt.plot(alphas, -A_cut[i,1]*(alphas+x)+b_cut[0,i])
+            plt.plot(x_iter[i]-x, vals[i],'.k')
+        plt.figure()
+        plt.plot(output['iter_info']['curv'].values)
+        plt.show()
+        
     # Verify certificate
     H = output['H']
     if sp.issparse(H):
         H = H.todense()
     y = H @ inputs['x_cand']
     min_eig = np.min(np.linalg.eig(H)[0])
-    
+    # Error Check 
     np.testing.assert_allclose(y,np.zeros(y.shape),atol=5e-4,rtol=0)
     assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not possitive")
     
@@ -263,7 +285,10 @@ def test_eopt_project():
     run_eopt_project(prob_file="test_prob_6.pkl")
     
 def test_eopt_cuts():
-    run_eopt_cuts(prob_file="test_prob_6.pkl")
+    from cert_tools.eopt_solvers import opts_cut_dflt
+    opts = opts_cut_dflt
+    opts['tol_null'] = 1e-6
+    run_eopt_cuts(prob_file="test_prob_7.pkl", opts=opts)
 
     
         
@@ -281,5 +306,5 @@ if __name__ == "__main__":
     # test_eopt_penalty()
     # test_eopt_sqp()
     
-    test_eopt_cuts()
-    # test_eopt_cuts_poly()
+    # test_eopt_cuts()
+    test_eopt_cuts_poly()
