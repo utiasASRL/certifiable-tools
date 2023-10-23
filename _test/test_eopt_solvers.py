@@ -346,13 +346,10 @@ if __name__ == "__main__":
     # test_subgradient_mult2()
     # test_grad_hess_numerical()
 
-    # QUADRATIC SUBPROBLEM TESTS
-    # test_qp_subproblem()
-
     # EOPT TESTS
     # test_eopt_project()
     # test_eopt_penalty()
     # test_eopt_sqp()
 
-    # test_eopt_cuts()
-    test_eopt_cuts_poly()
+    test_eopt_cuts()
+    # test_eopt_cuts_poly()
