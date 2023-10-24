@@ -1,9 +1,7 @@
 from copy import deepcopy
 
-# Optimization
 import cvxpy as cp
 import numpy as np
-
 
 from cert_tools.eig_tools import get_min_eigpairs
 from cert_tools.sdp_solvers import sdp_opts_dflt

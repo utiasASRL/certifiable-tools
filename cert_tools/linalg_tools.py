@@ -59,13 +59,17 @@ def find_dependent_columns(A_sparse, tolerance=1e-10):
 
 
 def get_nullspace(A_dense, method=METHOD, tolerance=NULL_THRESH):
+    info = {}
+
+    if method != "qrp":
+        print("Warning: method other than qrp is not recommended.")
+
     if method == "svd":
         U, S, Vh = np.linalg.svd(
             A_dense
         )  # nullspace of A_dense is in last columns of V / last rows of Vh
         rank = np.sum(np.abs(S) > tolerance)
         basis = Vh[rank:, :]
-
     elif method == "qr":
         # if A_dense.T = QR, the last n-r columns
         # of R make up the nullspace of A_dense.
@@ -78,23 +82,35 @@ def get_nullspace(A_dense, method=METHOD, tolerance=NULL_THRESH):
         basis = Q[:, sorted_idx[rank:]].T
     elif method == "qrp":
         # Based on Section 5.5.5 "Basic Solutions via QR with Column Pivoting" from Golub and Van Loan.
-
         assert A_dense.shape[0] >= A_dense.shape[1], "only tall matrices supported"
 
-        Q, R, p = la.qr(A_dense, pivoting=True, mode="economic")
+        Q, R, P = la.qr(A_dense, pivoting=True, mode="economic")
+        np.testing.assert_almost_equal((Q @ R)[:, P] - A_dense, 0)
+
         S = np.abs(np.diag(R))
         rank = np.sum(S > tolerance)
-        R1, R2 = R[:rank, :rank], R[:rank, rank:]
-        # [R1  R2]  @  [R1^-1 @ R2] = [R2 - R2]
-        # [0   0 ]     [    -I    ]   [0]
-        N = np.vstack([la.solve_triangular(R1, R2), -np.eye(R2.shape[1])])
+        R1 = R[:rank, :]
+        R11, R12 = R1[:, :rank], R1[:, rank:]
+        # [R11  R12]  @  [R11^-1 @ R12] = [R12 - R12]
+        # [0    0 ]       [    -I    ]    [0]
+        N = np.vstack([la.solve_triangular(R11, R12), -np.eye(R12.shape[1])])
+
+        # Inverse permutation
+        Pinv = np.zeros(len(P), int)
+        for k, p in enumerate(P):
+            Pinv[p] = k
+        LHS = R1[:, Pinv]
+
+        info["Q1"] = Q[:, :rank]
+        info["LHS"] = LHS
 
         basis = np.zeros(N.T.shape)
-        basis[:, p] = N.T
+        basis[:, P] = N.T
     else:
         raise ValueError(method)
 
     # test that it is indeed a null space
     error = A_dense @ basis.T
-    info = {"values": S, "error": error}
+    info["values"] = S
+    info["error"] = error
     return basis, info
