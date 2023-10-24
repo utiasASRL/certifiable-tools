@@ -208,7 +208,7 @@ def run_eopt_project(prob_file="test_prob_1.pkl"):
     )
 
 
-def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt):
+def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt, global_min=True):
     # Test SQP method
     try:
         with open(os.path.join(root_dir, "_test", prob_file), "rb") as file:
@@ -225,9 +225,9 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt):
         x_cand = u[:, [0]] * np.sqrt(s[0])
 
     # Run optimizer
-    C = data["C"].copy()
+    Q = data["Q"].copy()
     output = solve_eopt_cuts(
-        C=C, Constraints=data["Constraints"], x_cand=x_cand, opts=opts
+        Q=Q, Constraints=data["Constraints"], x_cand=x_cand, opts=opts
     )
 
     # Verify certificate
@@ -238,7 +238,14 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt):
     min_eig = np.min(np.linalg.eig(H)[0])
 
     np.testing.assert_allclose(y, 0.0, atol=5e-4, rtol=0)
-    assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not positive")
+    if global_min:
+        assert min_eig >= -1e-6, ValueError(
+            "Minimum Eigenvalue not positive at global min"
+        )
+    else:
+        assert min_eig <= -1e-6, ValueError(
+            "Minimum Eigenvalue not negative at local min"
+        )
     return output
 
 
@@ -251,7 +258,7 @@ def test_eopt_cuts_poly(plot=True):
 
     if plot:
         # Plot Algorithm results
-        C = inputs["C"]
+        C = inputs["Q"]
         A_vec = output["A_vec"]
         A_vec_null = output["A_vec_null"]
         mults = output["mults"]
@@ -302,12 +309,48 @@ def test_eopt_project():
     run_eopt_project(prob_file="test_prob_6.pkl")
 
 
-def test_eopt_cuts(prob_file="test_prob_7.pkl"):
+def test_rangeonly():
+    # range-only with z=x^2+y^2
+    # test_eopt_cuts(prob_file="test_prob_10G.pkl", global_min=True)
+    # test_eopt_cuts(prob_file="test_prob_10Gc.pkl", global_min=True)
+
+    # test_eopt_cuts(prob_file="test_prob_10L.pkl", global_min=False)
+    # test_eopt_cuts(prob_file="test_prob_10Lc.pkl", global_min=False)
+
+    # range-only with z = [x^2, y^2, xy]
+    # test_eopt_cuts(prob_file="test_prob_11G.pkl", global_min=True)
+    test_eopt_cuts(prob_file="test_prob_11Gc.pkl", global_min=True)
+
+    # test_eopt_cuts(prob_file="test_prob_11L.pkl", global_min=False)
+    # test_eopt_cuts(prob_file="test_prob_11Lc.pkl", global_min=False)
+
+
+def test_polynomials():
+    test_eopt_cuts(prob_file="test_prob_8G.pkl", global_min=True)
+    test_eopt_cuts(prob_file="test_prob_8Gc.pkl", global_min=True)
+
+    # test on a new polynomial's local maximum
+    test_eopt_cuts(prob_file="test_prob_8L1.pkl", global_min=False)
+    test_eopt_cuts(prob_file="test_prob_8L1c.pkl", global_min=False)
+
+    # test on a new polynomial's local minimum
+    test_eopt_cuts(prob_file="test_prob_8L2.pkl", global_min=False)
+    test_eopt_cuts(prob_file="test_prob_8L2c.pkl", global_min=False)
+
+    # below all correspond to same polynomial
+    test_eopt_cuts(prob_file="test_prob_9G.pkl", global_min=True)
+    test_eopt_cuts(prob_file="test_prob_9Gc.pkl", global_min=True)
+
+    test_eopt_cuts(prob_file="test_prob_9L.pkl", global_min=False)
+    test_eopt_cuts(prob_file="test_prob_9Lc.pkl", global_min=False)
+
+
+def test_eopt_cuts(prob_file="test_prob_7.pkl", global_min=True):
     from cert_tools.eopt_solvers import opts_cut_dflt
 
     opts = opts_cut_dflt
     opts["tol_null"] = 1e-6
-    run_eopt_cuts(prob_file=prob_file, opts=opts)
+    run_eopt_cuts(prob_file=prob_file, opts=opts, global_min=global_min)
 
 
 if __name__ == "__main__":
@@ -320,9 +363,6 @@ if __name__ == "__main__":
     # test_eopt_project()
     # test_eopt_penalty()
     # test_eopt_sqp()
-    
-    # test_eopt_cuts()
-    test_eopt_cuts_poly()
-    test_eopt_cuts(prob_file="test_prob_9.pkl")
-    test_eopt_cuts(prob_file="test_prob_8.pkl")
-    test_eopt_cuts(prob_file="test_prob_8c.pkl")
+
+    # test on a new polynomial's globoal minimum
+    test_rangeonly()

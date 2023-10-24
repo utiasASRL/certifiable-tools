@@ -85,7 +85,7 @@ def get_nullspace(A_dense, method=METHOD, tolerance=NULL_THRESH):
         assert A_dense.shape[0] >= A_dense.shape[1], "only tall matrices supported"
 
         Q, R, P = la.qr(A_dense, pivoting=True, mode="economic")
-        np.testing.assert_almost_equal((Q @ R)[:, P] - A_dense, 0)
+        np.testing.assert_almost_equal(Q @ R - A_dense[:, P], 0)
 
         S = np.abs(np.diag(R))
         rank = np.sum(S > tolerance)

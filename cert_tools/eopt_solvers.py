@@ -13,6 +13,7 @@ import scipy.linalg as sla
 import scipy.sparse as sp
 import sparseqr as sqr
 from cert_tools.eig_tools import get_min_eigpairs
+from cert_tools.linalg_tools import get_nullspace
 
 # Plotting
 import matplotlib.pyplot as plt
@@ -96,7 +97,7 @@ class CutPlaneModel:
         m.values.pop(ind)
         m.eval_pts.pop(ind)
         # Decrement cut counter
-        m.n_cuts -= len(ind)
+        m.n_cuts -= 1
 
     def evaluate(m, x):
         values = [
@@ -116,7 +117,7 @@ class CutPlaneModel:
             A_eq_lp = None
             b_eq_lp = None
         else:
-            A_eq_lp = m.A_eq
+            A_eq_lp = np.hstack([np.zeros((m.A_eq.shape[0], 1)), m.A_eq])
             b_eq_lp = m.b_eq.squeeze()
         # NOTE: t <= grad @ (x-x_j) + f(x_j) <==>
         # [1 -grad] @ [t; x] <= f(x_j) -grad @ x_j
@@ -160,7 +161,9 @@ class CutPlaneModel:
         # add equality constraints
         if not m.A_eq is None:
             if len(m.b_eq.shape) == 1:
-                b_eq = np.expand_dims(m.b_eq, axis=1)
+                b_eq = m.b_eq[:, None]
+            else:
+                b_eq = m.b_eq
             constraints += [m.A_eq @ (delta + x_prox) == b_eq]
         # Solve Quadratic Program:
         prob = cp.Problem(cp.Minimize(cp.norm2(delta)), constraints)
@@ -256,14 +259,14 @@ def preprocess_constraints(C, Constraints, x_cand, use_null=False, opts=opts_cut
     return A_vec, A_eq, b_eq, A_vec_null, basis.T
 
 
-def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **kwargs):
+def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **kwargs):
     """Solve the certificate/eigenvalue optimization problem using a cutting plane algorithm.
     Current algorithm uses the level method with the target level at a tolerance below zero
     """
     # Preprocess constraints
     use_null = opts["use_null"]
     constr_info = preprocess_constraints(
-        C, Constraints, x_cand, use_null=use_null, opts=opts
+        Q, Constraints, x_cand, use_null=use_null, opts=opts
     )
     A_vec, A_eq, b_eq, A_vec_null, basis = constr_info
     # Get orthogonal vector to x_cand
@@ -272,12 +275,16 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **
     # INITIALIZE
     # Initialize multiplier variables
     if use_null:
-        x_bar = la.lstsq(A_eq, b_eq)[0]
-        x = np.zeros((A_vec_null.shape[1], 1))
+        x_bar = la.lstsq(A_eq, b_eq, rcond=None)[0]
+        x = np.ones((A_vec_null.shape[1], 1))
     else:
-        x = la.lstsq(A_eq, b_eq)[0]
+        x = kwargs.get("x_init", la.lstsq(A_eq, b_eq)[0])
+
     # Init cutting plane model
-    m = CutPlaneModel(x.shape[0])
+    if not use_null:
+        m = CutPlaneModel(x.shape[0], A_eq=A_eq, b_eq=b_eq)
+    else:
+        m = CutPlaneModel(x.shape[0])
     # Intialize status vars for optimization
     status = "RUNNING"
     header_printed = False
@@ -316,14 +323,14 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **
         k = 10
         if use_null:
             # Construct Current Certificate matrix
-            H = get_cert_mat(C, A_vec, x_bar, A_vec_null, x_new)
+            H = get_cert_mat(Q, A_vec, x_bar, A_vec_null, x_new)
             # current gradient and minimum eig
             grad_info = get_grad_info(
                 H=H, A_vec=A_vec_null, k=k, method="direct", v0=x_orth
             )
         else:
             # Construct Current Certificate matrix
-            H = get_cert_mat(C, A_vec, x_new)
+            H = get_cert_mat(Q, A_vec, x_new)
             # current gradient and minimum eig
             grad_info = get_grad_info(H=H, A_vec=A_vec, k=k, method="direct", v0=x_orth)
         # Check minimum eigenvalue
@@ -354,10 +361,13 @@ def solve_eopt_cuts(C, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **
         n_iter += 1
         delta_x = x_new - x
         delta_norm = la.norm(delta_x)
-        # plot_along_grad(C, A_vec, x_bar,A_vec_null, x_new,grad_info['subgrad'],1)
+        plot_along_grad(Q, A_vec, x_bar, A_vec_null, x_new, grad_info["subgrad"], 1)
         x = x_new
         # Curvature
-        curv = (delta_grad.T @ delta_x)[0, 0] / delta_norm
+        if delta_norm > 0:
+            curv = (delta_grad.T @ delta_x)[0, 0] / delta_norm
+        else:
+            curv = 0.0
         # PRINT
         if verbose:
             if n_iter % 10 == 1:
@@ -445,5 +455,3 @@ def plot_along_grad(C, A_vec, mults, A_vec_null, mults_null, step, alpha_max):
     plt.figure()
     plt.plot(alphas, min_eigs, color="r")
     plt.show()
-
-    return f
