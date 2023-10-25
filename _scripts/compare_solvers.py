@@ -20,6 +20,7 @@ def save_all(figname):
         pp = PdfPages(filename)
         figs = [plt.figure(n) for n in plt.get_fignums()]
         for fig in figs:
+            fig.tight_layout()
             fig.savefig(pp, format="pdf")
         pp.close()
 
@@ -29,33 +30,50 @@ def save_all(figname):
 if __name__ == "__main__":
     import pickle
 
-    exploit_centered = False
+    exploit_centered = True
 
-    problem_name = f"test_prob_11G"  # with redundant constraints
-    # problem_name = "test_prob_10Gc" # no redundant constraints
+    # 2D-RO with redundant constraints
+    problem_name = f"test_prob_11Lc"
 
     fname = os.path.join(root_dir, "_test", f"{problem_name}.pkl")
-
     with open(fname, "rb") as f:
         data = pickle.load(f)
 
     # solve_low_rank_sdp(**data)
     # solve_sdp_mosek(**data)
 
-    H, info_feas = solve_feasibility_sdp(**data, adjust=False)
+    H, info_feas = solve_feasibility_sdp(**data, adjust=False, soft_epsilon=False)
     eigs = np.linalg.eigvalsh(H.toarray())[:3]
 
     fig, ax = plt.subplots()
     ax.matshow(H.toarray())
-    ax.set_title(f"H \n{eigs}")
+    ax.set_title(f"H SDP \n{eigs}")
     print("minimum eigenvalues:", eigs)
 
-    info_cuts = solve_eopt(
+    x, info_cuts = solve_eopt(
         **data, exploit_centered=exploit_centered, plot=True
     )  # , x_init=np.array(info_feas["yvals"]))
     # info_qp = solve_eopt_qp(**data, verbose=2)
-    plt.show()
 
-    figname = os.path.join(root_dir, "_plots", f"{problem_name}.pdf")
+    fig, ax = plt.subplots()
+    ax.plot(info_cuts["iter_info"].t_min, color="k")
+    ax.plot(info_cuts["iter_info"].min_eig_curr, color="C1")
+    ax.plot(info_cuts["iter_info"].t_max, color="k")
+    ax.axhline(0, color="k", ls="--")
+    ax.set_yscale("symlog")
+    ax.set_ylim(None, 1.1)
+    # ax.set_yticks([-1, -0.5, 0, 0.5, 1])
+    ax.grid()
+
+    H_eopt = info_cuts["H"]
+    eigs = np.linalg.eigvalsh(H_eopt)[:3]
+
+    fig, ax = plt.subplots()
+    ax.matshow(H_eopt)
+    ax.set_title(f"H eOPT \n{eigs}")
+    print("minimum eigenvalues:", eigs)
+
+    appendix = "_rmv" if exploit_centered else ""
+    figname = os.path.join(root_dir, "_plots", f"{problem_name}{appendix}.pdf")
     save_all(figname)
     print(f"saved all as {figname}")

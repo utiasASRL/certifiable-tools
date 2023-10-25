@@ -304,19 +304,20 @@ def solve_eopt(
         A_vec = A_vec @ basis
         x = np.ones((A_vec.shape[1], 1))
 
-        if plot:
-            eigs = np.linalg.eigvalsh(Q)[:3]
-            axs2[1].matshow(Q)
-            axs2[1].set_title(f"Q new \n{eigs}")
     else:
         x = kwargs.get("x_init", x_bar)
 
     if exploit_centered:
         A_vec = np.hstack(
-            [A.reshape(Q.shape, order="F")[1:, 1:].reshape(-1, 1) for A in A_vec]
+            [A.reshape(Q.shape, order="F")[1:, 1:].reshape(-1, 1) for A in A_vec.T]
         )
         Q = Q[1:, 1:]
         x_cand = x_cand[1:]
+
+    if plot:
+        eigs = np.linalg.eigvalsh(Q)[:3]
+        axs2[1].matshow(Q)
+        axs2[1].set_title(f"Q used \n{eigs}")
 
     # Most general form:
     # Q_bar + sum_i(a_i * A_bar_i)

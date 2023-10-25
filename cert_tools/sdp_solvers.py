@@ -245,7 +245,14 @@ def solve_sdp_mosek(
 
 
 def solve_feasibility_sdp(
-    Q, Constraints, x_cand, adjust=True, verbose=True, sdp_opts=sdp_opts_dflt
+    Q,
+    Constraints,
+    x_cand,
+    adjust=True,
+    verbose=True,
+    sdp_opts=sdp_opts_dflt,
+    soft_epsilon=True,
+    eps_tol=1e-8,
 ):
     """Solve feasibility SDP using the MOSEK API.
 
@@ -268,13 +275,18 @@ def solve_feasibility_sdp(
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
-    eps = cp.Variable()
     H = cp.sum([Q] + [y[i] * Ai for (i, Ai) in enumerate(As)])
     constraints = [H >> 0]
-    constraints += [H @ x_cand <= eps]
-    constraints += [H @ x_cand >= -eps]
-
-    objective = cp.Minimize(eps)
+    if soft_epsilon:
+        eps = cp.Variable()
+        constraints += [H @ x_cand <= eps]
+        constraints += [H @ x_cand >= -eps]
+        objective = cp.Minimize(eps)
+    else:
+        eps = cp.Variable()
+        constraints += [H @ x_cand <= eps_tol]
+        constraints += [H @ x_cand >= -eps_tol]
+        objective = cp.Minimize(1.0)
 
     cprob = cp.Problem(objective, constraints)
     try:
@@ -308,10 +320,10 @@ def solve_feasibility_sdp(
 
     # reverse Q adjustment
     if cost:
-        eps = eps.value
         cost = cost * scale + offset
         yvals[0] = yvals[0] * scale + offset
         H = Q_here + cp.sum([yvals[i] * Ai for (i, Ai) in enumerate(As)])
+        eps = eps.value if soft_epsilon else eps_tol
 
     info = {"X": X, "yvals": yvals, "cost": cost, "msg": msg, "eps": eps}
     return H, info
