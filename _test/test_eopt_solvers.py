@@ -192,46 +192,6 @@ def test_qp_subproblem():
     np.testing.assert_almost_equal(cost_delta, delta_min_eig, decimal=6)
 
 
-def poly6_test():
-    # Sixth order polynomial that requires redundant constraints to solve
-    Q = np.array(
-        [
-            [5.0000, 1.3167, -1.4481, 0],
-            [1.3167, -1.4481, 0, 0.2685],
-            [-1.4481, 0, 0.2685, -0.0667],
-            [0, 0.2685, -0.0667, 0.0389],
-        ]
-    )
-    Constraints = []
-    A = sp.csc_array((4, 4))  # w^2 = 1
-    A[0, 0] = 1
-    Constraints += [(A, 1.0)]
-    A = sp.csc_array((4, 4))  # x^2 = x*x
-    A[2, 0] = 1 / 2
-    A[0, 2] = 1 / 2
-    A[1, 1] = -1
-    Constraints += [(A, 0.0)]
-    A = sp.csc_array((4, 4))  # x^3 = x^2*x
-    A[3, 0] = 1
-    A[0, 3] = 1
-    A[1, 2] = -1
-    A[2, 1] = -1
-    Constraints += [(A, 0.0)]
-    A = sp.csc_array((4, 4))  # x^3*x = x^2*x^2
-    A[3, 1] = 1 / 2
-    A[1, 3] = 1 / 2
-    A[2, 2] = -1
-    Constraints += [(A, 0.0)]
-    # Candidate solution
-    x_cand = np.array([[1.0000, -1.4871, 2.2115, -3.2888]]).T
-    # Dual optimal
-    mults = -np.array([[-3.1937], [2.5759], [-0.0562], [0.8318]])
-
-    # output
-    output = dict(Constraints=Constraints, C=Q, x_cand=x_cand, opt_mults=mults)
-    return output
-
-
 def run_eopt_project(prob_file="test_prob_1.pkl"):
     # Test penalty method
     # Load data from file
@@ -248,54 +208,69 @@ def run_eopt_project(prob_file="test_prob_1.pkl"):
     )
 
 
-def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt):
+def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt, global_min=True):
     # Test SQP method
-    # Load data from file
-    with open(os.path.join(root_dir, "_test", prob_file), "rb") as file:
-        data = pickle.load(file)
+    try:
+        with open(os.path.join(root_dir, "_test", prob_file), "rb") as file:
+            data = pickle.load(file)
+    except FileNotFoundError:
+        print(f"Skipping {prob_file} cause file not found.")
+        return None
+
     # Get global solution
-    u, s, v = np.linalg.svd(data["X"])
-    x_0 = u[:, [0]] * np.sqrt(s[0])
+    if "x_cand" in data:
+        x_cand = data["x_cand"]
+    else:
+        u, s, v = np.linalg.svd(data["X"])
+        x_cand = u[:, [0]] * np.sqrt(s[0])
+
     # Run optimizer
-    C = data["Q"].copy()
-    output = solve_eopt_cuts(
-        C=C, Constraints=data["Constraints"], x_cand=x_0, opts=opts
+    Q = data["Q"].copy()
+    x, output = solve_eopt(
+        Q=Q, Constraints=data["Constraints"], x_cand=x_cand, opts=opts
     )
 
     # Verify certificate
     H = output["H"]
     if sp.issparse(H):
         H = H.todense()
-    y = H @ x_0
+    y = H @ x_cand
     min_eig = np.min(np.linalg.eig(H)[0])
 
-    np.testing.assert_allclose(y, np.zeros(y.shape), atol=5e-4, rtol=0)
-    assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not possitive")
+    np.testing.assert_allclose(y, 0.0, atol=5e-4, rtol=0)
+    if global_min:
+        assert min_eig >= -1e-6, ValueError(
+            "Minimum Eigenvalue not positive at global min"
+        )
+    else:
+        assert min_eig <= -1e-6, ValueError(
+            "Minimum Eigenvalue not negative at local min"
+        )
     return output
 
 
 def test_eopt_cuts_poly(plot=True):
     # Get inputs
-    inputs = poly6_test()
-    output = solve_eopt_cuts(**inputs)
+    from examples.poly6 import get_problem
+
+    inputs = get_problem()
+    x, output = solve_eopt(**inputs)
 
     if plot:
         # Plot Algorithm results
-        C = inputs["C"]
+        Q = output["Q"]
         A_vec = output["A_vec"]
-        A_vec_null = output["A_vec_null"]
-        mults = output["mults"]
         model = output["model"]
-        x = output["x"]
+        mults = output["mults"]
         vals = output["iter_info"]["min_eig_curr"].values
         x_iter = output["iter_info"]["x"].values
         # Plot the stuff
         alpha_max = 5
-        alphas = np.expand_dims(np.linspace(-alpha_max, alpha_max, 500), axis=1)
+        alphas = np.linspace(-alpha_max, alpha_max, 500)[:, None]
         mneigs = np.zeros(alphas.shape)
         for i in range(len(alphas)):
             # Apply step
-            H_alpha = get_cert_mat(C, A_vec, mults, A_vec_null, alphas[i, :])
+            H_alpha = get_cert_mat(Q, A_vec, alphas[i, :] + x)
             # Check new minimum eigenvalue
             gi = get_grad_info(H_alpha, A_vec, k=10, method="direct")
             mneigs[i] = gi["min_eig"]
@@ -306,7 +281,7 @@ def test_eopt_cuts_poly(plot=True):
             cut = model.values[i] + model.gradients[i] * (
                 x + alphas - model.eval_pts[i]
             )
-            plt.plot(alphas, cut)
+            plt.plot(alphas, cut.flatten())
             plt.plot(x_iter[i] - x, vals[i], ".k")
 
         # Plot model
@@ -332,12 +307,48 @@ def test_eopt_project():
     run_eopt_project(prob_file="test_prob_6.pkl")
 
 
-def test_eopt_cuts():
+def test_rangeonly():
+    # range-only with z=x^2+y^2
+    # test_eopt_cuts(prob_file="test_prob_10G.pkl", global_min=True)
+    # test_eopt_cuts(prob_file="test_prob_10Gc.pkl", global_min=True)
+
+    # test_eopt_cuts(prob_file="test_prob_10L.pkl", global_min=False)
+    # test_eopt_cuts(prob_file="test_prob_10Lc.pkl", global_min=False)
+
+    # range-only with z = [x^2, y^2, xy]
+    # test_eopt_cuts(prob_file="test_prob_11G.pkl", global_min=True)
+    test_eopt_cuts(prob_file="test_prob_11Gc.pkl", global_min=True)
+
+    # test_eopt_cuts(prob_file="test_prob_11L.pkl", global_min=False)
+    # test_eopt_cuts(prob_file="test_prob_11Lc.pkl", global_min=False)
+
+
+def test_polynomials():
+    test_eopt_cuts(prob_file="test_prob_8G.pkl", global_min=True)
+    test_eopt_cuts(prob_file="test_prob_8Gc.pkl", global_min=True)
+
+    # test on a new polynomial's local maximum
+    test_eopt_cuts(prob_file="test_prob_8L1.pkl", global_min=False)
+    test_eopt_cuts(prob_file="test_prob_8L1c.pkl", global_min=False)
+
+    # test on a new polynomial's local minimum
+    test_eopt_cuts(prob_file="test_prob_8L2.pkl", global_min=False)
+    test_eopt_cuts(prob_file="test_prob_8L2c.pkl", global_min=False)
+
+    # below all correspond to same polynomial
+    test_eopt_cuts(prob_file="test_prob_9G.pkl", global_min=True)
+    test_eopt_cuts(prob_file="test_prob_9Gc.pkl", global_min=True)
+
+    test_eopt_cuts(prob_file="test_prob_9L.pkl", global_min=False)
+    test_eopt_cuts(prob_file="test_prob_9Lc.pkl", global_min=False)
+
+
+def test_eopt_cuts(prob_file="test_prob_7.pkl", global_min=True):
     from cert_tools.eopt_solvers import opts_cut_dflt
 
     opts = opts_cut_dflt
     opts["tol_null"] = 1e-6
-    run_eopt_cuts(prob_file="test_prob_7.pkl", opts=opts)
+    run_eopt_cuts(prob_file=prob_file, opts=opts, global_min=global_min)
 
 
 if __name__ == "__main__":
@@ -351,5 +362,7 @@ if __name__ == "__main__":
     # test_eopt_penalty()
     # test_eopt_sqp()
 
-    test_eopt_cuts()
+    # test on a new polynomial's globoal minimum
     # test_eopt_cuts_poly()
+    test_eopt_cuts()
+    # test_rangeonly()

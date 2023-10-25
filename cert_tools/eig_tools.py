@@ -4,6 +4,11 @@ import scipy.sparse as sp
 
 def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, v0=None,**kwargs):
     """Wrapper function for calling different minimum eigenvalue methods"""
+
+    if k == H.shape[0] and "lanczos" in method:
+        print(f"Defaulting to direct instead of {method} because k==n(={k})")
+        method = "direct"
+
     if method == "direct":
         if sp.issparse(H):
             H = H.todense()
@@ -31,7 +36,8 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, v0=None,**kwargs):
     sortind = np.argsort(eig_vals)
     eig_vals = eig_vals[sortind[:k]]
     eig_vecs = eig_vecs[:, sortind[:k]]
-    return eig_vals, eig_vecs
+    # make sure return type is not "matrix"
+    return np.array(eig_vals), np.array(eig_vecs)
 
 
 def min_eigs_lanczos(H, k=6, tol=1e-6, v0=None, **kwargs):

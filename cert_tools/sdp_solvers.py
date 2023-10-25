@@ -61,39 +61,11 @@ def get_subgradient(Q, A_list, a):
     return eig_vecs @ U @ eig_vecs.T
 
 
-def solve_Eopt_QP(Q, A_list, a_init=None, max_iters=500, gtol=1e-7):
-    """Solve max_alpha sigma_min (Q + sum_i (alpha_i * A_i)), using the QP algorithm
-    provided by Overton 1988.
-    """
-    if a_init is None:
-        a_init = np.zeros(len(A_list))
-
-    alpha = 1.0
-
-    a = a_init
-    i = 0
-    while i <= max_iters:
-        subgrad = get_subgradient(Q, A_list, a)
-
-        if np.linalg.norm(subgrad) < gtol:
-            msg = "Converged in gradient norm"
-            success = True
-            break
-
-        a += alpha * subgrad
-        i += 1
-        if i == max_iters:
-            msg = "Reached maximum iterations"
-            success = False
-    info = {"success": success, "msg": msg}
-    return a, info
-
-
 def solve_low_rank_sdp(
     Q,
     Constraints,
     rank=1,
-    Y_0=None,
+    x_cand=None,
     adjust=(1, 0),
     options=None,
     limit_constraints=False,
@@ -125,8 +97,8 @@ def solve_low_rank_sdp(
     S = cas.nlpsol("S", "ipopt", nlp)
     # Run Program
     sol_input = dict(lbg=g_rhs, ubg=g_rhs)
-    if not Y_0 is None:
-        sol_input["x0"] = Y_0
+    if not x_cand is None:
+        sol_input["x0"] = x_cand
     r = S(**sol_input)
     Y_opt = r["x"]
     # Reshape and generate SDP solution
@@ -148,7 +120,9 @@ def solve_low_rank_sdp(
     return Y_opt, info
 
 
-def solve_sdp_mosek(Q, Constraints, adjust=False, verbose=True, sdp_opts=sdp_opts_dflt):
+def solve_sdp_mosek(
+    Q, Constraints, adjust=False, verbose=True, sdp_opts=sdp_opts_dflt, **kwargs
+):
     """Solve SDP using the MOSEK API.
 
     Args:
@@ -271,7 +245,14 @@ def solve_sdp_mosek(Q, Constraints, adjust=False, verbose=True, sdp_opts=sdp_opt
 
 
 def solve_feasibility_sdp(
-    Q, A_b_list, x_hat, adjust=True, verbose=True, sdp_opts=sdp_opts_dflt
+    Q,
+    Constraints,
+    x_cand,
+    adjust=True,
+    verbose=True,
+    sdp_opts=sdp_opts_dflt,
+    soft_epsilon=True,
+    eps_tol=1e-8,
 ):
     """Solve feasibility SDP using the MOSEK API.
 
@@ -279,28 +260,33 @@ def solve_feasibility_sdp(
         Q (_type_): Cost Matrix
         Constraints (): List of tuples representing constraints. Each tuple, (A,b) is such that
                         tr(A @ X) == b.
-        x_hat (): Solution candidate.
+        x_cand (): Solution candidate.
         adjust (tuple, optional): Adjustment tuple: (scale,offset) for final cost.
         verbose (bool, optional): If true, prints output to screen. Defaults to True.
 
     Returns:
         _type_: _description_
     """
-    m = len(A_b_list)
+    m = len(Constraints)
     y = cp.Variable(shape=(m,))
 
-    As, b = zip(*A_b_list)
+    As, b = zip(*Constraints)
     b = np.concatenate([np.atleast_1d(bi) for bi in b])
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
     H = cp.sum([Q] + [y[i] * Ai for (i, Ai) in enumerate(As)])
     constraints = [H >> 0]
-    eps = cp.Variable()
-    constraints += [H @ x_hat <= eps]
-    constraints += [H @ x_hat >= -eps]
-
-    objective = cp.Minimize(eps)
+    if soft_epsilon:
+        eps = cp.Variable()
+        constraints += [H @ x_cand <= eps]
+        constraints += [H @ x_cand >= -eps]
+        objective = cp.Minimize(eps)
+    else:
+        eps = cp.Variable()
+        constraints += [H @ x_cand <= eps_tol]
+        constraints += [H @ x_cand >= -eps_tol]
+        objective = cp.Minimize(1.0)
 
     cprob = cp.Problem(objective, constraints)
     try:
@@ -334,10 +320,10 @@ def solve_feasibility_sdp(
 
     # reverse Q adjustment
     if cost:
-        eps = eps.value
         cost = cost * scale + offset
-        H = Q_here + cp.sum([yvals[i] * Ai for (i, Ai) in enumerate(As)])
         yvals[0] = yvals[0] * scale + offset
+        H = Q_here + cp.sum([yvals[i] * Ai for (i, Ai) in enumerate(As)])
+        eps = eps.value if soft_epsilon else eps_tol
 
     info = {"X": X, "yvals": yvals, "cost": cost, "msg": msg, "eps": eps}
     return H, info
