@@ -20,8 +20,7 @@ if __name__ == "__main__":
 
     # with redundant constraints
     fname = os.path.join(root_dir, "_test", "test_prob_11Gc.pkl")
-
-    global_min = True
+    # fname = os.path.join(root_dir, "_test", "test_prob_11G.pkl")
 
     with open(fname, "rb") as f:
         data = pickle.load(f)
@@ -30,6 +29,7 @@ if __name__ == "__main__":
     # solve_sdp_mosek(**data)
 
     H, info_feas = solve_feasibility_sdp(**data, adjust=False)
+    print("minimum eigenvalues:", np.linalg.eigvalsh(H.toarray())[:3])
     info_cuts = solve_eopt_cuts(**data)  # , x_init=np.array(info_feas["yvals"]))
-    info_qp = solve_eopt_qp(**data, verbose=2)
+    # info_qp = solve_eopt_qp(**data, verbose=2)
     print("done")

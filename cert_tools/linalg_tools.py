@@ -82,7 +82,7 @@ def get_nullspace(A_dense, method=METHOD, tolerance=NULL_THRESH):
         basis = Q[:, sorted_idx[rank:]].T
     elif method == "qrp":
         # Based on Section 5.5.5 "Basic Solutions via QR with Column Pivoting" from Golub and Van Loan.
-        assert A_dense.shape[0] >= A_dense.shape[1], "only tall matrices supported"
+        # assert A_dense.shape[0] >= A_dense.shape[1], "only tall matrices supported"
 
         Q, R, P = la.qr(A_dense, pivoting=True, mode="economic")
         np.testing.assert_almost_equal(Q @ R - A_dense[:, P], 0)

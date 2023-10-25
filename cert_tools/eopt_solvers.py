@@ -21,6 +21,9 @@ import matplotlib.pyplot as plt
 # Data storage
 import pandas as pd
 
+# Number of eigenvalues to compute
+k = 10
+
 # Default options for penalty optimization
 opts_dflt = dict(
     tol_eig=1e-8,
@@ -173,7 +176,7 @@ class CutPlaneModel:
 
 
 def get_grad_info(
-    H, A_vec, U=None, tau=1e-8, get_hessian=False, damp_hessian=True, **kwargs
+    H, A_vec, U=None, tau=1e-8, get_hessian=False, damp_hessian=True, v0=None, **kwargs
 ):
     eig_vals, eig_vecs = get_min_eigpairs(H, **kwargs)
     # get minimum eigenvalue
@@ -292,7 +295,6 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **
     t_max = np.inf
     t_min = -np.inf
     iter_info = []
-    # LOOP
     while status == "RUNNING":
         # SOLVE CUT PLANE PROGRAM
         if n_iter > 0:
@@ -304,6 +306,7 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **
                 t_lp, x_lp = m.solve_lp_linprog(use_null)
                 # Compute level projection
                 level = t_min + opts["lambda_level"] * (t_lp - t_min)
+
                 # Condition on level required for now for solving projection
                 if (
                     np.abs(level) <= opts["level_method_bound"]
@@ -318,9 +321,8 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **
             # Initialization step
             x_new = x.copy()
             t_lp = m.evaluate(x_new)
+
         # CUT PLANE UPDATE
-        # Number of eigenvalues to compute
-        k = 10
         if use_null:
             # Construct Current Certificate matrix
             H = get_cert_mat(Q, A_vec, x_bar, A_vec_null, x_new)
@@ -333,9 +335,7 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **
             H = get_cert_mat(Q, A_vec, x_new)
             # current gradient and minimum eig
             grad_info = get_grad_info(H=H, A_vec=A_vec, k=k, method="direct", v0=x_orth)
-        # Check minimum eigenvalue
-        if grad_info["min_eig"] > t_min:
-            t_min = grad_info["min_eig"]
+
         # Add Cuts
         m.add_cut(grad_info, x_new)
 
@@ -343,8 +343,10 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **
         # update model upper bound
         if t_lp <= t_max:
             t_max = t_lp
-        # define gap
-        gap = t_max - t_min
+        # update model lower bound
+        if grad_info["min_eig"] > t_min:
+            t_min = grad_info["min_eig"]
+
         # termination criteria
         if t_min >= -opts["tol_eig"]:
             status = "POS_LB"
@@ -352,24 +354,26 @@ def solve_eopt_cuts(Q, Constraints, x_cand, opts=opts_cut_dflt, verbose=True, **
             status = "NEG_UB"
         elif n_iter >= opts["max_iter"]:
             status = "MAX_ITER"
-        # Gradient delta
-        if n_iter > 0:
-            delta_grad = grad_info["subgrad"] - grad_info_prev["subgrad"]
-        else:
-            delta_grad = np.zeros(grad_info["subgrad"].shape)
+
         # Update vars
         n_iter += 1
-        delta_x = x_new - x
-        delta_norm = la.norm(delta_x)
-        plot_along_grad(Q, A_vec, x_bar, A_vec_null, x_new, grad_info["subgrad"], 1)
         x = x_new
-        # Curvature
-        if delta_norm > 0:
-            curv = (delta_grad.T @ delta_x)[0, 0] / delta_norm
-        else:
-            curv = 0.0
+        # plot_along_grad(Q, A_vec, x_bar, A_vec_null, x_new, grad_info["subgrad"], 1)
+
         # PRINT
         if verbose:
+            gap = t_max - t_min
+            if n_iter > 1:
+                delta_grad = grad_info["subgrad"] - grad_info_prev["subgrad"]
+            else:
+                delta_grad = np.zeros(grad_info["subgrad"].shape)
+            delta_x = x_new - x
+            delta_norm = la.norm(delta_x)
+            if delta_norm > 0:
+                curv = (delta_grad.T @ delta_x)[0, 0] / delta_norm
+            else:
+                curv = 0.0
+
             if n_iter % 10 == 1:
                 header_printed = False
             if header_printed is False:
