@@ -226,7 +226,7 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt, global_min=Tr
 
     # Run optimizer
     Q = data["Q"].copy()
-    output = solve_eopt_cuts(
+    x, output = solve_eopt(
         Q=Q, Constraints=data["Constraints"], x_cand=x_cand, opts=opts
     )
 
@@ -254,25 +254,23 @@ def test_eopt_cuts_poly(plot=True):
     from examples.poly6 import get_problem
 
     inputs = get_problem()
-    output = solve_eopt_cuts(**inputs)
+    x, output = solve_eopt(**inputs)
 
     if plot:
         # Plot Algorithm results
-        C = inputs["Q"]
+        Q = output["Q"]
         A_vec = output["A_vec"]
-        A_vec_null = output["A_vec_null"]
-        mults = output["mults"]
         model = output["model"]
-        x = output["x"]
+        mults = output["mults"]
         vals = output["iter_info"]["min_eig_curr"].values
         x_iter = output["iter_info"]["x"].values
         # Plot the stuff
         alpha_max = 5
-        alphas = np.expand_dims(np.linspace(-alpha_max, alpha_max, 500), axis=1)
+        alphas = np.linspace(-alpha_max, alpha_max, 500)[:, None]
         mneigs = np.zeros(alphas.shape)
         for i in range(len(alphas)):
             # Apply step
-            H_alpha = get_cert_mat(C, A_vec, mults, A_vec_null, alphas[i, :])
+            H_alpha = get_cert_mat(Q, A_vec, alphas[i, :] + x)
             # Check new minimum eigenvalue
             gi = get_grad_info(H_alpha, A_vec, k=10, method="direct")
             mneigs[i] = gi["min_eig"]
@@ -283,7 +281,7 @@ def test_eopt_cuts_poly(plot=True):
             cut = model.values[i] + model.gradients[i] * (
                 x + alphas - model.eval_pts[i]
             )
-            plt.plot(alphas, cut)
+            plt.plot(alphas, cut.flatten())
             plt.plot(x_iter[i] - x, vals[i], ".k")
 
         # Plot model
@@ -365,4 +363,6 @@ if __name__ == "__main__":
     # test_eopt_sqp()
 
     # test on a new polynomial's globoal minimum
-    test_rangeonly()
+    # test_eopt_cuts_poly()
+    test_eopt_cuts()
+    # test_rangeonly()
