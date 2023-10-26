@@ -151,10 +151,10 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt, global_min=Tr
     H = output["H"]
     if sp.issparse(H):
         H = H.todense()
-    err_kkt = H @ x_cand
+    err_kkt = np.linalg.norm(H @ x_cand)
     min_eig = np.min(np.linalg.eig(H)[0])
 
-    np.testing.assert_allclose(err_kkt, 0.0, atol=1e-2, rtol=0)
+    np.testing.assert_allclose(err_kkt, 0.0, atol=1e-6, rtol=0)
     if global_min:
         assert min_eig >= -1e-6, ValueError(
             "Minimum Eigenvalue not positive at global min"
@@ -239,11 +239,11 @@ def test_rangeonly():
 def test_mw_localize():
     opts = opts_cut_dflt
     opts["tol_null"] = 1e-6
-    # opts["use_null"] = False
-    # test_eopt_cuts(prob_file="test_prob_1.pkl", global_min=True, opts=opts)
+    test_eopt_cuts(prob_file="test_prob_1.pkl", global_min=True, opts=opts)
     test_eopt_cuts(prob_file="test_prob_2.pkl", global_min=True, opts=opts)
-    # test_eopt_cuts(prob_file="test_prob_3.pkl", global_min=True, opts=opts)
+    test_eopt_cuts(prob_file="test_prob_3.pkl", global_min=False, opts=opts)
     test_eopt_cuts(prob_file="test_prob_4.pkl", global_min=True, opts=opts)
+    test_eopt_cuts(prob_file="test_prob_5.pkl", global_min=False, opts=opts)
     test_eopt_cuts(prob_file="test_prob_7.pkl", global_min=True, opts=opts)
 
 
@@ -267,7 +267,7 @@ def test_polynomials():
     test_eopt_cuts(prob_file="test_prob_9Lc.pkl", global_min=False)
 
 
-def test_eopt_cuts(prob_file="test_prob_2.pkl", global_min=True, opts=opts_cut_dflt):
+def test_eopt_cuts(prob_file="test_prob_6.pkl", global_min=True, opts=opts_cut_dflt):
     run_eopt_cuts(prob_file=prob_file, opts=opts, global_min=global_min)
 
 
@@ -284,6 +284,6 @@ if __name__ == "__main__":
     # test on a new polynomial's globoal minimum
     # test_eopt_cuts_poly()
     # test_eopt_cuts()
-    test_rangeonly()
+    # test_rangeonly()
     # test_polynomials()
-    # test_mw_localize()
+    test_mw_localize()
