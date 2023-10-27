@@ -18,8 +18,6 @@ from cert_tools.linalg_tools import get_nullspace
 # Plotting
 import matplotlib.pyplot as plt
 
-# Performance
-from line_profiler import LineProfiler as profile
 
 # Data storage
 import pandas as pd
@@ -32,7 +30,7 @@ opts_cut_dflt = dict(
     tol_eig=1e-6,  # Eigenvalue tolerance
     max_iter=1000,  # Maximum iterations
     min_eig_ub=1.0,  # Upper bound for cutting plane
-    lambda_level=0.6,  # level multiplier (for level method)
+    lambda_level=0.9,  # level multiplier (for level method)
     level_method_bound=1e5,  # above this level, default to vanilla cut plane
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     use_null=True,  # if true, reparameterize problem using null space
@@ -238,6 +236,7 @@ def preprocess_constraints(C, Constraints, x_cand, use_null=False, opts=opts_cut
     b_bar = -C @ x_cand
 
     # Perform QR decomposition to characterize and work with null space
+    # TODO: we should convert this to a sparse QR decomposition (use sparseqr module)
     basis, info = get_nullspace(A_bar, method="qrp", tolerance=opts["tol_null"])
 
     # Truncate eigenvalues of A_bar to make nullspace more defined (required due to opt tolerances)
@@ -294,7 +293,7 @@ def solve_eopt(
         # Update Q matrix to include the fixed lagrange multipliers
         # TODO: might be clearer if we rename Q here to H_bar or something.
         Q = Q + (A_vec @ x_bar).reshape(Q.shape, order="F")
-        A_vec = A_vec @ basis
+        A_vec = A_vec @ sp.coo_array(basis)
         x = np.zeros((A_vec.shape[1], 1))
 
     else:
