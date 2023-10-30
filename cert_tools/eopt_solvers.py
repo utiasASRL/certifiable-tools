@@ -265,6 +265,7 @@ def solve_eopt(
     verbose=True,
     plot=False,
     exploit_centered=False,
+    method="cuts",
     **kwargs,
 ):
     """Solve the certificate/eigenvalue optimization problem using a cutting plane algorithm.
@@ -274,11 +275,7 @@ def solve_eopt(
     use_null = opts["use_null"]
 
     constr_info = preprocess_constraints(
-        Q,
-        Constraints,
-        x_cand,
-        use_null=use_null,
-        opts=opts,
+        Q, Constraints, x_cand, use_null=use_null, opts=opts
     )
     A_vec, A_eq, b_eq, basis, A_bar = constr_info
 
@@ -328,8 +325,15 @@ def solve_eopt(
     v0 = x_rand - x_cand.T @ x_rand / (x_cand.T @ x_cand)
     kwargs_eig = {"v0": v0}
 
+    if method == "cuts":
+        from cert_tools.eopt_solvers import solve_eopt_cuts as solver
+    elif method == "qp":
+        from cert_tools.eopt_solvers_qp import solve_eopt_qp as solver
+    else:
+        raise ValueError(f"Unknown method {method} in solve_eopt")
+
     if use_null:
-        alphas, info = solve_eopt_cuts(
+        alphas, info = solver(
             Q,
             A_vec,
             A_eq=None,
@@ -340,7 +344,7 @@ def solve_eopt(
         )
         mults = x_bar + basis @ alphas
     else:
-        alphas, info = solve_eopt_cuts(
+        alphas, info = solver(
             Q,
             A_vec,
             A_eq=A_eq,

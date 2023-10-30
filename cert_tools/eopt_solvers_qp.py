@@ -82,7 +82,7 @@ def solve_d_from_indefinite_U(U, Q_1, Constraints, verbose=False):
     return d.value, info
 
 
-def solve_inner_QP(vecs, eigs, Constraints, t, rho, W, verbose=False, lmin=False):
+def solve_inner_QP(vecs, eigs, A_vec, t, rho, W, verbose=False, lmin=False):
     """
     Solve the direction-finding QP (Overton 1992, equations (24) - (27)).
 
@@ -93,7 +93,7 @@ def solve_inner_QP(vecs, eigs, Constraints, t, rho, W, verbose=False, lmin=False
     lambdas = eigs[:t]
     eig_max = lambdas[0]
     n = len(eigs)
-    m = len(Constraints)
+    m = A_vec.shape[1]
 
     d = cp.Variable(m)
     delta = cp.Variable()
@@ -102,7 +102,7 @@ def solve_inner_QP(vecs, eigs, Constraints, t, rho, W, verbose=False, lmin=False
     constraints = []
     rhs = np.diag(lambdas - eig_max)
     lhs = delta * np.eye(t) - cp.sum(
-        [d[k] * Q_1.T @ Constraints[k][0] @ Q_1 for k in range(m)]
+        [d[k] * Q_1.T @ A_vec[:, k].reshape((n, n), order="F") @ Q_1 for k in range(m)]
     )
     # constraints.append(rhs A_list== lhs)
     for i in range(t):
@@ -111,7 +111,13 @@ def solve_inner_QP(vecs, eigs, Constraints, t, rho, W, verbose=False, lmin=False
     constraints += [
         delta
         - cp.sum(
-            [d[k] * vecs[:, i].T @ Constraints[k][0] @ vecs[:, i] for k in range(m)]
+            [
+                d[k]
+                * vecs[:, i].T
+                @ A_vec[:, k].reshape((n, n), order="F")
+                @ vecs[:, i]
+                for k in range(m)
+            ]
         )
         >= eigs[i] - eig_max
         for i in range(t, n)
@@ -148,9 +154,10 @@ def solve_inner_QP(vecs, eigs, Constraints, t, rho, W, verbose=False, lmin=False
     return U, d, info
 
 
-def compute_current_W(vecs, eigs, Constraints, t, w):
+def compute_current_W(vecs, eigs, A_vec, t, w):
     Q_1 = vecs[:, :t]
-    m = len(Constraints)
+    n = Q_1.shape[0]
+    m = A_vec.shape[1]
     U = cp.Variable((t, t), symmetric=True)
     constraints = [
         U >> 0,
@@ -159,7 +166,12 @@ def compute_current_W(vecs, eigs, Constraints, t, w):
         cp.norm2(
             cp.trace(U)
             - 1
-            + cp.sum([cp.trace(Q_1.T @ Constraints[k][0] @ Q_1 @ U) for k in range(m)])
+            + cp.sum(
+                [
+                    cp.trace(Q_1.T @ A_vec[:, k].reshape((n, n), order="F") @ Q_1 @ U)
+                    for k in range(m)
+                ]
+            )
         )
     )
     prob = cp.Problem(obj, constraints=constraints)
@@ -176,11 +188,11 @@ def compute_current_W(vecs, eigs, Constraints, t, w):
             G_jk = (
                 2
                 * Q_1.T
-                @ Constraints[k][0]
+                @ A_vec[:, k].reshape((n, n), order="F")
                 @ Q_1_bar
                 @ np.diag([1 / (w - L_bar[i]) for i in range(L_bar.shape[0])])
                 @ Q_1_bar.T
-                @ Constraints[j][0]
+                @ A_vec[:, j].reshape((n, n), order="F")
                 @ Q_1
             )
             if t == 1:
@@ -191,13 +203,12 @@ def compute_current_W(vecs, eigs, Constraints, t, w):
     return W
 
 
-def f_eopt(Q, Constraints, x, lmin=False):
+def f_eopt(Q, A_vec, x, lmin=False):
     """Objective of E-OPT"""
     # below doesn't work for sparse matrices.
     # H = Q + np.sum([x_i * Ai[None] for x_i, Ai in zip(x, A_list)], axis=0)[0]
     H = deepcopy(Q)
-    for i in range(len(Constraints)):
-        H += x[i] * Constraints[i][0]
+    H += (A_vec @ x).reshape(Q.shape, order="F")
     if lmin:
         eigs, __ = get_min_eigpairs(H, k=1, method="lanczos")
         return eigs[0]
@@ -236,25 +247,35 @@ def solve_eopt_qp_simple(Q, A_list, a_init=None, max_iters=500, gtol=1e-7):
 
 def solve_eopt_qp(
     Q,
-    Constraints,
-    x_cand=None,
+    A_vec,
+    A_eq=None,
+    b_eq=None,
+    xinit=None,
     max_iters=1000,
     gtol=1e-10,
     verbose=1,
-    lmin=False,
-    l_threshold=None,
+    lmin=True,
+    l_threshold=0,
+    kwargs_eig={},
 ):
-    """Solve E_OPT: min_x sigma_max (Q + sum_i (x_i * A_i)), using the QP algorithm
-                             ----------H(x)---------
+    """Solve E_OPT: min_x sigma_max (Q + sum_m (x_m * A_m)), using the QP algorithm
+                                    ----------H(x)---------
     provided by Overton 1992 (adaptation of Overton 1988).
+
+    :param A_vec: NxM matrix of vectorized constraints.
 
     :param lmin: solve instead max_x sigma_min (Q + sum_i (x_i * A_i))
     """
-    m = len(Constraints)
+    m = A_vec.shape[1]
     n = Q.shape[0]
 
-    if x_cand is None:
-        x_cand = np.zeros(m)
+    if (A_eq is not None) or (b_eq is not None):
+        raise NotImplementedError("Can't use equality constraints in QP yet.")
+
+    if xinit is None:
+        xinit = np.zeros(m)
+    else:
+        xinit = xinit.flatten()
 
     # parameter for numerical multiplicity calculation
     tau = 1e-5
@@ -266,64 +287,67 @@ def solve_eopt_qp(
     W = np.zeros((m, m))
     U = None
 
-    x = np.zeros(m)
     k = min(n, 5)
     method = "direct" if k == n else "lanczos"
 
     i = 0
-
+    x = xinit
+    print("it \t alpha \t\t l_min")
     while i <= max_iters:
         H = deepcopy(Q)
-        for j in range(m):
-            H += x[j] * Constraints[j][0]
+        H += (A_vec @ x).reshape((n, n), order="F")
 
-        if lmin:
+        if lmin:  # maximize the minimum eigenvalue
             eigs, vecs = get_min_eigpairs(H, k=k, method=method)
             t = get_min_multiplicity(eigs, tau)
-        else:
+        else:  # minimize the maximum eigenvalue
             eigs, vecs = get_min_eigpairs(-H, k=k, method=method)
             eigs = -eigs
             vecs = -vecs
             t = get_max_multiplicity(eigs, tau)
 
-        if i == 0 and verbose > 1:
-            print(f"start \t eigs {eigs} \t t {t} \t \t lambda {eigs[0]}")
+        if i == 0 and verbose > 0:
+            print(f"start \t ------ \t {eigs[0]:1.4e}")
 
         Q_1 = vecs[:, :t]
 
         if t == 1:
             grad = np.concatenate(
-                [Q_1.T @ A_i @ Q_1 for A_i, b in Constraints]
+                [Q_1.T @ A_i.reshape((n, n), order="F") @ Q_1 for A_i in A_vec.T]
             ).flatten()
-            if lmin:
-                d = grad / np.linalg.norm(grad)
-            else:
-                d = -grad / np.linalg.norm(grad)
+            l_old = f_eopt(Q, A_vec, x, lmin=lmin)
+            d = grad / np.linalg.norm(grad)
+
+            # make sure that the gradient is valid
+            if lmin:  # we want to go up (maximize lmin)
+                assert f_eopt(Q, A_vec, x + d * 1e-8, lmin=lmin) > l_old
+            else:  # we want to go down (minimize lmax)
+                assert f_eopt(Q, A_vec, x + d * 1e-8, lmin=lmin) < l_old
 
             # backgracking, using Nocedal Algorithm 3.1
             alpha = backtrack_start
-            l_old = f_eopt(Q, Constraints, x, lmin=lmin)
             while np.linalg.norm(alpha * d) > gtol:
-                l_new = f_eopt(Q, Constraints, x + alpha * d, lmin=lmin)
+                l_new = f_eopt(Q, A_vec, x + alpha * d, lmin=lmin)
                 # trying to minimize lambda
-                if not lmin and l_new <= l_old + backtrack_cutoff * alpha * grad.T @ d:
+                l_test = l_old + backtrack_cutoff * alpha * grad.T @ d
+                if not lmin and l_new <= l_test:
                     break
 
                 # trying to maximize l_min
-                elif lmin and l_new >= l_old + backtrack_cutoff * alpha * grad.T @ d:
+                elif lmin and (l_new >= l_test):
                     break
                 alpha *= backtrack_factor
 
-            if np.linalg.norm(alpha * d) <= gtol:
-                msg = "Converged in stepsize"
-                success = True
-                break
+            # if np.linalg.norm(alpha * d) <= gtol:
+            #    msg = "Converged in stepsize"
+            #    success = True
+            #    break
             x += alpha * d
         else:
             # w = max(Q_1.T @ H @ Q_1)
             # W = compute_current_W(vecs, eigs, A_list, t, w)
             U, d, info = solve_inner_QP(
-                vecs, eigs, Constraints, t, rho=rho, W=W, verbose=verbose
+                vecs, eigs, A_vec, t, rho=rho, W=W, verbose=verbose
             )
 
             if not info["success"]:
@@ -333,7 +357,7 @@ def solve_eopt_qp(
 
             if eigs_U[0] >= -TOL_EIG:
                 l_emp = eigs[0] + info["delta"]
-                l_new = f_eopt(Q, Constraints, x + d)
+                l_new = f_eopt(Q, A_vec, x + d)
                 if abs(l_new - l_emp) > 1e-10:
                     print(
                         f"Expected lambda not equal to actual lambda! {l_new:.6e}, {l_emp:.6e}"
@@ -347,18 +371,18 @@ def solve_eopt_qp(
                     x += d
             else:
                 print("Warning: U not p.s.d.")
-                d, info = solve_d_from_indefinite_U(U, Q_1, Constraints)
-                l_new = f_eopt(Q, Constraints, x + d)
+                d, info = solve_d_from_indefinite_U(U, Q_1, A_vec)
+                l_new = f_eopt(Q, A_vec, x + d)
                 if d is not None:
                     x += d
                 else:
                     tau = 0.5 * tau
                     rho = 0.5 * rho
 
-        if verbose > 1:
-            print(f"it {i} \t eigs {eigs} \t t {t} \t d {d} \t lambda {l_new}")
+        if verbose > 0:
+            print(f"it {i} \t {alpha:1.4f} \t {l_new:1.4e}")
 
-        if l_threshold and (l_new >= l_threshold):
+        if (l_threshold is not None) and (l_new >= l_threshold):
             msg = "Found valid certificate"
             success = True
             break
@@ -371,16 +395,16 @@ def solve_eopt_qp(
     return x, info
 
 
-def solve_eopt_backtrack(Q, Constraints, x_init=None, max_iters=10, gtol=1e-7):
+def solve_eopt_backtrack(Q, A_vec, x_init=None, max_iters=10, gtol=1e-7):
     """Solve min_x sigma_max (Q + sum_i (x_i * A_i)), using the QP algorithm
                              ----------H(x)---------
     provided by Overton 1992 (adaptation of Overton 1988).
     """
-    m = len(Constraints)
+    m = A_vec.shape[1]
     n = Q.shape[0]
 
     if x_init is None:
-        x_init = np.zeros(len(Constraints))
+        x_init = np.zeros(m)
 
     # parameter for numerical multiplicity calculation
     tau = 1e-3
@@ -394,18 +418,18 @@ def solve_eopt_backtrack(Q, Constraints, x_init=None, max_iters=10, gtol=1e-7):
     x = x_init
     i = 0
     while i <= max_iters:
-        H = Q + np.sum([x_i * Ai for x_i, (Ai, b) in zip(x, Constraints)])
+        H = Q + (A_vec @ x).reshape(Q.shape, order="F")
         k = min(n, 10)
-        eigs, vecs = get_min_eigpairs(H, k=k, method=method)
+        eigs, vecs = get_min_eigpairs(H, k=k)
         eigs = eigs[::-1]
         vecs = vecs[:, ::-1]
         t = get_min_multiplicity(eigs, tau)
         Q_1 = vecs[:, :t]
 
         w = max(Q_1.T @ H @ Q_1)
-        W = compute_current_W(vecs, eigs, Constraints, t, w)
+        W = compute_current_W(vecs, eigs, A_vec, t, w)
 
-        U, d, info = solve_inner_QP(vecs, eigs, Constraints, t, rho=rho, W=W)
+        U, d, info = solve_inner_QP(vecs, eigs, A_vec, t, rho=rho, W=W)
 
         eigs = np.linalg.eigvalsh(U)
         if eigs[0] >= -TOL_EIG:
