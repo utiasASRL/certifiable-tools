@@ -18,23 +18,12 @@ from cert_tools.linalg_tools import get_nullspace
 # Plotting
 import matplotlib.pyplot as plt
 
+
 # Data storage
 import pandas as pd
 
 # Number of eigenvalues to compute
 k = 10
-
-# Default options for penalty optimization
-opts_dflt = dict(
-    tol_eig=1e-8,
-    tol_pen=1e-8,
-    max_iter=1000,
-    rho=100,
-    btrk_c=0.5,
-    btrk_rho=0.5,
-    grad_sqr_tol=1e-14,
-    tol_cost=1e-14,
-)
 
 # Default options for cutting plane method
 opts_cut_dflt = dict(
@@ -149,6 +138,7 @@ class CutPlaneModel:
         """Solve level set projection problem: return the closest point to x_prox
         (the prox-center) such that the acheived model value is above the provided
         level"""
+
         # VARIABLES
         delta = cp.Variable((m.n_vars, 1), "delta")
         t = cp.Variable(1, "t")
@@ -246,6 +236,7 @@ def preprocess_constraints(C, Constraints, x_cand, use_null=False, opts=opts_cut
     b_bar = -C @ x_cand
 
     # Perform QR decomposition to characterize and work with null space
+    # TODO: we should convert this to a sparse QR decomposition (use sparseqr module)
     basis, info = get_nullspace(A_bar, method="qrp", tolerance=opts["tol_null"])
 
     # Truncate eigenvalues of A_bar to make nullspace more defined (required due to opt tolerances)
@@ -267,9 +258,7 @@ def solve_eopt(
     exploit_centered=False,
     **kwargs,
 ):
-    """Solve the certificate/eigenvalue optimization problem using a cutting plane algorithm.
-    Current algorithm uses the level method with the target level at a tolerance below zero
-    """
+    """Solve the certificate/eigenvalue optimization problem"""
     # Preprocess constraints
     use_null = opts["use_null"]
 
@@ -299,10 +288,13 @@ def solve_eopt(
     # INITIALIZE
     # Initialize multiplier variables
     x_bar = la.lstsq(A_eq, b_eq, rcond=None)[0]
+
     if use_null:
+        # Update Q matrix to include the fixed lagrange multipliers
+        # TODO: might be clearer if we rename Q here to H_bar or something.
         Q = Q + (A_vec @ x_bar).reshape(Q.shape, order="F")
-        A_vec = A_vec @ basis
-        x = np.ones((A_vec.shape[1], 1))
+        A_vec = A_vec @ sp.coo_array(basis)
+        x = np.zeros((A_vec.shape[1], 1))
 
     else:
         x = kwargs.get("x_init", x_bar)
@@ -367,8 +359,11 @@ def solve_eopt_cuts(
     opts=opts_cut_dflt,
     kwargs_eig={},
 ):
+    """Solve the certificate/eigenvalue optimization problem using a cutting plane algorithm.
+    Current algorithm uses the level method with the target level at a tolerance below zero
+    """
+    # Initialize cut plane model
     m = CutPlaneModel(xinit.shape[0], A_eq=A_eq, b_eq=b_eq)
-
     # Intialize status vars for optimization
     status = "RUNNING"
     header_printed = False
@@ -421,11 +416,13 @@ def solve_eopt_cuts(
             t_min = grad_info["min_eig"]
 
         # termination criteria
-        if t_min >= -opts["tol_eig"]:
+        if t_min >= -opts["tol_eig"]:  # positive lower bound
             status = "POS_LB"
-        elif t_max < -2 * opts["tol_eig"]:
+        elif m.n_vars == 0:  # no variables (i.e. no redundant constraints)
+            status = "NO_VAR"
+        elif t_max < -2 * opts["tol_eig"]:  # negative upper bound
             status = "NEG_UB"
-        elif n_iter >= opts["max_iter"]:
+        elif n_iter >= opts["max_iter"]:  # max iterations
             status = "MAX_ITER"
 
         # Update vars
