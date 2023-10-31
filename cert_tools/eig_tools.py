@@ -19,9 +19,14 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, v0=None, **kwargs):
     elif method == "lanczos":
         if not sp.issparse(H):
             H = sp.csr_array(H)
-        eig_vals, eig_vecs = sp.linalg.eigsh(
-            H, k=k, which="SA", return_eigenvectors=True, v0=v0
-        )
+
+        try:
+            eig_vals, eig_vecs = sp.linalg.eigsh(
+                H, k=k, which="SA", return_eigenvectors=True, v0=v0
+            )
+        except sp.linalg._eigen.arpack.ArpackNoConvergence:
+            print(f"Warning: lanczos failed, running again with direct.")
+            return get_min_eigpairs(H, method="direct", k=k, tol=tol, v0=v0, **kwargs)
     elif method == "lanczos-shifted":
         if not sp.issparse(H):
             H = sp.csr_array(H)

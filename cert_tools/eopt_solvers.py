@@ -17,7 +17,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # Number of eigenvalues to compute
-k = 10
+EIG_METHOD = "direct"  # "lobpcg"
+N_EIGS_LANCZOS = 1
 
 # Default options for cutting plane method
 opts_cut_dflt = dict(
@@ -32,11 +33,15 @@ opts_cut_dflt = dict(
     use_hessian=False,  # Flag to select whether to use the Hessian
 )
 
+opts_sub_dflt = dict(
+    tol_eig=1e-8, max_iters=200, gtol=1e-7, k_max=1, use_null=True, tol_null=1e-5
+)
+
 # see Nocedal & Wright, Algorithm 3.1
 # rho (how much to decrase alpha)
 backtrack_factor = 0.5
 #  c (when to stop)
-backtrack_cutoff = 0.5
+backtrack_cutoff = 0.2
 # starting value for alpha
 backtrack_start = 10.0
 
@@ -170,7 +175,7 @@ class CutPlaneModel:
 def f_eopt(Q, A_vec, x, **kwargs_eig):
     """Objective of E-OPT"""
     H = get_cert_mat(Q, A_vec, x)
-    grad_info = get_grad_info(H=H, A_vec=A_vec, k=1, method="direct", **kwargs_eig)
+    grad_info = get_grad_info(H=H, A_vec=A_vec, k=1, **kwargs_eig)
     return grad_info["min_eig"]
 
 
@@ -330,7 +335,7 @@ def solve_eopt(
     # Get orthogonal vector to x_cand for eigenvalue solver
     x_rand = np.random.rand(*x_cand.shape) - 1
     v0 = x_rand - x_cand.T @ x_rand / (x_cand.T @ x_cand)
-    kwargs_eig = {"v0": v0}
+    kwargs_eig = {"v0": v0, "method": EIG_METHOD}
 
     if method == "cuts":
         solver = solve_eopt_cuts
@@ -349,7 +354,7 @@ def solve_eopt(
             kwargs_eig=kwargs_eig,
             verbose=verbose,
         )
-        mults = x_bar.flatten() + basis @ alphas
+        mults = x_bar.flatten() + basis @ alphas.flatten()
     else:
         alphas, info = solver(
             Q,
@@ -360,7 +365,7 @@ def solve_eopt(
             kwargs_eig=kwargs_eig,
             verbose=verbose,
         )
-        mults = alphas
+        mults = alphas.flatten()
 
     info["mults"] = mults
     info["A_vec"] = A_vec
@@ -374,12 +379,9 @@ def solve_eopt_sub(
     A_eq=None,
     b_eq=None,
     xinit=None,
-    max_iters=1000,
-    gtol=1e-7,
+    opts=opts_sub_dflt,
     verbose=1,
-    tol_eig=1e-8,
     kwargs_eig={},
-    k_max=1,
 ):
     """Solve E_OPT using a simple subgradient method with backtracking.
 
@@ -397,14 +399,16 @@ def solve_eopt_sub(
     else:
         xinit = xinit.flatten()
 
-    k = min(n, k_max)
-    kwargs_eig = dict(k=k, method="direct")
+    k = min(n, opts["k_max"])
+    kwargs_eig = dict(k=N_EIGS_LANCZOS, method=EIG_METHOD)
 
     i = 0
     x = xinit
     print("it \t alpha \t t \t l_min")
     np.random.seed(1)
-    while i <= max_iters:
+
+    l_new = None
+    while i <= opts["max_iters"]:
         H = get_cert_mat(Q, A_vec, x)
         grad_info = get_grad_info(H, A_vec, U=None, **kwargs_eig)
         t = grad_info["t"]
@@ -423,18 +427,22 @@ def solve_eopt_sub(
 
         # backgracking, using Nocedal Algorithm 3.1
         alpha = backtrack_start
-        while np.linalg.norm(alpha * d) > gtol:
-            H = get_cert_mat(Q, A_vec, x + alpha * d)
-            grad_info = get_grad_info(H, A_vec, U=None, **kwargs_eig)
-            l_new = grad_info["min_eig"]
 
+        H = get_cert_mat(Q, A_vec, x + alpha * d)
+        grad_info = get_grad_info(H, A_vec, U=None, **kwargs_eig)
+        l_new = grad_info["min_eig"]
+
+        while np.linalg.norm(alpha * d) > opts["gtol"]:
             l_test = l_old + backtrack_cutoff * alpha * grad.T @ d
-
             if l_new >= l_test:
                 break
             alpha *= backtrack_factor
+            H = get_cert_mat(Q, A_vec, x + alpha * d)
+            grad_info = get_grad_info(H, A_vec, U=None, **kwargs_eig)
+            kwargs_eig["v0"] = grad_info["min_vec"]
+            l_new = grad_info["min_eig"]
 
-        if np.linalg.norm(alpha * d) <= gtol:
+        if np.linalg.norm(alpha * d) <= opts["gtol"]:
             msg = "Converged in stepsize"
             success = True
             break
@@ -443,16 +451,16 @@ def solve_eopt_sub(
         if verbose > 0:
             print(f"it {i} \t {alpha:1.4f} \t {t} \t {l_new:1.4e}")
 
-        if (tol_eig is not None) and (l_new >= -tol_eig):
+        if (opts["tol_eig"] is not None) and (l_new >= -opts["tol_eig"]):
             msg = "Found valid certificate"
             success = True
             break
 
         i += 1
-        if i == max_iters:
+        if i == opts["max_iters"]:
             msg = "Reached maximum iterations"
             success = False
-    info = {"success": success, "msg": msg, "lambda": l_new, "H": H}
+    info = {"success": success, "msg": msg, "min_eig": l_new, "H": H}
     return x, info
 
 
@@ -511,7 +519,7 @@ def solve_eopt_cuts(
         # Construct Current Certificate matrix
         H = get_cert_mat(Q, A_vec, x_new)
         # current gradient and minimum eig
-        grad_info = get_grad_info(H=H, A_vec=A_vec, k=k, method="direct", **kwargs_eig)
+        grad_info = get_grad_info(H=H, A_vec=A_vec, **kwargs_eig)
 
         # Add Cuts
         m.add_cut(grad_info, x_new)
@@ -578,6 +586,7 @@ def solve_eopt_cuts(
             )
             print(f"{t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['t']:4d}")
     return x, dict(
+        min_eig=grad_info["min_eig"],
         H=H,
         status=status,
         gap=gap,
@@ -620,7 +629,7 @@ def plot_along_grad(C, A_vec, mults, step, alpha_max):
         # Apply step
         H_alpha = get_cert_mat(C, A_vec, step_alpha)
         # Check new minimum eigenvalue
-        grad_info = get_grad_info(H_alpha, A_vec, k=10, method="direct")
+        grad_info = get_grad_info(H_alpha, A_vec, k=1)
         min_eigs[i] = grad_info["min_eig"]
 
     # Plot min eig
