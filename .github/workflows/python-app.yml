@@ -5,9 +5,9 @@ name: Python application
 
 on:
   push:
-    branches: [ "fix_quadratic" ]
+    branches: [ "main" ]
   pull_request:
-    branches: [ "fix_quadratic" ]
+    branches: [ "main" ]
 
 permissions:
   contents: read
