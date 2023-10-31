@@ -1,7 +1,6 @@
 import numpy as np
 import scipy.linalg as la
 
-import sparseqr as sqr
 
 METHOD = "qrp"
 NULL_THRESH = 1e-5
@@ -24,6 +23,7 @@ def find_dependent_columns(A_sparse, tolerance=1e-10):
     """
     Returns a list of indices corresponding to the columns of A_sparse that are linearly dependent.
     """
+    import sparseqr as sqr
     # Use sparse rank revealing QR
     # We "solve" a least squares problem to get the rank and permutations
     # This is the cheapest way to use sparse QR, since it does not require
