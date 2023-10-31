@@ -9,6 +9,7 @@ This file describes the test problems that appear in this test directory. All te
 | Constraints | List of 2-tuples (A,b) that describe constraints $\left< A, X\right> = b$|
 | adjust | 2-tuple with scale and offset for preconditioning Q | 
 | X | Solution to SDP|
+| x_cand | candidate solution to QCQP |
 |cost| optimal SDP cost|
 
 
@@ -27,3 +28,5 @@ This file describes the test problems that appear in this test directory. All te
 | test_prob_11.pkl* | Range-only localization with 4 anchors, 1 position, full quadratic substitution (with redundant constraints), Created by `constraint_learning/examples/ro_lifter.py` | 
 | test_prob_12.pkl* | Same as test_prob_11, but with 3 positions. | 
 | test_prob_13.pkl* | Same as test_prob_11, but with 10 positions.|
+
+*these files also come in variants "G/L" for global / local candidate solutions, and "c" for the centered version.
