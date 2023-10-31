@@ -7,3 +7,6 @@ __pycache__/
 *.ipynb
 *.egg-info/
 _plots/
+
+solve_cvxpy_*.ptf
+solve_mosek.ptf
