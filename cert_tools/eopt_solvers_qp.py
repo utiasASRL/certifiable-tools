@@ -1,6 +1,8 @@
 import cvxpy as cp
 import numpy as np
 
+import mosek
+
 from cert_tools.eig_tools import get_min_eigpairs
 from cert_tools.eopt_solvers import get_cert_mat
 from cert_tools.eopt_solvers import backtrack_cutoff, backtrack_factor, backtrack_start
@@ -49,7 +51,12 @@ def solve_d_from_indefinite_U(U, Q_1, A_vec, verbose=False):
         == -vec @ vec.T
     ]
     prob = cp.Problem(cp.Minimize(1), constraints=constraint)
-    prob.solve(solver="MOSEK", verbose=verbose > 2, **sdp_opts_dflt)
+
+    try:
+        prob.solve(solver="MOSEK", verbose=verbose > 2, **sdp_opts_dflt)
+    except mosek.Error:
+        print("Did not find MOSEK, using different solver.")
+        prob.solve(solver="CVXOPT", verbose=verbose > 2)
 
     success = d.value is not None
     info = {"msg": prob.status, "success": success, "delta": delta.value}
@@ -101,7 +108,11 @@ def solve_inner_QP(vecs, eigs, A_vec, t, rho, W, verbose=False, lmin=False):
     constraints += [cp.norm_inf(d) <= rho]
 
     prob = cp.Problem(cp.Minimize(delta + d.T @ W @ d), constraints=constraints)
-    prob.solve(solver="MOSEK", verbose=verbose > 2, **sdp_opts_dflt)
+    try:
+        prob.solve(solver="MOSEK", verbose=verbose > 2, **sdp_opts_dflt)
+    except mosek.Error:
+        print("Did not find MOSEK, using different solver.")
+        prob.solve(solver="CVXOPT", verbose=verbose > 2)
 
     success = d.value is not None
     if success:

@@ -2,6 +2,8 @@
 import cvxpy as cp
 from scipy.optimize import linprog
 
+import mosek
+
 # Maths
 import numpy as np
 import numpy.linalg as la
@@ -167,7 +169,11 @@ class CutPlaneModel:
             constraints += [m.A_eq @ (delta + x_prox) == b_eq]
         # Solve Quadratic Program:
         prob = cp.Problem(cp.Minimize(cp.norm2(delta)), constraints)
-        prob.solve(solver="MOSEK", verbose=False)
+        try:
+            prob.solve(solver="MOSEK", verbose=False)
+        except mosek.Error:
+            print("Did not find MOSEK, using different solver.")
+            prob.solve(solver="CVXOPT", verbose=False)
         # Get solution
         return t.value, delta.value + x_prox
 

@@ -24,4 +24,5 @@ dependencies:
       - sparseqr
       - gurobipy
       - quadprog
+      - cvxopt
       - -e .  

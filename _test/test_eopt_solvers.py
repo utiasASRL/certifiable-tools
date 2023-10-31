@@ -226,7 +226,7 @@ def off_test_eopt_cuts_poly(plot=True):
     min_eig = np.min(np.linalg.eig(H)[0])
     # Error Check
     np.testing.assert_allclose(y, np.zeros(y.shape), atol=5e-4, rtol=0)
-    assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not possitive")
+    assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not positive")
 
 
 def test_rangeonly():

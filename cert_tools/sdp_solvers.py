@@ -22,7 +22,7 @@ sdp_opts_dflt["mosek_params"] = {
     "MSK_DPAR_INTPNT_CO_TOL_DFEAS": 1e-8,
     "MSK_IPAR_INTPNT_SOLVE_FORM": "MSK_SOLVE_DUAL",
 }
-sdp_opts_dflt["save_file"] = "solve_cvxpy_.ptf"
+# sdp_opts_dflt["save_file"] = "solve_cvxpy_.ptf"
 
 
 def adjust_Q(Q, offset=True, scale=True):
@@ -97,7 +97,7 @@ def solve_low_rank_sdp(
     S = cas.nlpsol("S", "ipopt", nlp)
     # Run Program
     sol_input = dict(lbg=g_rhs, ubg=g_rhs)
-    if not x_cand is None:
+    if x_cand is not None:
         sol_input["x0"] = x_cand
     r = S(**sol_input)
     Y_opt = r["x"]
@@ -291,10 +291,14 @@ def solve_feasibility_sdp(
     cprob = cp.Problem(objective, constraints)
     try:
         sdp_opts["verbose"] = verbose
-        cprob.solve(
-            solver="MOSEK",
-            **sdp_opts,
-        )
+        try:
+            cprob.solve(
+                solver="MOSEK",
+                **sdp_opts,
+            )
+        except mosek.Error:
+            print("Did not find MOSEK, using different solver.")
+            cprob.solve(verbose=verbose, solver="CVXOPT")
     except Exception as e:
         eps = None
         cost = None
