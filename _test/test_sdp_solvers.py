@@ -21,7 +21,7 @@ def run_mosek_solve(prob_file="test_prob_1.pkl"):
     """Utility for creating test problems"""
     # Test mosek solve on a simple problem
     # Load data from file
-    with open(os.path.join(root_dir, "_test", prob_file), "rb") as file:
+    with open(os.path.join(root_dir, "_examples", prob_file), "rb") as file:
         data = pickle.load(file)
 
     # Run mosek solver
@@ -32,7 +32,7 @@ def run_mosek_solve(prob_file="test_prob_1.pkl"):
     print(f"SVR:  {s[0]/s[1]}")
     print(f"Cost: {cost} ")
 
-    with open(os.path.join(root_dir, "_test", prob_file), "wb") as file:
+    with open(os.path.join(root_dir, "_examples", prob_file), "wb") as file:
         data["X"] = X
         data["cost"] = cost
         pickle.dump(data, file)
@@ -41,7 +41,7 @@ def run_mosek_solve(prob_file="test_prob_1.pkl"):
 def low_rank_solve(prob_file="test_prob_1.pkl", rank=2):
     # Test mosek solve on a simple problem
     # Load data from file
-    with open(os.path.join(root_dir, "_test", prob_file), "rb") as file:
+    with open(os.path.join(root_dir, "_examples", prob_file), "rb") as file:
         data = pickle.load(file)
 
     # Feasible initial condition

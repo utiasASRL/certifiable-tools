@@ -1,17 +1,11 @@
 # Optimization
-import mosek
 import cvxpy as cp
 from scipy.optimize import linprog
-import scipy
-import gurobipy as gp
-import quadprog
 
 # Maths
 import numpy as np
 import numpy.linalg as la
-import scipy.linalg as sla
 import scipy.sparse as sp
-import sparseqr as sqr
 from cert_tools.eig_tools import get_min_eigpairs
 from cert_tools.linalg_tools import get_nullspace
 
@@ -48,6 +42,11 @@ opts_cut_dflt = dict(
     cut_buffer=30,  # number of cuts stored at once, FIFO
     use_hessian=False,  # Flag to select whether to use the Hessian
 )
+
+# see Nocedal & Wright, Algorithm 3.1
+backtrack_factor = 0.5  # rho (how much to decrase alpha)
+backtrack_cutoff = 0.5  #  c (when to stop)
+backtrack_start = 10.0  # starting value for alpha
 
 
 class CutPlaneModel:
@@ -175,9 +174,14 @@ class CutPlaneModel:
         return t.value, delta.value + x_prox
 
 
-def get_grad_info(
-    H, A_vec, U=None, tau=1e-8, get_hessian=False, damp_hessian=True, **kwargs_eig
-):
+def f_eopt(Q, A_vec, x, **kwargs_eig):
+    """Objective of E-OPT"""
+    H = get_cert_mat(Q, A_vec, x)
+    grad_info = get_grad_info(H=H, A_vec=A_vec, k=1, method="direct", **kwargs_eig)
+    return grad_info["min_eig"]
+
+
+def get_grad_info(H, A_vec, U=None, tau=1e-8, get_hessian=False, **kwargs_eig):
     eig_vals, eig_vecs = get_min_eigpairs(H, **kwargs_eig)
     # get minimum eigenvalue
     min_eig = np.min(eig_vals)
@@ -190,8 +194,12 @@ def get_grad_info(
     t = Q_1.shape[1]
     # Scale variable
     if U is None:
-        U = 1 / t * np.eye(t)
-    # Compute gradient
+        U = np.zeros((t, t))
+        i = np.random.choice(range(t))
+        U[i, i] = 1.0
+        # U = 1 / t * np.eye(t)
+
+    # Compute gradient; Q_1 is of shape Nxt
     subgrad = A_vec.T @ (Q_1 @ U @ Q_1.T).reshape(-1, 1, order="F")
     # Compute Hessian
     if t == 1 and get_hessian:
@@ -211,9 +219,10 @@ def get_grad_info(
     grad_info = dict(
         subgrad=np.array(subgrad),
         hessian=hessian,
+        eig_vals=eig_vals,
         min_eig=min_eig,
         min_vec=Q_1,
-        multplct=t,
+        t=t,
         damp=damp,
     )
     return grad_info
@@ -299,8 +308,7 @@ def solve_eopt(
     if use_null:
         Q = Q + (A_vec @ x_bar).reshape(Q.shape, order="F")
         A_vec = A_vec @ basis
-        x = np.ones((A_vec.shape[1], 1))
-
+        x = np.zeros((A_vec.shape[1], 1))
     else:
         x = kwargs.get("x_init", x_bar)
 
@@ -326,9 +334,9 @@ def solve_eopt(
     kwargs_eig = {"v0": v0}
 
     if method == "cuts":
-        from cert_tools.eopt_solvers import solve_eopt_cuts as solver
-    elif method == "qp":
-        from cert_tools.eopt_solvers_qp import solve_eopt_qp as solver
+        solver = solve_eopt_cuts
+    elif method == "sub":
+        solver = solve_eopt_sub
     else:
         raise ValueError(f"Unknown method {method} in solve_eopt")
 
@@ -342,7 +350,7 @@ def solve_eopt(
             kwargs_eig=kwargs_eig,
             verbose=verbose,
         )
-        mults = x_bar + basis @ alphas
+        mults = x_bar.flatten() + basis @ alphas
     else:
         alphas, info = solver(
             Q,
@@ -359,6 +367,94 @@ def solve_eopt(
     info["A_vec"] = A_vec
     info["Q"] = Q
     return alphas, info
+
+
+def solve_eopt_sub(
+    Q,
+    A_vec,
+    A_eq=None,
+    b_eq=None,
+    xinit=None,
+    max_iters=1000,
+    gtol=1e-7,
+    verbose=1,
+    tol_eig=1e-8,
+    kwargs_eig={},
+    k_max=1,
+):
+    """Solve E_OPT using a simple subgradient method with backtracking.
+
+    :param A_vec: n*2xm matrix of vectorized constraints.
+    """
+    m = A_vec.shape[1]
+    n = Q.shape[0]
+    assert A_vec.shape[0] == n**2
+
+    if (A_eq is not None) or (b_eq is not None):
+        raise NotImplementedError("Can't use equality constraints in QP yet.")
+
+    if xinit is None:
+        xinit = np.zeros(m)
+    else:
+        xinit = xinit.flatten()
+
+    k = min(n, k_max)
+    kwargs_eig = dict(k=k, method="direct")
+
+    i = 0
+    x = xinit
+    print("it \t alpha \t t \t l_min")
+    np.random.seed(1)
+    while i <= max_iters:
+        H = get_cert_mat(Q, A_vec, x)
+        grad_info = get_grad_info(H, A_vec, U=None, **kwargs_eig)
+        t = grad_info["t"]
+        if t > 1:
+            print(f"multiplicity {t}")
+        if i == 0 and verbose > 0:
+            print(f"start \t ------ \t {t} \t {grad_info['min_eig']:1.4e}")
+
+        grad = grad_info["subgrad"][:, 0]
+        d = grad / np.linalg.norm(grad)
+
+        l_old = grad_info["min_eig"]
+
+        # make sure that the gradient is valid
+        # assert f_eopt(Q, A_vec, x + d * 1e-8, lmin=lmin) > l_old
+
+        # backgracking, using Nocedal Algorithm 3.1
+        alpha = backtrack_start
+        while np.linalg.norm(alpha * d) > gtol:
+            H = get_cert_mat(Q, A_vec, x + alpha * d)
+            grad_info = get_grad_info(H, A_vec, U=None, **kwargs_eig)
+            l_new = grad_info["min_eig"]
+
+            l_test = l_old + backtrack_cutoff * alpha * grad.T @ d
+
+            if l_new >= l_test:
+                break
+            alpha *= backtrack_factor
+
+        if np.linalg.norm(alpha * d) <= gtol:
+            msg = "Converged in stepsize"
+            success = True
+            break
+        x += alpha * d
+
+        if verbose > 0:
+            print(f"it {i} \t {alpha:1.4f} \t {t} \t {l_new:1.4e}")
+
+        if (tol_eig is not None) and (l_new >= -tol_eig):
+            msg = "Found valid certificate"
+            success = True
+            break
+
+        i += 1
+        if i == max_iters:
+            msg = "Reached maximum iterations"
+            success = False
+    info = {"success": success, "msg": msg, "lambda": l_new, "H": H}
+    return x, info
 
 
 def solve_eopt_cuts(
@@ -459,7 +555,7 @@ def solve_eopt_cuts(
             t_max=t_max,
             t_min=t_min,
             gap=gap,
-            mult=grad_info["multplct"],
+            mult=grad_info["t"],
             curv=curv,
         )
         iter_info += [info]
@@ -472,7 +568,7 @@ def solve_eopt_cuts(
                 )
                 header_printed = True
             print(
-                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['multplct']:4d} "
+                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['t']:4d} "
             )
     return x, dict(
         H=H,

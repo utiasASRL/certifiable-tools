@@ -290,6 +290,7 @@ def solve_feasibility_sdp(
 
     cprob = cp.Problem(objective, constraints)
     try:
+        sdp_opts["verbose"] = verbose
         cprob.solve(
             solver="MOSEK",
             **sdp_opts,

@@ -195,7 +195,7 @@ def test_qp_subproblem():
 def run_eopt_project(prob_file="test_prob_1.pkl"):
     # Test penalty method
     # Load data from file
-    with open(os.path.join(root_dir, "_test", prob_file), "rb") as file:
+    with open(os.path.join(root_dir, "_examples", prob_file), "rb") as file:
         data = pickle.load(file)
     # Get global solution
     u, s, v = np.linalg.svd(data["X"])
@@ -211,7 +211,7 @@ def run_eopt_project(prob_file="test_prob_1.pkl"):
 def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt, global_min=True):
     # Test SQP method
     try:
-        with open(os.path.join(root_dir, "_test", prob_file), "rb") as file:
+        with open(os.path.join(root_dir, "_examples", prob_file), "rb") as file:
             data = pickle.load(file)
     except FileNotFoundError:
         print(f"Skipping {prob_file} cause file not found.")

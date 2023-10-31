@@ -6,7 +6,6 @@ import matplotlib.pylab as plt
 
 from cert_tools.sdp_solvers import solve_feasibility_sdp
 from cert_tools.eopt_solvers import solve_eopt
-from cert_tools.eopt_solvers_qp import solve_eopt_qp
 
 np.set_printoptions(precision=2)
 
@@ -33,36 +32,20 @@ if __name__ == "__main__":
 
     plot = False
 
-    exploit_centered = True
+    exploit_centered = False
 
-    # 2D-RO with redundant constraints
-    problem_name = f"test_prob_11G"
-    method = "cuts"
+    # 2D-RO with redundant constraints, one position
+    # problem_name = f"test_prob_11L"
+
+    # 2D-RO with redundant constraints, 3 positions
+    # problem_name = f"test_prob_12G"
+
+    # 2D-RO with redundant constraints, 10 positions
+    problem_name = f"test_prob_13Gc"
 
     fname = os.path.join(root_dir, "_test", f"{problem_name}.pkl")
     with open(fname, "rb") as f:
         data = pickle.load(f)
-
-    # solve_low_rank_sdp(**data)
-    # solve_sdp_mosek(**data)
-
-    t1 = time.time()
-    H, info_feas = solve_feasibility_sdp(**data, adjust=False, soft_epsilon=False)
-    print(f"------- time for SDP: {(time.time() - t1)*1e3:.0f} ms")
-
-    if plot:
-        eigs = np.linalg.eigvalsh(H.toarray())[:3]
-
-        fig, ax = plt.subplots()
-        ax.matshow(H.toarray())
-        ax.set_title(f"H SDP \n{eigs}")
-        print("minimum eigenvalues:", eigs)
-
-    t1 = time.time()
-    x, info_cuts = solve_eopt(
-        **data, exploit_centered=exploit_centered, plot=plot, method="cuts"
-    )  # , x_init=np.array(info_feas["yvals"]))
-    print(f"------- time for cuts: {(time.time() - t1)*1e3:.0f} ms")
 
     # info_qp = solve_eopt_qp(**data, verbose=2)
     t1 = time.time()
@@ -70,10 +53,31 @@ if __name__ == "__main__":
         **data,
         exploit_centered=exploit_centered,
         plot=plot,
-        method="qp",
+        method="sub",
         use_null=True,
     )  # , x_init=np.array(info_feas["yvals"]))
-    print(f"------- time for qp: {(time.time() - t1)*1e3:.0f} ms")
+    print(f"------- time for sub: {(time.time() - t1)*1e3:.0f} ms")
+
+    t1 = time.time()
+    H, info_feas = solve_feasibility_sdp(
+        **data, adjust=False, soft_epsilon=False, verbose=False
+    )
+    print(f"------- time for SDP: {(time.time() - t1)*1e3:.0f} ms")
+    if plot and (H is not None):
+        eigs = np.linalg.eigvalsh(H.toarray())[:3]
+
+        fig, ax = plt.subplots()
+        ax.matshow(H.toarray())
+        ax.set_title(f"H SDP \n{eigs}")
+        print("minimum eigenvalues:", eigs)
+    elif H is None:
+        print("Warning: SDP didn't solve")
+
+    t1 = time.time()
+    x, info_cuts = solve_eopt(
+        **data, exploit_centered=exploit_centered, plot=plot, method="cuts"
+    )  # , x_init=np.array(info_feas["yvals"]))
+    print(f"------- time for cuts: {(time.time() - t1)*1e3:.0f} ms")
 
     if plot:
         fig, ax = plt.subplots()
