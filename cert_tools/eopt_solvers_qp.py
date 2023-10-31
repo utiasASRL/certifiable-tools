@@ -11,9 +11,12 @@ TOL_EIG = 1e-10
 
 
 # see Nocedal & Wright, Algorithm 3.1
-backtrack_factor = 0.5  # rho (how much to decrase alpha)
-backtrack_cutoff = 0.5  #  c (when to stop)
-backtrack_start = 10.0  # starting value for alpha
+# rho (how much to decrase alpha)
+backtrack_factor = 0.5
+#  c (when to stop)
+backtrack_cutoff = 0.5
+# starting value for alpha
+backtrack_start = 10.0
 
 
 def get_subgradient(Q, Constraints, a):
@@ -86,7 +89,8 @@ def solve_inner_QP(vecs, eigs, Constraints, t, rho, W, verbose=False, lmin=False
     """
     Solve the direction-finding QP (Overton 1992, equations (24) - (27)).
 
-    vecs and eigs are the eig-pairs at a current estimate, and t is the estimated multiplicity of the biggest one.
+    vecs and eigs are the eig-pairs at a current estimate, and t is the estimated multiplicity
+    of the biggest one.
 
     """
     Q_1 = vecs[:, :t]
@@ -396,7 +400,7 @@ def solve_eopt_backtrack(Q, Constraints, x_init=None, max_iters=10, gtol=1e-7):
     while i <= max_iters:
         H = Q + np.sum([x_i * Ai for x_i, (Ai, b) in zip(x, Constraints)])
         k = min(n, 10)
-        eigs, vecs = get_min_eigpairs(H, k=k, method=method)
+        eigs, vecs = get_min_eigpairs(H, k=k)
         eigs = eigs[::-1]
         vecs = vecs[:, ::-1]
         t = get_min_multiplicity(eigs, tau)

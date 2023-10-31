@@ -1,17 +1,11 @@
 # Optimization
-import mosek
 import cvxpy as cp
 from scipy.optimize import linprog
-import scipy
-import gurobipy as gp
-import quadprog
 
 # Maths
 import numpy as np
 import numpy.linalg as la
-import scipy.linalg as sla
 import scipy.sparse as sp
-import sparseqr as sqr
 from cert_tools.eig_tools import get_min_eigpairs
 from cert_tools.linalg_tools import get_nullspace
 
@@ -40,8 +34,8 @@ opts_cut_dflt = dict(
 
 
 class CutPlaneModel:
-    """This class stores all of the information of the cutting plane model. This
-    includes all of the cutting planes as well as any equality constraints.
+    """This class stores all of the information of the cutting plane model.
+    This includes all of the cutting planes as well as any equality constraints.
     This class also stores methods for finding the optimum of the model.
     Model in epigraph form is as follows:
     max t
@@ -152,7 +146,7 @@ class CutPlaneModel:
         # model value larger than specified level
         constraints += [t >= level]
         # add equality constraints
-        if not m.A_eq is None:
+        if m.A_eq is not None:
             if len(m.b_eq.shape) == 1:
                 b_eq = m.b_eq[:, None]
             else:
@@ -371,6 +365,9 @@ def solve_eopt_cuts(
     t_max = np.inf
     t_min = -np.inf
     iter_info = []
+
+    x = None
+    grad_info = None
     while status == "RUNNING":
         # SOLVE CUT PLANE PROGRAM
         if n_iter > 0:
@@ -384,9 +381,8 @@ def solve_eopt_cuts(
                 level = t_min + opts["lambda_level"] * (t_lp - t_min)
 
                 # Condition on level required for now for solving projection
-                if (
-                    np.abs(level) <= opts["level_method_bound"]
-                    and opts["lambda_level"] < 1
+                if (np.abs(level) <= opts["level_method_bound"]) and (
+                    opts["lambda_level"] < 1
                 ):
                     t_qp, x_new = m.solve_level_project(x_prox=x, level=level)
                 else:
@@ -460,12 +456,15 @@ def solve_eopt_cuts(
             if n_iter % 10 == 1:
                 header_printed = False
             if header_printed is False:
-                print(
-                    " N   | delta_nrm |  eig val  |   t_max   |   t_min     |   gap    |   curv   | mult. |"
-                )
+                print(" N   | delta_nrm |  eig val  |   t_max   |", end="")
+                print("   t_min     | gap    |   curv   | mult. |")
                 header_printed = True
             print(
-                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} | {t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['multplct']:4d} "
+                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} |",
+                end="",
+            )
+            print(
+                f"{t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['multplct']:4d}"
             )
     return x, dict(
         H=H,
