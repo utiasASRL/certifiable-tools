@@ -1,11 +1,8 @@
-from copy import deepcopy
-
 import cvxpy as cp
 import numpy as np
 
 from cert_tools.eig_tools import get_min_eigpairs
-from cert_tools.eopt_solvers import f_eopt
-from cert_tools.eopt_solvers import get_cert_mat, get_grad_info
+from cert_tools.eopt_solvers import get_cert_mat
 from cert_tools.sdp_solvers import sdp_opts_dflt
 
 # tolerance for minimum eigevalue: mineig >= -TOL_EIG <=> A >= 0
@@ -13,9 +10,12 @@ TOL_EIG = 1e-10
 
 
 # see Nocedal & Wright, Algorithm 3.1
-backtrack_factor = 0.5  # rho (how much to decrase alpha)
-backtrack_cutoff = 0.5  #  c (when to stop)
-backtrack_start = 10.0  # starting value for alpha
+# rho (how much to decrase alpha)
+backtrack_factor = 0.5
+#  c (when to stop)
+backtrack_cutoff = 0.5
+# starting value for alpha
+backtrack_start = 10.0
 
 
 def get_min_multiplicity(eigs, tau):
@@ -68,7 +68,8 @@ def solve_inner_QP(vecs, eigs, A_vec, t, rho, W, verbose=False, lmin=False):
     """
     Solve the direction-finding QP (Overton 1992, equations (24) - (27)).
 
-    vecs and eigs are the eig-pairs at a current estimate, and t is the estimated multiplicity of the biggest one.
+    vecs and eigs are the eig-pairs at a current estimate, and t is the estimated multiplicity
+    of the biggest one.
 
     """
     Q_1 = vecs[:, :t]
@@ -188,7 +189,7 @@ def compute_current_W(vecs, eigs, A_vec, t, w):
     return W
 
 
-def get_max_eig(Q, A_vec, x_new, tau=1e-5):
+def get_max_eig(Q, A_vec, x_new, tau):
     n = Q.shape[0]
     k = min(n, 5)
     method = "direct" if k == n else "lanczos"
@@ -206,6 +207,7 @@ def solve_eopt_qp(
     max_iters=1000,
     gtol=1e-10,
     verbose=1,
+    tau=1e-5,
     l_threshold=None,
 ):
     """Solve E_OPT: min_x sigma_max (Q + sum_i (x_i * A_i)), using the QP algorithm
@@ -230,7 +232,7 @@ def solve_eopt_qp(
 
     i = 0
     while i <= max_iters:
-        eigs, vecs, t = get_max_eig(Q, A_vec, x)
+        eigs, vecs, t = get_max_eig(Q, A_vec, x, tau)
 
         if i == 0 and verbose > 1:
             print(f"start \t eigs {eigs.round(2)} \t t {t} \t \t lambda {eigs[0]:.4e}")
@@ -247,7 +249,7 @@ def solve_eopt_qp(
 
             l_old = eigs[0]
             while np.linalg.norm(alpha * d) > gtol:
-                eigs, *_ = get_max_eig(Q, A_vec, x + alpha * d)
+                eigs, *_ = get_max_eig(Q, A_vec, x + alpha * d, tau)
                 l_new = eigs[0]
 
                 # trying to minimize l_max
@@ -276,7 +278,7 @@ def solve_eopt_qp(
             if eigs_U[0] >= -TOL_EIG:
                 l_emp = eigs[0] + info["delta"]
 
-                eigs, *_ = get_max_eig(Q, A_vec, x + d)
+                eigs, *_ = get_max_eig(Q, A_vec, x + d, tau)
                 l_new = eigs[0]
                 if abs(l_new - l_emp) > 1e-10:
                     print(
@@ -292,7 +294,7 @@ def solve_eopt_qp(
             else:
                 print("Warning: U not p.s.d.")
                 d, info = solve_d_from_indefinite_U(U, Q_1, A_vec)
-                eigs, *_ = get_max_eig(Q, A_vec, x + d)
+                eigs, *_ = get_max_eig(Q, A_vec, x + d, tau)
                 l_new = eigs[0]
                 if d is not None:
                     x += d

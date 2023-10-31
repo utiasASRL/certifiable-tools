@@ -45,7 +45,8 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, v0=None, **kwargs):
 
 def min_eigs_lanczos(H, k=6, tol=1e-6, v0=None, **kwargs):
     """Use the Lanczos process to get an approximation of minimum eigenpairs.
-    For now just returning only one pair, even if the eigenspace has dimension > 1
+    For now just returning only one pair, even if the eigenspace has
+    dimension > 1
     TODO: Address higher dimensional min eigenspace.
     """
     # Compute Coarse Max Eig
