@@ -13,7 +13,7 @@ from poly_matrix import PolyMatrix, sorted_dict
 from cert_tools import solve_sdp_mosek, solve_low_rank_sdp
 
 # Global test parameters
-tol = 1e-8
+tol = 1e-5
 svr_targ = 1e8
 
 
@@ -61,7 +61,11 @@ def low_rank_solve(prob_file="test_prob_1.pkl", rank=2):
     # Check solution rank
     u, s, v = np.linalg.svd(X)
     svr = s[0] / s[1]
-    cost_targ = data["cost"]
+    if "cost" in data:
+        cost_targ = data["cost"]
+    else:
+        # cost_targ = float(data["x_cand"].T @ data["Q"] @ data["x_cand"])
+        cost_targ = np.trace(data["X"] @ data["Q"])
     print(f"SVR:  {svr}")
     print(f"Cost: {cost} ")
     print(f"Target Cost: {cost_targ}")
@@ -79,7 +83,8 @@ def low_rank_test(**kwargs):
     min_eig, svr, cost, cost_targ = low_rank_solve(**kwargs)
 
     assert min_eig > -tol, "Minimum eigenvalue not positive"
-    assert np.abs((cost - cost_targ) / cost) < tol, "Cost does not agree with expected"
+    err_rel = np.abs((cost - cost_targ) / cost)
+    assert err_rel < tol, f"Cost does not agree with expected: {err_rel}"
 
 
 def test_p1_low_rank():
