@@ -264,6 +264,7 @@ def solve_eopt(
     verbose=True,
     plot=False,
     exploit_centered=False,
+    method="cuts",
     **kwargs,
 ):
     """Solve the certificate/eigenvalue optimization problem"""
