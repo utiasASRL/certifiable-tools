@@ -5,7 +5,8 @@ def test_eopt_qp():
     """
     Use test problem from Overton 1988
     """
-    from cert_tools import solve_Eopt_QP, f_Eopt
+    from cert_tools.eopt_solvers_qp import get_max_eig
+    from cert_tools.eopt_solvers_qp import solve_eopt_qp
 
     Q = np.eye(2)
     A1 = np.r_[np.c_[1.0, 0.0], np.c_[0.0, -1.0]]
@@ -15,18 +16,17 @@ def test_eopt_qp():
     # this is the example from Overton 1988, for which we know the exact solution.
     kappa = 3.0
     A_list = [A1, A2(kappa)]
-    x_init = [1.0, 2.0]
+    x_init = np.array([1.0, 2.0])
 
-    l_max = f_Eopt(Q, A_list, x_init, lmin=False)
+    A_vec = np.hstack([Ai.reshape((-1, 1)) for Ai in A_list])
+
+    eigs, *_ = get_max_eig(Q, A_vec, x_init)
+    l_max = eigs[0]
     assert abs(l_max - 12.32) < 0.01
 
-    x_sol, info = solve_Eopt_QP(Q, A_list, x_init, verbose=2, lmin=False)
-    U = info["U"]
-    np.testing.assert_allclose(x_sol, 0.0, rtol=1e-7, atol=1e-8)
-    if U is not None:
-        np.testing.assert_allclose(
-            U, np.r_[np.c_[0.5, -5 / (4 * kappa)], np.c_[-5 / (4 * kappa), 0.5]]
-        )
+    x_sol, info = solve_eopt_qp(Q, A_vec, xinit=x_init, verbose=2)
+    assert info["success"] == True
+    np.testing.assert_almost_equal(x_sol, 0.0)
 
     print("big kappa test passed")
 
@@ -34,8 +34,9 @@ def test_eopt_qp():
     # Overton 1988, p. 264, there is a valid descent direction at (0, 0)
     kappa = 2.25
     A_list = [A1, A2(kappa)]
-    x_init = [0.0, 0.0]
-    x_sol, info = solve_Eopt_QP(Q, A_list, x_init, verbose=2)
+    A_vec = -np.hstack([Ai.reshape((-1, 1)) for Ai in A_list])
+    x_init = np.zeros(2)
+    x_sol, info = solve_eopt_qp(Q, A_vec, xinit=x_init, verbose=2)
     assert info["success"] == False
     print("small kappa test passed")
 

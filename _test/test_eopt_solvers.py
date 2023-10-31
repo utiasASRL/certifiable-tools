@@ -36,7 +36,7 @@ def test_subgradient_analytic():
         res["subgrad"],
         res["min_eig"],
         res["hessian"],
-        res["multplct"],
+        res["t"],
     )
     subgrad_true = np.array([Q[0, 0] ** 2, Q[1, 0] ** 2])
     # Check length
@@ -48,7 +48,9 @@ def test_subgradient_analytic():
     # Check eig
     np.testing.assert_almost_equal(min_eig, -1.0)
     # Check subgradient
-    np.testing.assert_allclose(subgrad, subgrad_true, rtol=0, atol=1e-8)
+    np.testing.assert_allclose(
+        subgrad.flatten(), subgrad_true.flatten(), rtol=0, atol=1e-8
+    )
 
 
 def test_grad_hess_numerical():
@@ -229,11 +231,11 @@ def test_rangeonly():
     # test_eopt_cuts(prob_file="test_prob_10Lc.pkl", global_min=False)
 
     # range-only with z = [x^2, y^2, xy]
-    # test_eopt_cuts(prob_file="test_prob_11G.pkl", global_min=True)
+    test_eopt_cuts(prob_file="test_prob_11G.pkl", global_min=True)
     test_eopt_cuts(prob_file="test_prob_11Gc.pkl", global_min=True)
 
-    # test_eopt_cuts(prob_file="test_prob_11L.pkl", global_min=False)
-    # test_eopt_cuts(prob_file="test_prob_11Lc.pkl", global_min=False)
+    test_eopt_cuts(prob_file="test_prob_11L.pkl", global_min=False)
+    test_eopt_cuts(prob_file="test_prob_11Lc.pkl", global_min=False)
 
 
 def test_mw_localize():
@@ -267,11 +269,16 @@ def test_polynomials():
     test_eopt_cuts(prob_file="test_prob_9Lc.pkl", global_min=False)
 
 
-def test_eopt_cuts(prob_file="test_prob_6.pkl", global_min=True, opts=opts_cut_dflt):
+def test_eopt_cuts(prob_file="test_prob_4.pkl", global_min=True, opts=opts_cut_dflt):
     run_eopt_cuts(prob_file=prob_file, opts=opts, global_min=global_min)
 
 
 if __name__ == "__main__":
+    import pytest
+    import sys
+
+    sys.exit(pytest.main([__file__, "-s"]))
+
     # GRADIENT TESTS
     # test_subgradient_analytic()
     # test_grad_hess_numerical()
@@ -286,4 +293,4 @@ if __name__ == "__main__":
     # test_eopt_cuts()
     # test_rangeonly()
     # test_polynomials()
-    test_mw_localize()
+    # test_mw_localize()

@@ -99,8 +99,8 @@ def test_lanczos():
     close_eig_test(method=method, k=2)
 
 
-def test_shifted_lanczos():
-    method = "shifted-lanczos"
+def test_lanczos_shifted():
+    method = "lanczos-shifted"
     rand_sym_mat_test(method=method, n=5, k=2)
     close_eig_test(method=method, k=2)
 
@@ -108,4 +108,4 @@ def test_shifted_lanczos():
 if __name__ == "__main__":
     # test_direct()
     test_lanczos()
-    # test_shifted_lanczos()
+    test_lanczos_shifted()

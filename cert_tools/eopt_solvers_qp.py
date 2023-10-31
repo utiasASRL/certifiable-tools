@@ -4,8 +4,9 @@ import cvxpy as cp
 import numpy as np
 
 from cert_tools.eig_tools import get_min_eigpairs
-from cert_tools.sdp_solvers import sdp_opts_dflt
+from cert_tools.eopt_solvers import f_eopt
 from cert_tools.eopt_solvers import get_cert_mat, get_grad_info
+from cert_tools.sdp_solvers import sdp_opts_dflt
 
 # tolerance for minimum eigevalue: mineig >= -TOL_EIG <=> A >= 0
 TOL_EIG = 1e-10
@@ -15,6 +16,23 @@ TOL_EIG = 1e-10
 backtrack_factor = 0.5  # rho (how much to decrase alpha)
 backtrack_cutoff = 0.5  #  c (when to stop)
 backtrack_start = 10.0  # starting value for alpha
+
+
+def get_min_multiplicity(eigs, tau):
+    "See equations (22), Overton 1992."
+    eig_min = eigs[0]
+    assert eig_min == np.min(eigs), "eigenvalues not sorted!"
+
+    diff = eigs - eig_min - tau * max(1, abs(eig_min))
+    # t is where diff_t <= 0, diff_{t+1} >= 0
+    valid_idx = np.argwhere(diff >= 0)
+    if len(valid_idx):
+        # t_p1 = int(valid_idx[-1])
+        t_p1 = int(valid_idx[0])
+    else:
+        t_p1 = len(eigs)
+    assert diff[t_p1 - 1] <= 0
+    return t_p1
 
 
 def solve_d_from_indefinite_U(U, Q_1, A_vec, verbose=False):
@@ -168,3 +186,133 @@ def compute_current_W(vecs, eigs, A_vec, t, w):
                 W_jk = np.trace(U_est @ G_jk)
             W[j, k] = W[k, j] = W_jk
     return W
+
+
+def get_max_eig(Q, A_vec, x_new, tau=1e-5):
+    n = Q.shape[0]
+    k = min(n, 5)
+    method = "direct" if k == n else "lanczos"
+
+    H = get_cert_mat(Q, A_vec, x_new)
+    eigs, vecs = get_min_eigpairs(-H, k=k, method=method)
+    t = get_min_multiplicity(eigs, tau)
+    return -eigs, -vecs, t
+
+
+def solve_eopt_qp(
+    Q,
+    A_vec,
+    xinit=None,
+    max_iters=1000,
+    gtol=1e-10,
+    verbose=1,
+    l_threshold=None,
+):
+    """Solve E_OPT: min_x sigma_max (Q + sum_i (x_i * A_i)), using the QP algorithm
+                                     ----------H(x)---------
+    provided by Overton 1992 (adaptation of Overton 1988).
+    """
+    # TODO: convert this to max_x sigma_min (H(x))
+    m = A_vec.shape[1]
+    n = Q.shape[0]
+
+    if xinit is None:
+        xinit = np.zeros(m)
+
+    # trust region radios
+    rho = 1.0
+
+    # weight matrix for QP
+    W = np.zeros((m, m))
+    U = None
+
+    x = xinit
+
+    i = 0
+    while i <= max_iters:
+        eigs, vecs, t = get_max_eig(Q, A_vec, x)
+
+        if i == 0 and verbose > 1:
+            print(f"start \t eigs {eigs.round(2)} \t t {t} \t \t lambda {eigs[0]:.4e}")
+
+        Q_1 = vecs[:, :t]
+        if t == 1:
+            grad = np.concatenate(
+                [Q_1.T @ A_i.reshape((n, n), order="F") @ Q_1 for A_i in A_vec.T]
+            ).flatten()
+            d = -grad / np.linalg.norm(grad)
+
+            # backgracking, using Nocedal Algorithm 3.1
+            alpha = backtrack_start
+
+            l_old = eigs[0]
+            while np.linalg.norm(alpha * d) > gtol:
+                eigs, *_ = get_max_eig(Q, A_vec, x + alpha * d)
+                l_new = eigs[0]
+
+                # trying to minimize l_max
+                l_test = l_old + backtrack_cutoff * alpha * grad.T @ d
+                if l_new <= l_test:
+                    break
+                alpha *= backtrack_factor
+
+            if np.linalg.norm(alpha * d) <= gtol:
+                msg = "Converged in stepsize"
+                success = True
+                break
+            x += alpha * d
+        else:
+            # w = max(Q_1.T @ H @ Q_1)
+            # W = compute_current_W(vecs, eigs, A_list, t, w)
+            U, d, info = solve_inner_QP(
+                vecs, eigs, A_vec, t, rho=rho, W=W, verbose=verbose
+            )
+
+            if not info["success"]:
+                raise ValueError("coudn't find feasible direction d")
+
+            eigs_U = np.linalg.eigvalsh(U)
+
+            if eigs_U[0] >= -TOL_EIG:
+                l_emp = eigs[0] + info["delta"]
+
+                eigs, *_ = get_max_eig(Q, A_vec, x + d)
+                l_new = eigs[0]
+                if abs(l_new - l_emp) > 1e-10:
+                    print(
+                        f"Expected lambda not equal to actual lambda! {l_new:.6e}, {l_emp:.6e}"
+                    )
+
+                if np.linalg.norm(d) < gtol:
+                    msg = "Converged in stepsize"
+                    success = True
+                    break
+                else:
+                    x += d
+            else:
+                print("Warning: U not p.s.d.")
+                d, info = solve_d_from_indefinite_U(U, Q_1, A_vec)
+                eigs, *_ = get_max_eig(Q, A_vec, x + d)
+                l_new = eigs[0]
+                if d is not None:
+                    x += d
+                else:
+                    tau = 0.5 * tau
+                    rho = 0.5 * rho
+
+        if verbose > 1:
+            print(
+                f"it {i} \t eigs {eigs.round(2)} \t t {t} \t d {d.round(2)} \t lambda {l_new:.4e}"
+            )
+
+        if l_threshold and (l_new >= l_threshold):
+            msg = "Found valid certificate"
+            success = True
+            break
+
+        i += 1
+        if i == max_iters:
+            msg = "Reached maximum iterations"
+            success = False
+    info = {"success": success, "msg": msg, "U": U, "lambda": l_new}
+    return x, info

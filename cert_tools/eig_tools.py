@@ -26,7 +26,7 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, v0=None, **kwargs):
         if not sp.issparse(H):
             H = sp.csr_array(H)
         eig_vals, eig_vecs = min_eigs_lanczos(H, k=k, tol=tol, v0=v0, **kwargs)
-    elif method == "precond-lanczos":
+    elif method == "lanczos-precond":
         pass
     elif method == "lobpcg":
         if not sp.issparse(H):

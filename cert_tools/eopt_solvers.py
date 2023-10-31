@@ -22,7 +22,7 @@ k = 10
 # Default options for cutting plane method
 opts_cut_dflt = dict(
     tol_eig=1e-6,  # Eigenvalue tolerance
-    max_iter=1000,  # Maximum iterations
+    max_iter=200,  # Maximum iterations
     min_eig_ub=1.0,  # Upper bound for cutting plane
     lambda_level=0.9,  # level multiplier (for level method)
     level_method_bound=1e5,  # above this level, default to vanilla cut plane
@@ -264,6 +264,7 @@ def solve_eopt(
     verbose=True,
     plot=False,
     exploit_centered=False,
+    method="cuts",
     **kwargs,
 ):
     """Solve the certificate/eigenvalue optimization problem"""
