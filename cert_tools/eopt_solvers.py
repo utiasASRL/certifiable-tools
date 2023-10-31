@@ -576,9 +576,7 @@ def solve_eopt_cuts(
                 f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} |",
                 end="",
             )
-            print(
-                f"{t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['multplct']:4d}"
-            )
+            print(f"{t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['t']:4d}")
     return x, dict(
         H=H,
         status=status,

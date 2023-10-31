@@ -181,7 +181,7 @@ def compute_current_W(vecs, eigs, A_vec, t, w):
     return W
 
 
-def get_max_eig(Q, A_vec, x_new, tau):
+def get_max_eig(Q, A_vec, x_new, tau=1e-8):
     n = Q.shape[0]
     k = min(n, 5)
     method = "direct" if k == n else "lanczos"
