@@ -33,9 +33,12 @@ opts_cut_dflt = dict(
 )
 
 # see Nocedal & Wright, Algorithm 3.1
-backtrack_factor = 0.5  # rho (how much to decrase alpha)
-backtrack_cutoff = 0.5  #  c (when to stop)
-backtrack_start = 10.0  # starting value for alpha
+# rho (how much to decrase alpha)
+backtrack_factor = 0.5
+#  c (when to stop)
+backtrack_cutoff = 0.5
+# starting value for alpha
+backtrack_start = 10.0
 
 
 class CutPlaneModel:

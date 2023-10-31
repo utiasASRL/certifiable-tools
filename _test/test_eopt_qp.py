@@ -8,9 +8,11 @@ def test_eopt_qp():
     from cert_tools.eopt_solvers_qp import get_max_eig
     from cert_tools.eopt_solvers_qp import solve_eopt_qp
 
+    def A2(kappa):
+        return np.r_[np.c_[1, kappa], np.c_[kappa, 4]]
+
     Q = np.eye(2)
     A1 = np.r_[np.c_[1.0, 0.0], np.c_[0.0, -1.0]]
-    A2 = lambda kappa: np.r_[np.c_[1, kappa], np.c_[kappa, 4]]
 
     # for large kappa, problem should be easy.
     # this is the example from Overton 1988, for which we know the exact solution.
@@ -25,7 +27,7 @@ def test_eopt_qp():
     assert abs(l_max - 12.32) < 0.01
 
     x_sol, info = solve_eopt_qp(Q, A_vec, xinit=x_init, verbose=2)
-    assert info["success"] == True
+    assert info["success"] is True
     np.testing.assert_almost_equal(x_sol, 0.0)
 
     print("big kappa test passed")
@@ -37,7 +39,7 @@ def test_eopt_qp():
     A_vec = -np.hstack([Ai.reshape((-1, 1)) for Ai in A_list])
     x_init = np.zeros(2)
     x_sol, info = solve_eopt_qp(Q, A_vec, xinit=x_init, verbose=2)
-    assert info["success"] == False
+    assert info["success"] is False
     print("small kappa test passed")
 
 

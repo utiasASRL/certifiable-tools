@@ -1,15 +1,9 @@
-import sys, os
-from os.path import dirname
+import os
 import numpy as np
-import pickle
-import pytest
-import matplotlib.pyplot as plt
-
-sys.path.append(dirname(__file__) + "/../")
-root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
-print("appended:", sys.path[-1])
 
 from cert_tools.eig_tools import get_min_eigpairs
+
+root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
 
 def rand_sym_mat_test(method="direct", n=5, k=1, tol=1e-8):

@@ -3,19 +3,11 @@ import numpy as np
 
 from cert_tools.eig_tools import get_min_eigpairs
 from cert_tools.eopt_solvers import get_cert_mat
+from cert_tools.eopt_solvers import backtrack_cutoff, backtrack_factor, backtrack_start
 from cert_tools.sdp_solvers import sdp_opts_dflt
 
 # tolerance for minimum eigevalue: mineig >= -TOL_EIG <=> A >= 0
 TOL_EIG = 1e-10
-
-
-# see Nocedal & Wright, Algorithm 3.1
-# rho (how much to decrase alpha)
-backtrack_factor = 0.5
-#  c (when to stop)
-backtrack_cutoff = 0.5
-# starting value for alpha
-backtrack_start = 10.0
 
 
 def get_min_multiplicity(eigs, tau):

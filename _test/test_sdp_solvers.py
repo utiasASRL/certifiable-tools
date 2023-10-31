@@ -1,16 +1,10 @@
-import sys, os
-from os.path import dirname
+import os
 import numpy as np
 import pickle
-import pytest
-import matplotlib.pyplot as plt
 
-sys.path.append(dirname(__file__) + "/../")
-root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
-print("appended:", sys.path[-1])
-
-from poly_matrix import PolyMatrix, sorted_dict
 from cert_tools import solve_sdp_mosek, solve_low_rank_sdp
+
+root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
 # Global test parameters
 tol = 1e-5

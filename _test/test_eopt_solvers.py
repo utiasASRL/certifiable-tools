@@ -1,19 +1,15 @@
-from cert_tools.eopt_solvers import *
+import os
+import pickle
+import sys
 
-# Maths
+import matplotlib.pylab as plt
 import numpy as np
 import scipy.sparse as sp
 
-# Data
-import pickle
-
-# System
-import os, sys
-from os.path import dirname
-
-sys.path.append(dirname(__file__) + "/../")
-root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 from cert_tools.eopt_solvers import opts_cut_dflt
+from cert_tools.eopt_solvers import get_grad_info, solve_eopt, get_cert_mat
+
+root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
 
 def test_subgradient_analytic():
@@ -275,7 +271,6 @@ def test_eopt_cuts(prob_file="test_prob_4.pkl", global_min=True, opts=opts_cut_d
 
 if __name__ == "__main__":
     import pytest
-    import sys
 
     sys.exit(pytest.main([__file__, "-s"]))
 
