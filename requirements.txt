@@ -10,3 +10,4 @@ casadi>=3.6.3
 sparseqr>=1.2.1
 gurobipy==10.0.3 
 quadprog==0.1.11
+cvxopt>=1.3.2
