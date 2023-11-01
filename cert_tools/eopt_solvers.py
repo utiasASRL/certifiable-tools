@@ -47,6 +47,18 @@ backtrack_cutoff = 0.2
 # starting value for alpha
 backtrack_start = 10.0
 
+# Options for Spectral Bundle Method
+opts_sbm_dflt = dict(
+    tol_eig=1e-6,  # Eigenvalue tolerance
+    max_iter=1000,  # Maximum iterations
+    tol_null=1e-5,  # null space tolerance for first order KKT constraints
+    use_null=True,  # if true, reparameterize problem using null space
+    rho_trust=1e-1,  # penalty parameter to ensure closeness to trust region.
+    r_c=1,  # Number of current eigenvectors to keep
+    r_p=0,  # Number of previous eigenvectors to keep
+    debug=True,  # Debugging flag
+)
+
 
 class CutPlaneModel:
     """This class stores all of the information of the cutting plane model.
@@ -347,6 +359,8 @@ def solve_eopt(
         solver = solve_eopt_cuts
     elif method == "sub":
         solver = solve_eopt_sub
+    elif method == "sbm":
+        solver = solve_eopt_sbm
     else:
         raise ValueError(f"Unknown method {method} in solve_eopt")
 
@@ -600,6 +614,195 @@ def solve_eopt_cuts(
         t_max=t_max,
         iter_info=pd.DataFrame(iter_info),
         model=m,
+    )
+
+
+class SpectralBundleModel:
+    """SpectralBundleModel class stores all of the information associated with the spectral bundle method for eigenvalue optimization. It also stores methods for updating these variables."""
+
+    def __init__(m, Q, A_vec, V_init, opts=opts_sbm_dflt):
+        # Check that the null space has been removed
+        if not opts["use_null"]:
+            raise ValueError(
+                "Spectral Bundle method requires that the eigenvalue problem is unconstrained. Please preprocess to remove constraints."
+            )
+        # Store shape
+        m.n_vars = A_vec.shape[1]
+        m.n_x = Q.shape[0]
+        # Store constraints and cost
+        m.Q = Q
+        m.A_vec = A_vec
+        # Define aggregate matrix variables
+        # TODO: This needs to be changed for the case of r_bar > 1
+        m.A_X = m.eval_A_X(V_init)
+        m.Q_X = V_init.T @ Q @ V_init
+        # Define the eigenvector matrix
+        m.V = V_init
+        # Store Options
+        m.opts = opts
+        # Debug variables
+        if opts["debug"]:
+            # Store actual X
+            m.X = V_init @ V_init.T
+
+    def eval_A_X(m, V):
+        A_X_list = []
+        for i in range(m.n_vars):
+            A = m.A_vec[:, i].reshape((m.n_x, m.n_x), order="F")
+            if V.shape[0] == V.shape[1]:
+                A_X_list += [np.trace(A @ V)]
+            else:
+                A_X_list += [V.T @ A @ V]
+        return np.vstack(A_X_list)
+
+    def update_vars(m, u, eta, x_prev, grad_info):
+        """update aggregate matrix variables"""
+        # TODO: Currently only implemented for scalar 'u' variable
+        if m.opts["debug"]:
+            m.X = eta * m.X + u * grad_info["min_vec"] @ grad_info["min_vec"].T
+        # Update agreggate variables
+        m.A_X = eta * m.A_X + u * grad_info["subgrad"]
+        m.Q_X = eta * m.Q_X + u * grad_info["min_vec"].T @ m.Q @ grad_info["min_vec"]
+        # Update null space multipliers (simplified because agg X is optimal X)
+        x = x_prev + m.A_X / m.opts["rho_trust"]
+        return x
+
+    def solve_sbm_qp(m, x_curr, grad_info):
+        """Solve Spectral Bundle method subproblem for the case where the SDP variable
+        is scalar."""
+
+        # VARIABLES
+        u = cp.Variable()
+        eta = cp.Variable()
+        # CONSTRAINTS
+        constraints = [u + eta <= 1.0, u >= 0.0, eta >= 0.0]
+        # Objective
+        obj = (
+            eta * (m.Q_X + m.A_X.T @ x_curr)
+            + u * grad_info["min_eig"]
+            + cp.sum_squares(eta * m.A_X + u * grad_info["subgrad"])
+            / 2
+            / m.opts["rho_trust"]
+        )
+        # Solve Quadratic Program:
+        prob = cp.Problem(cp.Minimize(obj), constraints)
+        try:
+            prob.solve(solver="MOSEK", verbose=False)
+        except mosek.Error:
+            print("Did not find MOSEK, using different solver.")
+            prob.solve(solver="CVXOPT", verbose=False)
+        # Get solution
+        return u.value, eta.value
+
+
+def solve_eopt_sbm(
+    Q,
+    A_vec,
+    xinit,
+    A_eq=None,
+    b_eq=None,
+    verbose=True,
+    opts=opts_sbm_dflt,
+    kwargs_eig={},
+):
+    """Solve Eigenvalue Optimization using the spectral bundle method.
+
+    Args:
+        Q (_type_): _description_
+        A_vec (_type_): _description_
+        xinit (_type_): _description_
+        A_eq (_type_, optional): _description_. Defaults to None.
+        b_eq (_type_, optional): _description_. Defaults to None.
+        verbose (bool, optional): _description_. Defaults to True.
+        opts (_type_, optional): _description_. Defaults to opts_cut_dflt.
+        kwargs_eig (dict, optional): _description_. Defaults to {}.
+    """
+    # Intialize status vars for optimization
+    status = "RUNNING"
+    header_printed = False
+    n_iter = 0
+    x_curr = xinit
+    t_max = np.inf
+    t_min = -np.inf
+    iter_info = []
+    grad_info = None
+    m = None
+    while status == "RUNNING":
+        # GET CERTIFICATE AND GRADIENT INFO
+        # Construct Current Certificate matrix
+        H = get_cert_mat(Q, A_vec, x_curr)
+        # current gradient and minimum eig
+        grad_info = get_grad_info(H=H, A_vec=A_vec, **kwargs_eig)
+        # SOLVE SPECTRAL BUNDLE PROGRAM
+        if n_iter > 0:
+            if opts["r_c"] == 1 and opts["r_p"] == 0:
+                u, eta = m.solve_sbm_qp(x_curr=x_curr, grad_info=grad_info)
+            else:
+                raise NotImplementedError
+            # Update variables
+            x_prev = x_curr.copy()
+            x_curr = m.update_vars(u=u, eta=eta, x_prev=x_prev, grad_info=grad_info)
+            delta_x = x_curr - x_prev
+        else:
+            # Initialize SBM model
+            m = SpectralBundleModel(Q, A_vec, grad_info["min_vec"], opts=opts)
+            delta_x = np.zeros(x_curr.shape)
+
+        # STATUS UPDATE
+        # update model upper bound
+        # TODO there is probably a way of computing this from the model.
+        # if t_ub <= t_max:
+        #     t_max = t_ub
+        # update model lower bound
+        if grad_info["min_eig"] > t_min:
+            t_min = grad_info["min_eig"]
+        # termination criteria
+        if t_min >= -opts["tol_eig"]:  # positive lower bound
+            status = "POS_LB"
+        elif m.n_vars == 0:  # no variables (i.e. no redundant constraints)
+            status = "NO_VAR"
+        elif t_max < -2 * opts["tol_eig"]:  # negative upper bound
+            status = "NEG_UB"
+        elif n_iter >= opts["max_iter"]:  # max iterations
+            status = "MAX_ITER"
+        # plot_along_grad(Q, A_vec, x_new, grad_info["subgrad"], 1)
+        # Statistics
+        gap = t_max - t_min
+        delta_norm = la.norm(delta_x)
+        # Store data
+        info = dict(
+            n_iter=n_iter,
+            delta_norm=delta_norm,
+            x=x_curr,
+            min_eig_curr=grad_info["min_eig"],
+            t_max=t_max,
+            t_min=t_min,
+            gap=gap,
+            mult=grad_info["t"],
+        )
+        iter_info += [info]
+        if verbose:
+            if n_iter % 10 == 0:
+                header_printed = False
+            if header_printed is False:
+                print(" N   | delta_nrm |  eig val  |   t_max   |", end="")
+                print("   t_min     | gap    | mult. |")
+                header_printed = True
+            print(
+                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} |",
+                end="",
+            )
+            print(f"{t_min:5.4e} | {gap:5.4e} | {grad_info['t']:4d}")
+        # Update Iterations
+        n_iter += 1
+    return x_curr, dict(
+        min_eig=grad_info["min_eig"],
+        H=H,
+        status=status,
+        gap=gap,
+        t_min=t_min,
+        t_max=t_max,
+        iter_info=pd.DataFrame(iter_info),
     )
 
 
