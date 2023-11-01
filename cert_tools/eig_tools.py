@@ -6,8 +6,10 @@ import scipy.sparse as sp
 def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, v0=None, **kwargs):
     """Wrapper function for calling different minimum eigenvalue methods"""
 
-    if k == H.shape[0] and "lanczos" in method:
-        print(f"Defaulting to direct instead of {method} because k==n(={k})")
+    n = H.shape[0]
+    if k >= n and "lanczos" in method:
+        print(f"Defaulting to direct instead of {method} because k(={k})>=n(={n})")
+        k = min(n, k)
         method = "direct"
 
     if method == "direct":
@@ -17,14 +19,19 @@ def get_min_eigpairs(H, method="lanczos", k=6, tol=1e-8, v0=None, **kwargs):
     elif method == "lanczos":
         if not sp.issparse(H):
             H = sp.csr_array(H)
-        eig_vals, eig_vecs = sp.linalg.eigsh(
-            H, k=k, which="SA", return_eigenvectors=True, v0=v0
-        )
+
+        try:
+            eig_vals, eig_vecs = sp.linalg.eigsh(
+                H, k=k, which="SA", return_eigenvectors=True, v0=v0
+            )
+        except sp.linalg._eigen.arpack.ArpackNoConvergence:
+            print(f"Warning: lanczos failed, running again with direct.")
+            return get_min_eigpairs(H, method="direct", k=k, tol=tol, v0=v0, **kwargs)
     elif method == "lanczos-shifted":
         if not sp.issparse(H):
             H = sp.csr_array(H)
         eig_vals, eig_vecs = min_eigs_lanczos(H, k=k, tol=tol, v0=v0, **kwargs)
-    elif method == "precond-lanczos":
+    elif method == "lanczos-precond":
         pass
     elif method == "lobpcg":
         if not sp.issparse(H):

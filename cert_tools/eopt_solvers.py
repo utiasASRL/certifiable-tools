@@ -2,6 +2,8 @@
 import cvxpy as cp
 from scipy.optimize import linprog
 
+import mosek
+
 # Maths
 import numpy as np
 import numpy.linalg as la
@@ -17,12 +19,13 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # Number of eigenvalues to compute
-k = 10
+EIG_METHOD = "direct"  # "lobpcg"
+N_EIGS_LANCZOS = 1
 
 # Default options for cutting plane method
 opts_cut_dflt = dict(
     tol_eig=1e-6,  # Eigenvalue tolerance
-    max_iter=1000,  # Maximum iterations
+    max_iter=200,  # Maximum iterations
     min_eig_ub=1.0,  # Upper bound for cutting plane
     lambda_level=0.9,  # level multiplier (for level method)
     level_method_bound=1e5,  # above this level, default to vanilla cut plane
@@ -31,6 +34,18 @@ opts_cut_dflt = dict(
     cut_buffer=30,  # number of cuts stored at once, FIFO
     use_hessian=False,  # Flag to select whether to use the Hessian
 )
+
+opts_sub_dflt = dict(
+    tol_eig=1e-8, max_iters=200, gtol=1e-7, k_max=1, use_null=True, tol_null=1e-5
+)
+
+# see Nocedal & Wright, Algorithm 3.1
+# rho (how much to decrase alpha)
+backtrack_factor = 0.5
+#  c (when to stop)
+backtrack_cutoff = 0.2
+# starting value for alpha
+backtrack_start = 10.0
 
 
 class CutPlaneModel:
@@ -154,14 +169,23 @@ class CutPlaneModel:
             constraints += [m.A_eq @ (delta + x_prox) == b_eq]
         # Solve Quadratic Program:
         prob = cp.Problem(cp.Minimize(cp.norm2(delta)), constraints)
-        prob.solve(solver="MOSEK", verbose=False)
+        try:
+            prob.solve(solver="MOSEK", verbose=False)
+        except mosek.Error:
+            print("Did not find MOSEK, using different solver.")
+            prob.solve(solver="CVXOPT", verbose=False)
         # Get solution
         return t.value, delta.value + x_prox
 
 
-def get_grad_info(
-    H, A_vec, U=None, tau=1e-8, get_hessian=False, damp_hessian=True, **kwargs_eig
-):
+def f_eopt(Q, A_vec, x, **kwargs_eig):
+    """Objective of E-OPT"""
+    H = get_cert_mat(Q, A_vec, x)
+    grad_info = get_grad_info(H=H, A_vec=A_vec, k=1, **kwargs_eig)
+    return grad_info["min_eig"]
+
+
+def get_grad_info(H, A_vec, U=None, tau=1e-8, get_hessian=False, **kwargs_eig):
     eig_vals, eig_vecs = get_min_eigpairs(H, **kwargs_eig)
     # get minimum eigenvalue
     min_eig = np.min(eig_vals)
@@ -174,7 +198,11 @@ def get_grad_info(
     t = Q_1.shape[1]
     # Scale variable
     if U is None:
-        U = 1 / t * np.eye(t)
+        U = np.zeros((t, t))
+        i = np.random.choice(range(t))
+        U[i, i] = 1.0
+        # U = 1 / t * np.eye(t)
+
     # Compute gradient
     subgrad = A_vec.T @ (Q_1 @ U @ Q_1.T).reshape(-1, 1, order="F")
     # Compute Hessian
@@ -197,7 +225,7 @@ def get_grad_info(
         hessian=hessian,
         min_eig=min_eig,
         min_vec=Q_1,
-        multplct=t,
+        t=t,
         damp=damp,
     )
     return grad_info
@@ -250,6 +278,7 @@ def solve_eopt(
     verbose=True,
     plot=False,
     exploit_centered=False,
+    method="cuts",
     **kwargs,
 ):
     """Solve the certificate/eigenvalue optimization problem"""
@@ -312,10 +341,17 @@ def solve_eopt(
     # Get orthogonal vector to x_cand for eigenvalue solver
     x_rand = np.random.rand(*x_cand.shape) - 1
     v0 = x_rand - x_cand.T @ x_rand / (x_cand.T @ x_cand)
-    kwargs_eig = {"v0": v0}
+    kwargs_eig = {"v0": v0, "method": EIG_METHOD}
+
+    if method == "cuts":
+        solver = solve_eopt_cuts
+    elif method == "sub":
+        solver = solve_eopt_sub
+    else:
+        raise ValueError(f"Unknown method {method} in solve_eopt")
 
     if use_null:
-        alphas, info = solve_eopt_cuts(
+        alphas, info = solver(
             Q,
             A_vec,
             A_eq=None,
@@ -324,9 +360,9 @@ def solve_eopt(
             kwargs_eig=kwargs_eig,
             verbose=verbose,
         )
-        mults = x_bar + basis @ alphas
+        mults = x_bar.flatten() + basis @ alphas.flatten()
     else:
-        alphas, info = solve_eopt_cuts(
+        alphas, info = solver(
             Q,
             A_vec,
             A_eq=A_eq,
@@ -335,12 +371,103 @@ def solve_eopt(
             kwargs_eig=kwargs_eig,
             verbose=verbose,
         )
-        mults = alphas
+        mults = alphas.flatten()
 
     info["mults"] = mults
     info["A_vec"] = A_vec
     info["Q"] = Q
     return alphas, info
+
+
+def solve_eopt_sub(
+    Q,
+    A_vec,
+    A_eq=None,
+    b_eq=None,
+    xinit=None,
+    opts=opts_sub_dflt,
+    verbose=1,
+    kwargs_eig={},
+):
+    """Solve E_OPT using a simple subgradient method with backtracking.
+
+    :param A_vec: n*2xm matrix of vectorized constraints.
+    """
+    m = A_vec.shape[1]
+    n = Q.shape[0]
+    assert A_vec.shape[0] == n**2
+
+    if (A_eq is not None) or (b_eq is not None):
+        raise NotImplementedError("Can't use equality constraints in QP yet.")
+
+    if xinit is None:
+        xinit = np.zeros(m)
+    else:
+        xinit = xinit.flatten()
+
+    k = min(n, opts["k_max"])
+    kwargs_eig = dict(k=N_EIGS_LANCZOS, method=EIG_METHOD)
+
+    i = 0
+    x = xinit
+    print("it \t alpha \t t \t l_min")
+    np.random.seed(1)
+
+    l_new = None
+    while i <= opts["max_iters"]:
+        H = get_cert_mat(Q, A_vec, x)
+        grad_info = get_grad_info(H, A_vec, U=None, **kwargs_eig)
+        t = grad_info["t"]
+        if t > 1:
+            print(f"multiplicity {t}")
+        if i == 0 and verbose > 0:
+            print(f"start \t ------ \t {t} \t {grad_info['min_eig']:1.4e}")
+
+        grad = grad_info["subgrad"][:, 0]
+        d = grad / np.linalg.norm(grad)
+
+        l_old = grad_info["min_eig"]
+
+        # make sure that the gradient is valid
+        # assert f_eopt(Q, A_vec, x + d * 1e-8, lmin=lmin) > l_old
+
+        # backgracking, using Nocedal Algorithm 3.1
+        alpha = backtrack_start
+
+        H = get_cert_mat(Q, A_vec, x + alpha * d)
+        grad_info = get_grad_info(H, A_vec, U=None, **kwargs_eig)
+        l_new = grad_info["min_eig"]
+
+        while np.linalg.norm(alpha * d) > opts["gtol"]:
+            l_test = l_old + backtrack_cutoff * alpha * grad.T @ d
+            if l_new >= l_test:
+                break
+            alpha *= backtrack_factor
+            H = get_cert_mat(Q, A_vec, x + alpha * d)
+            grad_info = get_grad_info(H, A_vec, U=None, **kwargs_eig)
+            kwargs_eig["v0"] = grad_info["min_vec"]
+            l_new = grad_info["min_eig"]
+
+        if np.linalg.norm(alpha * d) <= opts["gtol"]:
+            msg = "Converged in stepsize"
+            success = True
+            break
+        x += alpha * d
+
+        if verbose > 0:
+            print(f"it {i} \t {alpha:1.4f} \t {t} \t {l_new:1.4e}")
+
+        if (opts["tol_eig"] is not None) and (l_new >= -opts["tol_eig"]):
+            msg = "Found valid certificate"
+            success = True
+            break
+
+        i += 1
+        if i == opts["max_iters"]:
+            msg = "Reached maximum iterations"
+            success = False
+    info = {"success": success, "msg": msg, "min_eig": l_new, "H": H}
+    return x, info
 
 
 def solve_eopt_cuts(
@@ -398,7 +525,7 @@ def solve_eopt_cuts(
         # Construct Current Certificate matrix
         H = get_cert_mat(Q, A_vec, x_new)
         # current gradient and minimum eig
-        grad_info = get_grad_info(H=H, A_vec=A_vec, k=k, method="direct", **kwargs_eig)
+        grad_info = get_grad_info(H=H, A_vec=A_vec, **kwargs_eig)
 
         # Add Cuts
         m.add_cut(grad_info, x_new)
@@ -448,7 +575,7 @@ def solve_eopt_cuts(
             t_max=t_max,
             t_min=t_min,
             gap=gap,
-            mult=grad_info["multplct"],
+            mult=grad_info["t"],
             curv=curv,
         )
         iter_info += [info]
@@ -463,10 +590,9 @@ def solve_eopt_cuts(
                 f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} |",
                 end="",
             )
-            print(
-                f"{t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['multplct']:4d}"
-            )
+            print(f"{t_min:5.4e} | {gap:5.4e} | {curv:5.4e} | {grad_info['t']:4d}")
     return x, dict(
+        min_eig=grad_info["min_eig"],
         H=H,
         status=status,
         gap=gap,
@@ -509,7 +635,7 @@ def plot_along_grad(C, A_vec, mults, step, alpha_max):
         # Apply step
         H_alpha = get_cert_mat(C, A_vec, step_alpha)
         # Check new minimum eigenvalue
-        grad_info = get_grad_info(H_alpha, A_vec, k=10, method="direct")
+        grad_info = get_grad_info(H_alpha, A_vec, k=1)
         min_eigs[i] = grad_info["min_eig"]
 
     # Plot min eig

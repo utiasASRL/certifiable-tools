@@ -1,19 +1,14 @@
-from cert_tools.eopt_solvers import *
+import os
+import pickle
 
-# Maths
+import matplotlib.pylab as plt
 import numpy as np
 import scipy.sparse as sp
 
-# Data
-import pickle
-
-# System
-import os, sys
-from os.path import dirname
-
-sys.path.append(dirname(__file__) + "/../")
-root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 from cert_tools.eopt_solvers import opts_cut_dflt
+from cert_tools.eopt_solvers import get_grad_info, solve_eopt, get_cert_mat
+
+root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
 
 def test_subgradient_analytic():
@@ -36,9 +31,9 @@ def test_subgradient_analytic():
         res["subgrad"],
         res["min_eig"],
         res["hessian"],
-        res["multplct"],
+        res["t"],
     )
-    subgrad_true = np.array([Q[0, 0] ** 2, Q[1, 0] ** 2])[:, None]
+    subgrad_true = np.array([Q[0, 0] ** 2, Q[1, 0] ** 2])
     # Check length
     assert len(subgrad) == len(A_list), ValueError(
         "Subgradient should have length equal to that of constraints"
@@ -48,7 +43,9 @@ def test_subgradient_analytic():
     # Check eig
     np.testing.assert_almost_equal(min_eig, -1.0)
     # Check subgradient
-    np.testing.assert_allclose(subgrad, subgrad_true, rtol=0, atol=1e-8)
+    np.testing.assert_allclose(
+        subgrad.flatten(), subgrad_true.flatten(), rtol=0, atol=1e-8
+    )
 
 
 def test_grad_hess_numerical():
@@ -125,10 +122,20 @@ def test_grad_hess_numerical():
     np.testing.assert_allclose(eig_delta_taylor, eig_delta, atol=0, rtol=1e-5)
 
 
-def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt, global_min=True):
+def run_eopt_cuts(**kwargs):
+    run_eopt(**kwargs, method="cuts")
+
+
+def run_eopt_sub(**kwargs):
+    run_eopt(**kwargs, method="sub")
+
+
+def run_eopt(
+    prob_file="test_prob_1.pkl", opts=opts_cut_dflt, global_min=True, method="cuts"
+):
     # Test SQP method
     try:
-        with open(os.path.join(root_dir, "_test", prob_file), "rb") as file:
+        with open(os.path.join(root_dir, "_examples", prob_file), "rb") as file:
             data = pickle.load(file)
     except FileNotFoundError:
         print(f"Skipping {prob_file} cause file not found.")
@@ -144,7 +151,7 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt, global_min=Tr
     # Run optimizer
     Q = data["Q"].copy()
     x, output = solve_eopt(
-        Q=Q, Constraints=data["Constraints"], x_cand=x_cand, opts=opts
+        Q=Q, Constraints=data["Constraints"], x_cand=x_cand, opts=opts, method=method
     )
 
     # Verify certificate
@@ -154,14 +161,16 @@ def run_eopt_cuts(prob_file="test_prob_1.pkl", opts=opts_cut_dflt, global_min=Tr
     err_kkt = np.linalg.norm(H @ x_cand)
     min_eig = np.min(np.linalg.eig(H)[0])
 
+    assert abs(output["min_eig"] - min_eig) < 1e-7
+
     np.testing.assert_allclose(err_kkt, 0.0, atol=1e-6, rtol=0)
     if global_min:
         assert min_eig >= -1e-6, ValueError(
-            "Minimum Eigenvalue not positive at global min"
+            f"{prob_file}: Minimum Eigenvalue not positive at global min"
         )
     else:
         assert min_eig <= -1e-6, ValueError(
-            "Minimum Eigenvalue not negative at local min"
+            f"{prob_file}: Minimum Eigenvalue not negative at local min"
         )
     return output
 
@@ -217,7 +226,7 @@ def off_test_eopt_cuts_poly(plot=True):
     min_eig = np.min(np.linalg.eig(H)[0])
     # Error Check
     np.testing.assert_allclose(y, np.zeros(y.shape), atol=5e-4, rtol=0)
-    assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not possitive")
+    assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not positive")
 
 
 def test_rangeonly():
@@ -229,61 +238,68 @@ def test_rangeonly():
     # test_eopt_cuts(prob_file="test_prob_10Lc.pkl", global_min=False)
 
     # range-only with z = [x^2, y^2, xy]
-    # test_eopt_cuts(prob_file="test_prob_11G.pkl", global_min=True)
-    test_eopt_cuts(prob_file="test_prob_11Gc.pkl", global_min=True)
-
-    # test_eopt_cuts(prob_file="test_prob_11L.pkl", global_min=False)
-    # test_eopt_cuts(prob_file="test_prob_11Lc.pkl", global_min=False)
+    test_eopt(prob_file="test_prob_11G.pkl", global_min=True)
+    test_eopt(prob_file="test_prob_11Gc.pkl", global_min=True)
+    test_eopt(prob_file="test_prob_11L.pkl", global_min=False)
+    test_eopt(prob_file="test_prob_11Lc.pkl", global_min=False)
 
 
 def test_mw_localize():
-    opts = opts_cut_dflt
-    opts["tol_null"] = 1e-6
-    test_eopt_cuts(prob_file="test_prob_1.pkl", global_min=True, opts=opts)
-    test_eopt_cuts(prob_file="test_prob_2.pkl", global_min=True, opts=opts)
-    test_eopt_cuts(prob_file="test_prob_3.pkl", global_min=False, opts=opts)
-    test_eopt_cuts(prob_file="test_prob_4.pkl", global_min=True, opts=opts)
-    test_eopt_cuts(prob_file="test_prob_5.pkl", global_min=False, opts=opts)
-    test_eopt_cuts(prob_file="test_prob_7.pkl", global_min=True, opts=opts)
+    opts = dict(tol_null=1e-6)
+    test_eopt(prob_file="test_prob_1.pkl", global_min=True, opts=opts)
+    test_eopt(prob_file="test_prob_2.pkl", global_min=True, opts=opts)
+    test_eopt(prob_file="test_prob_3.pkl", global_min=False, opts=opts)
+    test_eopt(prob_file="test_prob_4.pkl", global_min=True, opts=opts)
+    test_eopt(prob_file="test_prob_5.pkl", global_min=False, opts=opts)
+    test_eopt(prob_file="test_prob_7.pkl", global_min=True, opts=dict())
 
 
 def test_polynomials():
-    test_eopt_cuts(prob_file="test_prob_8G.pkl", global_min=True)
-    test_eopt_cuts(prob_file="test_prob_8Gc.pkl", global_min=True)
+    test_eopt(prob_file="test_prob_8G.pkl", global_min=True)
+    test_eopt(prob_file="test_prob_8Gc.pkl", global_min=True)
 
     # test on a new polynomial's local maximum
-    test_eopt_cuts(prob_file="test_prob_8L1.pkl", global_min=False)
-    test_eopt_cuts(prob_file="test_prob_8L1c.pkl", global_min=False)
+    test_eopt(prob_file="test_prob_8L1.pkl", global_min=False)
+    test_eopt(prob_file="test_prob_8L1c.pkl", global_min=False)
 
     # test on a new polynomial's local minimum
-    test_eopt_cuts(prob_file="test_prob_8L2.pkl", global_min=False)
-    test_eopt_cuts(prob_file="test_prob_8L2c.pkl", global_min=False)
+    test_eopt(prob_file="test_prob_8L2.pkl", global_min=False)
+    test_eopt(prob_file="test_prob_8L2c.pkl", global_min=False)
 
     # below all correspond to same polynomial
-    test_eopt_cuts(prob_file="test_prob_9G.pkl", global_min=True)
-    test_eopt_cuts(prob_file="test_prob_9Gc.pkl", global_min=True)
+    test_eopt(prob_file="test_prob_9G.pkl", global_min=True)
+    test_eopt(prob_file="test_prob_9Gc.pkl", global_min=True)
 
-    test_eopt_cuts(prob_file="test_prob_9L.pkl", global_min=False)
-    test_eopt_cuts(prob_file="test_prob_9Lc.pkl", global_min=False)
+    test_eopt(prob_file="test_prob_9L.pkl", global_min=False)
+    test_eopt(prob_file="test_prob_9Lc.pkl", global_min=False)
 
 
-def test_eopt_cuts(prob_file="test_prob_6.pkl", global_min=True, opts=opts_cut_dflt):
-    run_eopt_cuts(prob_file=prob_file, opts=opts, global_min=global_min)
+def test_eopt(prob_file="test_prob_4.pkl", global_min=True, opts={}):
+    print(f"======={prob_file} -- cutting plane ==========")
+    from cert_tools.eopt_solvers import opts_cut_dflt, opts_sub_dflt
+
+    opts_cut_dflt.update(opts)
+    run_eopt(
+        prob_file=prob_file, opts=opts_cut_dflt, global_min=global_min, method="cuts"
+    )
+    print(f"======={prob_file} -- subgradient   ==========")
+    opts_sub_dflt.update(opts)
+    run_eopt(
+        prob_file=prob_file, opts=opts_sub_dflt, global_min=global_min, method="sub"
+    )
 
 
 if __name__ == "__main__":
+    import pytest
+    import sys
+
+    sys.exit(pytest.main([__file__, "-s"]))
+
     # GRADIENT TESTS
     # test_subgradient_analytic()
     # test_grad_hess_numerical()
 
-    # EOPT TESTS
-    # test_eopt_project()
-    # test_eopt_penalty()
-    # test_eopt_sqp()
-
     # test on a new polynomial's globoal minimum
-    # test_eopt_cuts_poly()
-    # test_eopt_cuts()
     # test_rangeonly()
     # test_polynomials()
-    test_mw_localize()
+    # test_mw_localize()
