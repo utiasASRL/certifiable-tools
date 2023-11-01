@@ -251,7 +251,7 @@ def test_mw_localize():
     test_eopt(prob_file="test_prob_3.pkl", global_min=False, opts=opts)
     test_eopt(prob_file="test_prob_4.pkl", global_min=True, opts=opts)
     test_eopt(prob_file="test_prob_5.pkl", global_min=False, opts=opts)
-    test_eopt(prob_file="test_prob_7.pkl", global_min=True, opts=dict())
+    test_eopt(prob_file="test_prob_7.pkl", global_min=True, opts=opts)
 
 
 def test_polynomials():
@@ -275,9 +275,9 @@ def test_polynomials():
 
 
 def test_eopt(prob_file="test_prob_4.pkl", global_min=True, opts={}):
-    print(f"======={prob_file} -- cutting plane ==========")
-    from cert_tools.eopt_solvers import opts_cut_dflt, opts_sub_dflt
+    from cert_tools.eopt_solvers import opts_cut_dflt, opts_sub_dflt, opts_sbm_dflt
 
+    print(f"======={prob_file} -- cutting plane ==========")
     opts_cut_dflt.update(opts)
     run_eopt(
         prob_file=prob_file, opts=opts_cut_dflt, global_min=global_min, method="cuts"
@@ -286,6 +286,11 @@ def test_eopt(prob_file="test_prob_4.pkl", global_min=True, opts={}):
     opts_sub_dflt.update(opts)
     run_eopt(
         prob_file=prob_file, opts=opts_sub_dflt, global_min=global_min, method="sub"
+    )
+    print(f"======={prob_file} -- spectral bundle   ==========")
+    opts_sbm_dflt.update(opts)
+    run_eopt(
+        prob_file=prob_file, opts=opts_sub_dflt, global_min=global_min, method="sbm"
     )
 
 
