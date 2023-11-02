@@ -50,10 +50,12 @@ backtrack_start = 10.0
 # Options for Spectral Bundle Method
 opts_sbm_dflt = dict(
     tol_eig=1e-6,  # Eigenvalue tolerance
+    tol_gap=1e-7,  # gap between model and actual eigenvalue for convergence
     max_iter=1000,  # Maximum iterations
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     use_null=True,  # if true, reparameterize problem using null space
-    rho_trust=1e-1,  # penalty parameter to ensure closeness to trust region.
+    rho_pen=1e-2,  # penalty parameter to ensure closeness to trust region.
+    ser_step_mult=0.0,  # multiplier for "serious step"
     r_c=1,  # Number of current eigenvectors to keep
     r_p=0,  # Number of previous eigenvectors to keep
     debug=True,  # Debugging flag
@@ -632,18 +634,19 @@ class SpectralBundleModel:
         # Store constraints and cost
         m.Q = Q
         m.A_vec = A_vec
-        # Define aggregate matrix variables
-        # TODO: This needs to be changed for the case of r_bar > 1
-        m.A_X = m.eval_A_X(V_init)
-        m.Q_X = V_init.T @ Q @ V_init
         # Define the eigenvector matrix
         m.V = V_init
         # Store Options
         m.opts = opts
-        # Debug variables
-        if opts["debug"]:
-            # Store actual X
-            m.X = V_init @ V_init.T
+        if m.n_vars > 0:
+            # Define aggregate matrix variables
+            # TODO: This needs to be changed for the case of r_bar > 1
+            m.A_X = m.eval_A_X(V_init)
+            m.Q_X = V_init.T @ Q @ V_init
+            # Debug variables
+            if opts["debug"]:
+                # Store actual X
+                m.X = V_init @ V_init.T
 
     def eval_A_X(m, V):
         A_X_list = []
@@ -655,16 +658,20 @@ class SpectralBundleModel:
                 A_X_list += [V.T @ A @ V]
         return np.vstack(A_X_list)
 
-    def update_vars(m, u, eta, x_prev, grad_info):
+    def update_vars(m, opt_info, x_prev, grad_info):
         """update aggregate matrix variables"""
         # TODO: Currently only implemented for scalar 'u' variable
+        # Get optimization information
+        u = opt_info["u"]
+        eta = opt_info["eta"]
+        # Store big X if debugging
         if m.opts["debug"]:
             m.X = eta * m.X + u * grad_info["min_vec"] @ grad_info["min_vec"].T
         # Update agreggate variables
         m.A_X = eta * m.A_X + u * grad_info["subgrad"]
         m.Q_X = eta * m.Q_X + u * grad_info["min_vec"].T @ m.Q @ grad_info["min_vec"]
         # Update null space multipliers (simplified because agg X is optimal X)
-        x = x_prev + m.A_X / m.opts["rho_trust"]
+        x = x_prev + m.A_X / m.opts["rho_pen"]
         return x
 
     def solve_sbm_qp(m, x_curr, grad_info):
@@ -682,7 +689,7 @@ class SpectralBundleModel:
             + u * grad_info["min_eig"]
             + cp.sum_squares(eta * m.A_X + u * grad_info["subgrad"])
             / 2
-            / m.opts["rho_trust"]
+            / m.opts["rho_pen"]
         )
         # Solve Quadratic Program:
         prob = cp.Problem(cp.Minimize(obj), constraints)
@@ -692,7 +699,12 @@ class SpectralBundleModel:
             print("Did not find MOSEK, using different solver.")
             prob.solve(solver="CVXOPT", verbose=False)
         # Get solution
-        return u.value, eta.value
+        opt_info = dict(
+            u=u.value,
+            eta=eta.value,
+            obj_val=obj.value,
+        )
+        return opt_info
 
 
 def solve_eopt_sbm(
@@ -722,61 +734,71 @@ def solve_eopt_sbm(
     header_printed = False
     n_iter = 0
     x_curr = xinit
-    t_max = np.inf
-    t_min = -np.inf
     iter_info = []
     grad_info = None
     m = None
     while status == "RUNNING":
-        # GET CERTIFICATE AND GRADIENT INFO
-        # Construct Current Certificate matrix
-        H = get_cert_mat(Q, A_vec, x_curr)
-        # current gradient and minimum eig
-        grad_info = get_grad_info(H=H, A_vec=A_vec, **kwargs_eig)
         # SOLVE SPECTRAL BUNDLE PROGRAM
         if n_iter > 0:
             if opts["r_c"] == 1 and opts["r_p"] == 0:
-                u, eta = m.solve_sbm_qp(x_curr=x_curr, grad_info=grad_info)
+                opt_info = m.solve_sbm_qp(x_curr=x_curr, grad_info=grad_info)
             else:
                 raise NotImplementedError
             # Update variables
             x_prev = x_curr.copy()
-            x_curr = m.update_vars(u=u, eta=eta, x_prev=x_prev, grad_info=grad_info)
+            x_curr = m.update_vars(
+                opt_info=opt_info, x_prev=x_prev, grad_info=grad_info
+            )
+            # Compute change in multipliers
             delta_x = x_curr - x_prev
+            delta_norm = la.norm(delta_x)
+            # update model upper bound
+            eig_model = (
+                opt_info["obj_val"][0, 0] + delta_norm**2 * opts["rho_pen"] / 2
+            )
         else:
-            # Initialize SBM model
+            # Init step
+            delta_norm = 0.0
+            eig_model = np.inf
+        # GET CERTIFICATE AND GRADIENT INFO
+        # Construct Current Certificate matrix
+        H = get_cert_mat(Q, A_vec, x_curr)
+        # Update gradient and eigenvalue
+        if n_iter > 0:
+            min_eig_prev = grad_info["min_eig"]
+        else:
+            min_eig_prev = -np.inf
+        grad_info = get_grad_info(H=H, A_vec=A_vec, **kwargs_eig)
+        # Initialize model
+        if m is None:
             m = SpectralBundleModel(Q, A_vec, grad_info["min_vec"], opts=opts)
-            delta_x = np.zeros(x_curr.shape)
-
-        # STATUS UPDATE
-        # update model upper bound
-        # TODO there is probably a way of computing this from the model.
-        # if t_ub <= t_max:
-        #     t_max = t_ub
-        # update model lower bound
-        if grad_info["min_eig"] > t_min:
-            t_min = grad_info["min_eig"]
+        # STATUS AND VAR UPDATE
+        # Compute the gap
+        gap = eig_model - grad_info["min_eig"]
+        # Serious or Null Step
+        if grad_info["min_eig"] < min_eig_prev + opts["ser_step_mult"] * gap:
+            x_curr = x_prev
+            delta_norm = 0.0
         # termination criteria
-        if t_min >= -opts["tol_eig"]:  # positive lower bound
+        if grad_info["min_eig"] >= -opts["tol_eig"]:  # positive lower bound
             status = "POS_LB"
+        elif eig_model < -5 * opts["tol_eig"]:  # ****** EXPERIMENTAL *******
+            status = "NEG_UB"
+        elif gap < opts["tol_gap"]:  # converged eigenvalue and not positive
+            status = "NEG_UB"
         elif m.n_vars == 0:  # no variables (i.e. no redundant constraints)
             status = "NO_VAR"
-        elif t_max < -2 * opts["tol_eig"]:  # negative upper bound
-            status = "NEG_UB"
         elif n_iter >= opts["max_iter"]:  # max iterations
             status = "MAX_ITER"
         # plot_along_grad(Q, A_vec, x_new, grad_info["subgrad"], 1)
-        # Statistics
-        gap = t_max - t_min
-        delta_norm = la.norm(delta_x)
+
         # Store data
         info = dict(
             n_iter=n_iter,
             delta_norm=delta_norm,
             x=x_curr,
             min_eig_curr=grad_info["min_eig"],
-            t_max=t_max,
-            t_min=t_min,
+            eig_model=eig_model,
             gap=gap,
             mult=grad_info["t"],
         )
@@ -785,14 +807,14 @@ def solve_eopt_sbm(
             if n_iter % 10 == 0:
                 header_printed = False
             if header_printed is False:
-                print(" N   | delta_nrm |  eig val  |   t_max   |", end="")
-                print("   t_min     | gap    | mult. |")
+                print(" N   | delta_nrm |  eig val  |   eig.mdl   |", end="")
+                print("   gap    | mult. |")
                 header_printed = True
             print(
-                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {t_max:5.4e} |",
+                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {eig_model:5.4e} |",
                 end="",
             )
-            print(f"{t_min:5.4e} | {gap:5.4e} | {grad_info['t']:4d}")
+            print(f" {gap:5.4e} | {grad_info['t']:4d}")
         # Update Iterations
         n_iter += 1
     return x_curr, dict(
@@ -800,8 +822,7 @@ def solve_eopt_sbm(
         H=H,
         status=status,
         gap=gap,
-        t_min=t_min,
-        t_max=t_max,
+        model=m,
         iter_info=pd.DataFrame(iter_info),
     )
 
