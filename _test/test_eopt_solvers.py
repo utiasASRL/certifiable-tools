@@ -277,16 +277,16 @@ def test_polynomials():
 def test_eopt(prob_file="test_prob_4.pkl", global_min=True, opts={}):
     from cert_tools.eopt_solvers import opts_cut_dflt, opts_sub_dflt, opts_sbm_dflt
 
-    print(f"======={prob_file} -- cutting plane ==========")
-    opts_cut_dflt.update(opts)
-    run_eopt(
-        prob_file=prob_file, opts=opts_cut_dflt, global_min=global_min, method="cuts"
-    )
-    print(f"======={prob_file} -- subgradient   ==========")
-    opts_sub_dflt.update(opts)
-    run_eopt(
-        prob_file=prob_file, opts=opts_sub_dflt, global_min=global_min, method="sub"
-    )
+    # print(f"======={prob_file} -- cutting plane ==========")
+    # opts_cut_dflt.update(opts)
+    # run_eopt(
+    #     prob_file=prob_file, opts=opts_cut_dflt, global_min=global_min, method="cuts"
+    # )
+    # print(f"======={prob_file} -- subgradient   ==========")
+    # opts_sub_dflt.update(opts)
+    # run_eopt(
+    #     prob_file=prob_file, opts=opts_sub_dflt, global_min=global_min, method="sub"
+    # )
     print(f"======={prob_file} -- spectral bundle   ==========")
     opts_sbm_dflt.update(opts)
     run_eopt(
@@ -298,7 +298,7 @@ if __name__ == "__main__":
     import pytest
     import sys
 
-    sys.exit(pytest.main([__file__, "-s"]))
+    # sys.exit(pytest.main([__file__, "-s"]))
 
     # GRADIENT TESTS
     # test_subgradient_analytic()
@@ -306,5 +306,6 @@ if __name__ == "__main__":
 
     # test on a new polynomial's globoal minimum
     # test_rangeonly()
-    # test_polynomials()
+    test_polynomials()
     # test_mw_localize()
+    # test_eopt(prob_file="test_prob_6.pkl", global_min=False)
