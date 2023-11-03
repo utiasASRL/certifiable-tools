@@ -649,14 +649,21 @@ class SpectralBundleModel:
                 m.X = V_init @ V_init.T
 
     def eval_A_X(m, V):
-        A_X_list = []
-        for i in range(m.n_vars):
-            A = m.A_vec[:, i].reshape((m.n_x, m.n_x), order="F")
-            if V.shape[0] == V.shape[1]:
-                A_X_list += [np.trace(A @ V)]
-            else:
-                A_X_list += [V.T @ A @ V]
-        return np.vstack(A_X_list)
+        """computes trace(A_i @ V) for each constraint"""
+        if not V.shape[0] == V.shape[1]:
+            X = V @ V.T
+        else:
+            X = V
+        vec_X = X.reshape((-1, 1), order="F")
+        # A_X_list = []
+        # for i in range(m.n_vars):
+        #     A = m.A_vec[:, i].reshape((m.n_x, m.n_x), order="F")
+        #     if V.shape[0] == V.shape[1]:
+        #         A_X_list += [np.trace(A @ V)]
+        #     else:
+        #         A_X_list += [V.T @ A @ V]
+
+        return m.A_vec.T @ vec_X
 
     def update_vars(m, opt_info, x_prev, grad_info):
         """update aggregate matrix variables"""
@@ -673,6 +680,41 @@ class SpectralBundleModel:
         # Update null space multipliers (simplified because agg X is optimal X)
         x = x_prev + m.A_X / m.opts["rho_pen"]
         return x
+
+    def get_ub(m, grad_info):
+        """Compute upper bound of current model"""
+        if m.opts["r_c"] == 1 and m.opts["r_p"] == 0:
+            # For simplified problem, UB problem is an LP
+            # Inequalities
+            # Set bounds on t level only
+            bounds = [(0.0, None), (0.0, None)]
+            A_ineq = np.array([[1.0, 1.0]])
+            b_ineq = 1.0
+            # Equalities ( A(X) = 0 )
+            A_eq = np.hstack([m.A_X, m.eval_A_X(grad_info["min_vec"])])
+            b_eq = np.zeros(A_eq.shape[0])
+            A_eq = A_eq[[0], :]
+            b_eq = 0.0
+            # Cost
+            Q_v = grad_info["min_vec"].T @ m.Q @ grad_info["min_vec"]
+            c = np.array([m.Q_X, Q_v])
+            # Run Linprog
+            res = linprog(
+                c=c.squeeze(),
+                A_eq=A_eq,
+                b_eq=b_eq,
+                A_ub=A_ineq,
+                b_ub=b_ineq,
+                method="highs-ds",
+                bounds=bounds,
+            )
+            if res.success:
+                return res.fun
+            else:
+                raise ValueError("UB linear subproblem failed.")
+            return
+        else:
+            raise NotImplementedError
 
     def solve_sbm_qp(m, x_curr, grad_info):
         """Solve Spectral Bundle method subproblem for the case where the SDP variable
@@ -737,6 +779,7 @@ def solve_eopt_sbm(
     iter_info = []
     grad_info = None
     m = None
+    min_eig_prev = -np.inf
     while status == "RUNNING":
         # SOLVE SPECTRAL BUNDLE PROGRAM
         if n_iter > 0:
@@ -752,7 +795,7 @@ def solve_eopt_sbm(
             # Compute change in multipliers
             delta_x = x_curr - x_prev
             delta_norm = la.norm(delta_x)
-            # update model upper bound
+            # Current model value
             eig_model = (
                 opt_info["obj_val"][0, 0] + delta_norm**2 * opts["rho_pen"] / 2
             )
@@ -760,30 +803,34 @@ def solve_eopt_sbm(
             # Init step
             delta_norm = 0.0
             eig_model = np.inf
+            x_prev = x_curr
+
         # GET CERTIFICATE AND GRADIENT INFO
         # Construct Current Certificate matrix
         H = get_cert_mat(Q, A_vec, x_curr)
         # Update gradient and eigenvalue
-        if n_iter > 0:
-            min_eig_prev = grad_info["min_eig"]
-        else:
-            min_eig_prev = -np.inf
         grad_info = get_grad_info(H=H, A_vec=A_vec, **kwargs_eig)
         # Initialize model
         if m is None:
             m = SpectralBundleModel(Q, A_vec, grad_info["min_vec"], opts=opts)
+        # CHECKS
+        if opts["debug"]:
+            assert eig_model >= grad_info["min_eig"] - opts["tol_eig"], Exception(
+                "Model value is below actual."
+            )
+
         # STATUS AND VAR UPDATE
         # Compute the gap
         gap = eig_model - grad_info["min_eig"]
         # Serious or Null Step
-        if grad_info["min_eig"] < min_eig_prev + opts["ser_step_mult"] * gap:
+        if grad_info["min_eig"] >= min_eig_prev + opts["ser_step_mult"] * gap:
+            min_eig_prev = grad_info["min_eig"]
+        else:  # Null Step
             x_curr = x_prev
             delta_norm = 0.0
         # termination criteria
         if grad_info["min_eig"] >= -opts["tol_eig"]:  # positive lower bound
             status = "POS_LB"
-        elif eig_model < -5 * opts["tol_eig"]:  # ****** EXPERIMENTAL *******
-            status = "NEG_UB"
         elif gap < opts["tol_gap"]:  # converged eigenvalue and not positive
             status = "NEG_UB"
         elif m.n_vars == 0:  # no variables (i.e. no redundant constraints)
@@ -807,7 +854,7 @@ def solve_eopt_sbm(
             if n_iter % 10 == 0:
                 header_printed = False
             if header_printed is False:
-                print(" N   | delta_nrm |  eig val  |   eig.mdl   |", end="")
+                print(" N   | delta_nrm |  eig val  |   mdl opt   |", end="")
                 print("   gap    | mult. |")
                 header_printed = True
             print(
