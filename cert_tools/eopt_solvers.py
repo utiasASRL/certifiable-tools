@@ -50,15 +50,15 @@ backtrack_start = 10.0
 # Options for Spectral Bundle Method
 opts_sbm_dflt = dict(
     tol_eig=1e-6,  # Eigenvalue tolerance
-    tol_gap=1e-7,  # gap between model and actual eigenvalue for convergence
+    tol_gap=5e-4,  # term tolerance on relative gap btwn model eig and best eig
     max_iter=1000,  # Maximum iterations
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     use_null=True,  # if true, reparameterize problem using null space
-    rho_pen=1e-2,  # penalty parameter to ensure closeness to trust region.
+    rho_pen=1e-3,  # penalty parameter to ensure closeness to trust region.
     ser_step_mult=0.0,  # multiplier for "serious step"
-    r_c=1,  # Number of current eigenvectors to keep
+    r_c=4,  # Number of current eigenvectors to keep
     r_p=0,  # Number of previous eigenvectors to keep
-    debug=True,  # Debugging flag
+    debug=False,  # Debugging flag
 )
 
 
@@ -206,6 +206,7 @@ def get_grad_info(H, A_vec, U=None, tau=1e-8, get_hessian=False, **kwargs_eig):
     # split eigenvector sets based on closeness to min (multiplicity could be > 1)
     ind_1 = np.abs(eig_vals - min_eig) < tau
     Q_1 = eig_vecs[:, ind_1]
+
     # Size of matrix
     n = H.shape[0]
     # Multiplicity
@@ -241,6 +242,7 @@ def get_grad_info(H, A_vec, U=None, tau=1e-8, get_hessian=False, **kwargs_eig):
         min_vec=Q_1,
         t=t,
         damp=damp,
+        eig_vecs=eig_vecs,
     )
     return grad_info
 
@@ -324,7 +326,7 @@ def solve_eopt(
 
     # INITIALIZE
     # Initialize multiplier variables
-    x_bar = la.lstsq(A_eq, b_eq, rcond=None)[0]
+    x_bar = la.lstsq(A_eq, b_eq, rcond=opts["tol_null"])[0]
 
     if use_null:
         # Update Q matrix to include the fixed lagrange multipliers
@@ -622,12 +624,16 @@ def solve_eopt_cuts(
 class SpectralBundleModel:
     """SpectralBundleModel class stores all of the information associated with the spectral bundle method for eigenvalue optimization. It also stores methods for updating these variables."""
 
-    def __init__(m, Q, A_vec, V_init, opts=opts_sbm_dflt):
+    def __init__(m, Q, A_vec, grad_info, opts=opts_sbm_dflt):
         # Check that the null space has been removed
         if not opts["use_null"]:
             raise ValueError(
                 "Spectral Bundle method requires that the eigenvalue problem is unconstrained. Please preprocess to remove constraints."
             )
+        # Get sizes
+        r_p = opts["r_p"]
+        r_c = opts["r_c"]
+        r_bar = r_p + r_c
         # Store shape
         m.n_vars = A_vec.shape[1]
         m.n_x = Q.shape[0]
@@ -635,18 +641,18 @@ class SpectralBundleModel:
         m.Q = Q
         m.A_vec = A_vec
         # Define the eigenvector matrix
-        m.V = V_init
+        m.V = grad_info["eig_vecs"][:, :r_c]
         # Store Options
         m.opts = opts
         if m.n_vars > 0:
             # Define aggregate matrix variables
             # TODO: This needs to be changed for the case of r_bar > 1
-            m.A_X = m.eval_A_X(V_init)
-            m.Q_X = V_init.T @ Q @ V_init
+            m.A_X = m.eval_A_X(m.V)
+            m.Q_X = np.sum(np.trace(m.V.T @ Q @ m.V)) / r_bar
             # Debug variables
             if opts["debug"]:
-                # Store actual X
-                m.X = V_init @ V_init.T
+                # Store actual X (keep unit trace)
+                m.X = m.V @ m.V.T / r_bar
 
     def eval_A_X(m, V):
         """computes trace(A_i @ V) for each constraint"""
@@ -655,30 +661,58 @@ class SpectralBundleModel:
         else:
             X = V
         vec_X = X.reshape((-1, 1), order="F")
-        # A_X_list = []
-        # for i in range(m.n_vars):
-        #     A = m.A_vec[:, i].reshape((m.n_x, m.n_x), order="F")
-        #     if V.shape[0] == V.shape[1]:
-        #         A_X_list += [np.trace(A @ V)]
-        #     else:
-        #         A_X_list += [V.T @ A @ V]
 
         return m.A_vec.T @ vec_X
 
+    def update_subspace(m, grad_info):
+        """populate the subspace vectors with eigenvector information of current
+        certificate matrix
+        """
+        if m.opts["r_p"] == 0:
+            m.V = grad_info["eig_vecs"][:, : m.opts["r_c"]]
+        else:
+            raise NotImplementedError
+
     def update_vars(m, opt_info, x_prev, grad_info):
         """update aggregate matrix variables"""
-        # TODO: Currently only implemented for scalar 'u' variable
-        # Get optimization information
-        u = opt_info["u"]
-        eta = opt_info["eta"]
-        # Store big X if debugging
-        if m.opts["debug"]:
-            m.X = eta * m.X + u * grad_info["min_vec"] @ grad_info["min_vec"].T
-        # Update agreggate variables
-        m.A_X = eta * m.A_X + u * grad_info["subgrad"]
-        m.Q_X = eta * m.Q_X + u * grad_info["min_vec"].T @ m.Q @ grad_info["min_vec"]
-        # Update null space multipliers (simplified because agg X is optimal X)
-        x = x_prev + m.A_X / m.opts["rho_pen"]
+        if m.opts["r_c"] == 1 and m.opts["r_p"] == 0:
+            # Get optimization information
+            u = opt_info["u"]
+            eta = opt_info["eta"]
+            # Store big X if debugging
+            if m.opts["debug"]:
+                m.X = eta * m.X + u * grad_info["min_vec"] @ grad_info["min_vec"].T
+            # Update agreggate variables
+            m.A_X = eta * m.A_X + u * grad_info["subgrad"]
+            m.Q_X = (
+                eta * m.Q_X + u * grad_info["min_vec"].T @ m.Q @ grad_info["min_vec"]
+            )
+            # Update null space multipliers (simplified because agg X is optimal X)
+            x = x_prev + m.A_X / m.opts["rho_pen"]
+        elif m.opts["r_c"] > 1 and m.opts["r_p"] == 0:
+            # Get optimization information
+            U = opt_info["U"]
+            eta = opt_info["eta"]
+            # Store big X if debugging
+            if m.opts["debug"]:
+                m.X = eta * m.X + m.V @ U @ m.V.T
+                assert np.trace(m.X) < 1 + 1e-7
+            # Update agreggate variables
+            m.A_X = opt_info["A_X"]
+            VQV = m.V.T @ m.Q @ m.V
+            m.Q_X = eta * m.Q_X + np.trace(VQV @ U)
+            # DEBUG assert that the A_X and Q_X are correct
+            if m.opts["debug"]:
+                np.testing.assert_almost_equal(
+                    m.A_X, m.eval_A_X(m.X), err_msg="A_X not correct"
+                )
+                np.testing.assert_almost_equal(
+                    m.Q_X, np.trace(m.Q @ m.X), err_msg="Q_X not correct"
+                )
+            # Update null space multipliers (simplified because agg X is optimal X)
+            x = x_prev + opt_info["A_X"] / m.opts["rho_pen"]
+        else:
+            raise NotImplementedError
         return x
 
     def get_ub(m, grad_info):
@@ -748,6 +782,49 @@ class SpectralBundleModel:
         )
         return opt_info
 
+    def solve_sbm_sdp(m, x_curr, H_curr, grad_info, verbose=False):
+        """Solve the spectral bundle method SDP subproblem to find optimal multiplier
+        update. This function should only be called if r_p + r_c = r_bar > 1
+
+        Args:
+            m (_type_): _description_
+            x_curr (_type_): _description_
+            H_curr (_type_): _description_
+            grad_info (_type_): _description_
+            verbose (bool, optional): _description_. Defaults to False.
+
+        Returns:
+            _type_: _description_
+        """
+        # Define Variables
+        r_bar = m.opts["r_p"] + m.opts["r_c"]
+        U = cp.Variable((r_bar, r_bar), symmetric=True)
+        eta = cp.Variable()
+        # Constraints
+        constraints = [U >> 0]
+        constraints += [eta >= 0]
+        constraints += [eta + cp.trace(U) <= 1]
+        # Objective
+        obj = eta * (m.Q_X + m.A_X.T @ x_curr)
+        obj += cp.trace((m.V.T @ H_curr @ m.V) @ U)
+
+        A_VUV = (m.A_vec.T @ np.kron(m.V, m.V)) @ (
+            cp.reshape(U, (r_bar**2, 1), order="F")
+        )
+        A_X = eta * m.A_X + A_VUV
+        obj += 1 / 2 / m.opts["rho_pen"] * cp.sum_squares(A_X)
+        # Define the SDP
+        cprob = cp.Problem(cp.Minimize(obj), constraints)
+        sdp_opts = dict(verbose=m.opts["debug"])
+        # Solve the SDP
+        cprob.solve(
+            solver="MOSEK",
+            **sdp_opts,
+        )
+        # Return opt data
+        opt_info = dict(U=U.value, eta=eta.value, obj_val=obj.value, A_X=A_X.value)
+        return opt_info
+
 
 def solve_eopt_sbm(
     Q,
@@ -771,6 +848,9 @@ def solve_eopt_sbm(
         opts (_type_, optional): _description_. Defaults to opts_cut_dflt.
         kwargs_eig (dict, optional): _description_. Defaults to {}.
     """
+    # Update required number of eigenvalues
+    n_eigs = np.min([opts["r_c"], Q.shape[0]])
+    kwargs_eig.update(k=n_eigs)
     # Intialize status vars for optimization
     status = "RUNNING"
     header_printed = False
@@ -779,14 +859,14 @@ def solve_eopt_sbm(
     iter_info = []
     grad_info = None
     m = None
-    min_eig_prev = -np.inf
+    min_eig_best = -np.inf
     while status == "RUNNING":
         # SOLVE SPECTRAL BUNDLE PROGRAM
         if n_iter > 0:
             if opts["r_c"] == 1 and opts["r_p"] == 0:
                 opt_info = m.solve_sbm_qp(x_curr=x_curr, grad_info=grad_info)
             else:
-                raise NotImplementedError
+                opt_info = m.solve_sbm_sdp(x_curr=x_curr, H_curr=H, grad_info=grad_info)
             # Update variables
             x_prev = x_curr.copy()
             x_curr = m.update_vars(
@@ -810,9 +890,11 @@ def solve_eopt_sbm(
         H = get_cert_mat(Q, A_vec, x_curr)
         # Update gradient and eigenvalue
         grad_info = get_grad_info(H=H, A_vec=A_vec, **kwargs_eig)
-        # Initialize model
+        # Update model with gradient information
         if m is None:
-            m = SpectralBundleModel(Q, A_vec, grad_info["min_vec"], opts=opts)
+            m = SpectralBundleModel(Q, A_vec, grad_info, opts=opts)
+        else:
+            m.update_subspace(grad_info)
         # CHECKS
         if opts["debug"]:
             assert eig_model >= grad_info["min_eig"] - opts["tol_eig"], Exception(
@@ -821,18 +903,22 @@ def solve_eopt_sbm(
 
         # STATUS AND VAR UPDATE
         # Compute the gap
-        gap = eig_model - grad_info["min_eig"]
+        gap = eig_model - min_eig_best
+        gap_rel = gap / np.abs(min_eig_best)
         # Serious or Null Step
-        if grad_info["min_eig"] >= min_eig_prev + opts["ser_step_mult"] * gap:
-            min_eig_prev = grad_info["min_eig"]
+        if (
+            grad_info["min_eig"] >= min_eig_best + opts["ser_step_mult"] * gap
+            or n_iter == 0
+        ):
+            min_eig_best = grad_info["min_eig"]
         else:  # Null Step
             x_curr = x_prev
             delta_norm = 0.0
         # termination criteria
         if grad_info["min_eig"] >= -opts["tol_eig"]:  # positive lower bound
             status = "POS_LB"
-        elif gap < opts["tol_gap"]:  # converged eigenvalue and not positive
-            status = "NEG_UB"
+        elif gap_rel < opts["tol_gap"]:  # converged eigenvalue and not positive
+            status = "GAP"
         elif m.n_vars == 0:  # no variables (i.e. no redundant constraints)
             status = "NO_VAR"
         elif n_iter >= opts["max_iter"]:  # max iterations
@@ -854,14 +940,16 @@ def solve_eopt_sbm(
             if n_iter % 10 == 0:
                 header_printed = False
             if header_printed is False:
-                print(" N   | delta_nrm |  eig val  |   mdl opt   |", end="")
-                print("   gap    | mult. |")
+                print(
+                    " N   | delta_nrm |  eig val  |  eig bst  |   mdl opt   |", end=""
+                )
+                print("  rel gap  | mult. |")
                 header_printed = True
             print(
-                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {eig_model:5.4e} |",
+                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {min_eig_best:5.4e} | {eig_model:5.4e} |",
                 end="",
             )
-            print(f" {gap:5.4e} | {grad_info['t']:4d}")
+            print(f" {gap_rel:5.4e} | {grad_info['t']:4d}")
         # Update Iterations
         n_iter += 1
     return x_curr, dict(
