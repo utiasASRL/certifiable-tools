@@ -860,6 +860,7 @@ def solve_eopt_sbm(
     grad_info = None
     m = None
     min_eig_best = -np.inf
+    H = None
     while status == "RUNNING":
         # SOLVE SPECTRAL BUNDLE PROGRAM
         if n_iter > 0:
