@@ -814,13 +814,15 @@ class SpectralBundleModel:
         A_X = eta * m.A_X + A_VUV
         obj += 1 / 2 / m.opts["rho_pen"] * cp.sum_squares(A_X)
         # Define the SDP
-        cprob = cp.Problem(cp.Minimize(obj), constraints)
+        prob = cp.Problem(cp.Minimize(obj), constraints)
         sdp_opts = dict(verbose=m.opts["debug"])
         # Solve the SDP
-        cprob.solve(
-            solver="MOSEK",
-            **sdp_opts,
-        )
+        try:
+            prob.solve(solver="MOSEK", **sdp_opts)
+        except mosek.Error:
+            print("Did not find MOSEK, using different solver.")
+            prob.solve(solver="CVXOPT", **sdp_opts)
+
         # Return opt data
         opt_info = dict(U=U.value, eta=eta.value, obj_val=obj.value, A_X=A_X.value)
         return opt_info
