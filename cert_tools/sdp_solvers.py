@@ -204,11 +204,12 @@ def solve_sdp_mosek(
         # Get status information about the solution
         prosta = task.getprosta(mosek.soltype.itr)
         solsta = task.getsolsta(mosek.soltype.itr)
+        X = None
+        cost = None
+        yvals = None
         if solsta == mosek.solsta.optimal:
-            msg = "Optimal"
             barx = task.getbarxj(mosek.soltype.itr, 0)
             cost = task.getprimalobj(mosek.soltype.itr) * scale + offset
-            yvals = np.array(task.getbarsj(mosek.soltype.itr, 0))
             X = np.zeros((dim, dim))
             cnt = 0
             for i in range(dim):
@@ -219,28 +220,19 @@ def solve_sdp_mosek(
                         X[j, i] = barx[cnt]
                         X[i, j] = barx[cnt]
                     cnt += 1
+            # Get yvals
+            yvals = task.getsolution(mosek.soltype.itr)[7]
         elif (
             solsta == mosek.solsta.dual_infeas_cer
             or solsta == mosek.solsta.prim_infeas_cer
         ):
-            msg = "Primal or dual infeasibility certificate found.\n"
-            X = np.nan
-            cost = np.nan
+            print("Primal or dual infeasibility certificate found.\n")
         elif solsta == mosek.solsta.unknown:
-            msg = "Unknown solution status"
-            X = np.nan
-            cost = np.nan
+            print("Unknown solution status")
         else:
-            msg = f"Other solution status: {solsta}"
-            X = np.nan
-            cost = np.nan
+            print("Other solution status")
 
-        # H = Q_here - LHS.value
-        # yvals = [x.value for x in y]
-
-        # TODO(FD) can we read the dual variables from mosek solution?
         info = {"H": None, "yvals": yvals, "cost": cost, "msg": msg}
-        # info = {"cost": cost, "msg": msg}
         return X, info
 
 

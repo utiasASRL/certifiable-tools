@@ -54,7 +54,7 @@ opts_sbm_dflt = dict(
     max_iter=1000,  # Maximum iterations
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     use_null=True,  # if true, reparameterize problem using null space
-    rho_pen=1e-3,  # penalty parameter to ensure closeness to trust region.
+    trust_reg=1e2,  # Initial trust region size
     agreement_req=0.0,  # multiplier for "serious step"
     r_c=4,  # Number of current eigenvectors to keep
     r_p=0,  # Number of previous eigenvectors to keep
@@ -632,8 +632,6 @@ class SpectralBundleModel:
             )
         # Store Options
         m.opts = opts
-        # Initialize the trust region penalty parameter
-        m.rho_pen = opts["rho_pen"]
         # Get sizes
         r_p = opts["r_p"]
         r_c = opts["r_c"]
@@ -646,7 +644,9 @@ class SpectralBundleModel:
         m.A_vec = A_vec
         # Define the eigenvector matrix
         m.V = grad_info["eig_vecs"][:, :r_c]
-
+        # Define trust region
+        m.trust_reg = opts["trust_reg"]
+        m.trust_reg_ub = opts["trust_reg"]
         if m.n_vars > 0:
             # Define aggregate matrix variables
             # TODO: This needs to be changed for the case of r_bar > 1
@@ -656,6 +656,12 @@ class SpectralBundleModel:
             if opts["debug"]:
                 # Store actual X (keep unit trace)
                 m.X = m.V @ m.V.T / r_bar
+            # Initialize the trust region penalty parameter
+
+            m.penalty = np.linalg.norm(m.A_X) / m.trust_reg
+        else:
+            # Random values (Don't matter)
+            m.penalty = 1.0
 
     def eval_A_X(m, V):
         """computes trace(A_i @ V) for each constraint"""
@@ -714,7 +720,7 @@ class SpectralBundleModel:
         else:
             raise NotImplementedError
         # Update multipliers
-        x = x_prev + m.A_X / m.rho_pen
+        x = x_prev + m.A_X / m.penalty
         # TODO Implement the null step checks here.
 
         return x
@@ -767,7 +773,7 @@ class SpectralBundleModel:
         obj = (
             eta * (m.Q_X + m.A_X.T @ x_curr)
             + u * grad_info["min_eig"]
-            + cp.sum_squares(eta * m.A_X + u * grad_info["subgrad"]) / 2 / m.rho_pen
+            + cp.sum_squares(eta * m.A_X + u * grad_info["subgrad"]) / 2 / m.penalty
         )
         # Solve Quadratic Program:
         prob = cp.Problem(cp.Minimize(obj), constraints)
@@ -814,7 +820,7 @@ class SpectralBundleModel:
             cp.reshape(U, (r_bar**2, 1), order="F")
         )
         A_X = eta * m.A_X + A_VUV
-        obj += 1 / 2 / m.rho_pen * cp.sum_squares(A_X)
+        obj += 1 / 2 / m.penalty * cp.sum_squares(A_X)
         # Define the SDP
         prob = cp.Problem(cp.Minimize(obj), constraints)
         sdp_opts = dict(verbose=m.opts["debug"])
@@ -828,6 +834,32 @@ class SpectralBundleModel:
         # Return opt data
         opt_info = dict(U=U.value, eta=eta.value, obj_val=obj.value, A_X=A_X.value)
         return opt_info
+
+    def update_trust(m, rho, delta_norm):
+        """Update the effective trust region for SBM. Note that the trust region is
+        currently maintained by adapting the penalty term, since the SBM uses a
+        a penalty.
+
+        Args:
+            m (_type_): _description_
+            rho (_type_): _description_
+        """
+        if m.n_vars > 0:
+            A_X_norm = np.linalg.norm(m.A_X)
+        else:
+            A_X_norm = 1.0
+        # Perform trust region update (See Nocedal and Wright)
+        if rho < 1 / 4:
+            # Shrink trust region
+            m.trust_reg = m.trust_reg / 4
+        else:
+            # Expand trust region
+            trust_reg_num = A_X_norm / m.penalty
+            if rho > 3 / 4 and delta_norm - trust_reg_num >= -1e-10:
+                m.trust_reg = min(2 * m.trust_reg, m.trust_reg_ub)
+            # Otherwise keep same region
+        # Update the penalty
+        m.penalty = np.max([A_X_norm / m.trust_reg, 1.0e-8])
 
 
 def solve_eopt_sbm(
@@ -881,7 +913,7 @@ def solve_eopt_sbm(
             delta_x = x_curr - x_prev
             delta_norm = la.norm(delta_x)
             # Current model value
-            eig_model = opt_info["obj_val"][0, 0] + delta_norm**2 * m.rho_pen / 2
+            eig_model = opt_info["obj_val"][0, 0] + delta_norm**2 * m.penalty / 2
         else:
             # Init step
             delta_norm = 0.0
@@ -905,14 +937,14 @@ def solve_eopt_sbm(
             )
 
         # STATUS AND VAR UPDATE
-        # Compute the gap
-        gap = eig_model - min_eig_best
-        gap_rel = gap / np.abs(min_eig_best)
         # Compute the model-objective agreement
         delta_predict = eig_model - min_eig_best
         delta_actual = grad_info["min_eig"] - min_eig_best
         rho_agree = delta_actual / delta_predict
-
+        # Relative gap between model and actual
+        gap_rel = delta_actual / np.abs(min_eig_best)
+        # Update the trust region
+        m.update_trust(rho_agree, delta_norm)
         # Check if model-objective agreement is acceptable
         if rho_agree >= opts["agreement_req"] or n_iter == 0:
             min_eig_best = grad_info["min_eig"]
@@ -937,7 +969,7 @@ def solve_eopt_sbm(
             x=x_curr,
             min_eig_curr=grad_info["min_eig"],
             eig_model=eig_model,
-            gap=gap,
+            gap_rel=gap_rel,
             mult=grad_info["t"],
         )
         iter_info += [info]
@@ -948,20 +980,19 @@ def solve_eopt_sbm(
                 print(
                     " N   | delta_nrm |  eig val  |  eig bst  |   mdl opt   |", end=""
                 )
-                print("  rel gap  | mult. |")
+                print("  rel gap  |   trust   | mult. |")
                 header_printed = True
             print(
                 f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {min_eig_best:5.4e} | {eig_model:5.4e} |",
                 end="",
             )
-            print(f" {gap_rel:5.4e} | {grad_info['t']:4d}")
+            print(f" {gap_rel:5.4e} | {m.trust_reg:5.4e} | {grad_info['t']:4d}")
         # Update Iterations
         n_iter += 1
     return x_curr, dict(
         min_eig=grad_info["min_eig"],
         H=H,
         status=status,
-        gap=gap,
         model=m,
         iter_info=pd.DataFrame(iter_info),
     )
