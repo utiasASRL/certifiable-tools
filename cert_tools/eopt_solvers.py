@@ -942,7 +942,7 @@ def solve_eopt_sbm(
         delta_actual = grad_info["min_eig"] - min_eig_best
         rho_agree = delta_actual / delta_predict
         # Relative gap between model and actual
-        gap_rel = delta_actual / np.abs(min_eig_best)
+        gap_rel = np.abs(delta_actual / min_eig_best)
         # Update the trust region
         m.update_trust(rho_agree, delta_norm)
         # Check if model-objective agreement is acceptable
@@ -954,7 +954,9 @@ def solve_eopt_sbm(
         # termination criteria
         if grad_info["min_eig"] >= -opts["tol_eig"]:  # positive lower bound
             status = "POS_LB"
-        elif gap_rel < opts["tol_gap"]:  # converged eigenvalue and not positive
+        elif (
+            gap_rel * m.penalty < opts["tol_gap"]
+        ):  # converged eigenvalue and not positive
             status = "GAP"
         elif m.n_vars == 0:  # no variables (i.e. no redundant constraints)
             status = "NO_VAR"
