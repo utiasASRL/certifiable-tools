@@ -24,11 +24,11 @@ This file describes the test problems that appear in this test directory. All te
 | test_prob_7.pkl | Same as test_prob_4, but with 5 poses and 30 landmarks | 
 | test_prob_8.pkl* | Sectic polynomial with 1 local minimum, 1 global minimum. Created by `constraint_learning/examples/poly6_lifter.py`  | 
 | test_prob_9.pkl* | Sectic polynomial with 2 local minima, 1 global minimum. Created by `constraint_learning/examples/poly6_lifter.py` | 
-| test_prob_10.pkl* | Range-only localization with 4 anchors, 1 position, minimal quadratic  substitution (no redundant constraints), Created by `constraint_learning/examples/ro_lifter.py` | 
-| test_prob_11.pkl* | Range-only localization with 4 anchors, 1 position, full quadratic substitution (with redundant constraints), Created by `constraint_learning/examples/ro_lifter.py` | 
+| test_prob_10.pkl* | Range-only localization with 4 anchors, 1 position, minimal quadratic  substitution (no redundant constraints). Created by `constraint_learning/examples/ro_lifter.py` | 
+| test_prob_11.pkl* | Range-only localization with 4 anchors, 1 position, full quadratic substitution (with redundant constraints). Created by `constraint_learning/examples/ro_lifter.py` | 
 | test_prob_12.pkl* | Same as test_prob_11, but with 3 positions. | 
 | test_prob_13.pkl* | Same as test_prob_11, but with 10 positions.|
-| test_prob_14.pkl* | Wahba problem, with 4 landmarks in 3 dimensions, with total 21 constraints (including redundant). |
-| test_prob_15.pkl* | robust Wahba problem, with 5 landmarks, 1 outlier, in 3 dimensions, with total >1771 constraints (including redundant). |
+| test_prob_14.pkl* | Wahba problem, with 4 landmarks in 3 dimensions, with total 21 constraints (including redundant). Created by `constraint_learning/examples/robust_lifter.py` |
+| test_prob_15.pkl* | robust Wahba problem, with 5 landmarks, 1 outlier, in 3 dimensions, with total 1771 constraints (including redundant). Created by `constraint_learning/examples/robust_lifter.py`|
 
 *these files may come in variants "G/L" for global / local candidate solutions, and some of them have "c" for the centered version.
