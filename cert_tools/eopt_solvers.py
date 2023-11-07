@@ -55,7 +55,7 @@ opts_sbm_dflt = dict(
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     use_null=True,  # if true, reparameterize problem using null space
     rho_pen=1e-3,  # penalty parameter to ensure closeness to trust region.
-    ser_step_mult=0.0,  # multiplier for "serious step"
+    agreement_req=0.0,  # multiplier for "serious step"
     r_c=4,  # Number of current eigenvectors to keep
     r_p=0,  # Number of previous eigenvectors to keep
     debug=False,  # Debugging flag
@@ -630,6 +630,10 @@ class SpectralBundleModel:
             raise ValueError(
                 "Spectral Bundle method requires that the eigenvalue problem is unconstrained. Please preprocess to remove constraints."
             )
+        # Store Options
+        m.opts = opts
+        # Initialize the trust region penalty parameter
+        m.rho_pen = opts["rho_pen"]
         # Get sizes
         r_p = opts["r_p"]
         r_c = opts["r_c"]
@@ -642,8 +646,7 @@ class SpectralBundleModel:
         m.A_vec = A_vec
         # Define the eigenvector matrix
         m.V = grad_info["eig_vecs"][:, :r_c]
-        # Store Options
-        m.opts = opts
+
         if m.n_vars > 0:
             # Define aggregate matrix variables
             # TODO: This needs to be changed for the case of r_bar > 1
@@ -687,8 +690,7 @@ class SpectralBundleModel:
             m.Q_X = (
                 eta * m.Q_X + u * grad_info["min_vec"].T @ m.Q @ grad_info["min_vec"]
             )
-            # Update null space multipliers (simplified because agg X is optimal X)
-            x = x_prev + m.A_X / m.opts["rho_pen"]
+
         elif m.opts["r_c"] > 1 and m.opts["r_p"] == 0:
             # Get optimization information
             U = opt_info["U"]
@@ -709,10 +711,12 @@ class SpectralBundleModel:
                 np.testing.assert_almost_equal(
                     m.Q_X, np.trace(m.Q @ m.X), err_msg="Q_X not correct"
                 )
-            # Update null space multipliers (simplified because agg X is optimal X)
-            x = x_prev + opt_info["A_X"] / m.opts["rho_pen"]
         else:
             raise NotImplementedError
+        # Update multipliers
+        x = x_prev + m.A_X / m.rho_pen
+        # TODO Implement the null step checks here.
+
         return x
 
     def get_ub(m, grad_info):
@@ -763,9 +767,7 @@ class SpectralBundleModel:
         obj = (
             eta * (m.Q_X + m.A_X.T @ x_curr)
             + u * grad_info["min_eig"]
-            + cp.sum_squares(eta * m.A_X + u * grad_info["subgrad"])
-            / 2
-            / m.opts["rho_pen"]
+            + cp.sum_squares(eta * m.A_X + u * grad_info["subgrad"]) / 2 / m.rho_pen
         )
         # Solve Quadratic Program:
         prob = cp.Problem(cp.Minimize(obj), constraints)
@@ -812,7 +814,7 @@ class SpectralBundleModel:
             cp.reshape(U, (r_bar**2, 1), order="F")
         )
         A_X = eta * m.A_X + A_VUV
-        obj += 1 / 2 / m.opts["rho_pen"] * cp.sum_squares(A_X)
+        obj += 1 / 2 / m.rho_pen * cp.sum_squares(A_X)
         # Define the SDP
         prob = cp.Problem(cp.Minimize(obj), constraints)
         sdp_opts = dict(verbose=m.opts["debug"])
@@ -879,9 +881,7 @@ def solve_eopt_sbm(
             delta_x = x_curr - x_prev
             delta_norm = la.norm(delta_x)
             # Current model value
-            eig_model = (
-                opt_info["obj_val"][0, 0] + delta_norm**2 * opts["rho_pen"] / 2
-            )
+            eig_model = opt_info["obj_val"][0, 0] + delta_norm**2 * m.rho_pen / 2
         else:
             # Init step
             delta_norm = 0.0
@@ -908,13 +908,15 @@ def solve_eopt_sbm(
         # Compute the gap
         gap = eig_model - min_eig_best
         gap_rel = gap / np.abs(min_eig_best)
-        # Serious or Null Step
-        if (
-            grad_info["min_eig"] >= min_eig_best + opts["ser_step_mult"] * gap
-            or n_iter == 0
-        ):
+        # Compute the model-objective agreement
+        delta_predict = eig_model - min_eig_best
+        delta_actual = grad_info["min_eig"] - min_eig_best
+        rho_agree = delta_actual / delta_predict
+
+        # Check if model-objective agreement is acceptable
+        if rho_agree >= opts["agreement_req"] or n_iter == 0:
             min_eig_best = grad_info["min_eig"]
-        else:  # Null Step
+        else:  # If model agreement is bad then don't step
             x_curr = x_prev
             delta_norm = 0.0
         # termination criteria
