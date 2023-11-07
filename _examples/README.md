@@ -28,5 +28,7 @@ This file describes the test problems that appear in this test directory. All te
 | test_prob_11.pkl* | Range-only localization with 4 anchors, 1 position, full quadratic substitution (with redundant constraints), Created by `constraint_learning/examples/ro_lifter.py` | 
 | test_prob_12.pkl* | Same as test_prob_11, but with 3 positions. | 
 | test_prob_13.pkl* | Same as test_prob_11, but with 10 positions.|
+| test_prob_14.pkl* | Wahba problem, with 4 landmarks in 3 dimensions, with total 21 constraints (including redundant). |
+| test_prob_15.pkl* | robust Wahba problem, with 5 landmarks, 1 outlier, in 3 dimensions, with total >1771 constraints (including redundant). |
 
-*these files also come in variants "G/L" for global / local candidate solutions, and "c" for the centered version.
+*these files may come in variants "G/L" for global / local candidate solutions, and some of them have "c" for the centered version.
