@@ -55,13 +55,13 @@ opts_sbm_dflt = dict(
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     use_null=True,  # if true, reparameterize problem using null space
     trust_reg_adapt=True,  # Use trust region adaptation
-    trust_reg_init=1e2,  # Initial trust region size
+    trust_reg_init=1e-1,  # Initial trust region size
     trust_reg_ub=1e3,  # Trust Region upper bound
     trust_reg_lb=1e-7,  # Trust Region lower bound
     agreement_req=0.0,  # Requirement on model agreement to take a serious step
     r_c_max=15,  # Number of current eigenvectors to keep
     r_p=0,  # Number of previous eigenvectors to keep
-    tol_mult_eig=1e-3,  # Tolerance for multiplicity when adapting r_c
+    tol_mult_eig=1e-5,  # Tolerance for multiplicity when adapting r_c
     debug=False,  # Debugging flag
 )
 
@@ -646,6 +646,8 @@ class SpectralBundleModel:
         # Store constraints and cost
         m.Q = Q
         m.A_vec = A_vec
+        m.A = [A_vec[:, i].reshape(m.n_x, m.n_x, order="F") for i in range(m.n_vars)]
+
         # Define the eigenvector matrix
         m.V = grad_info["eig_vecs"][:, : m.r_c]
         # Define trust region
@@ -796,7 +798,6 @@ class SpectralBundleModel:
         )
         return opt_info
 
-    @profile
     def solve_sbm_sdp(m, x_curr, H_curr, grad_info, verbose=False):
         """Solve the spectral bundle method SDP subproblem to find optimal multiplier
         update. This function should only be called if r_p + r_c = r_bar > 1
@@ -822,12 +823,20 @@ class SpectralBundleModel:
         # Objective
         obj = eta * (m.Q_X + m.A_X.T @ x_curr)
         obj += cp.trace((m.V.T @ H_curr @ m.V) @ U)
+        VAV = []
+        # for i in range(m.n_vars):
+        #     VAV += [(m.V.T @ m.A[i] @ m.V).reshape((1, -1), order="F")]
+        # VAV_U = np.vstack(VAV) @ cp.vec(U)
+        # # A_VUV = [cp.trace((m.V.T @ m.A[i] @ m.V) @ U) for i in range(m.n_vars)]
+        # # A_VUV = cp.vstack(A_VUV)
+        # A_X = eta * m.A_X[:, 0] + VAV_U
 
-        A_VUV = (m.A_vec.T @ np.kron(m.V, m.V)) @ (
-            cp.reshape(U, (r_bar**2, 1), order="F")
-        )
+        A_VkV = m.A_vec.T @ np.kron(m.V, m.V)
+        A_VUV = A_VkV @ cp.vec(U)
         A_X = eta * m.A_X + A_VUV
+
         obj += 1 / 2 / m.penalty * cp.sum_squares(A_X)
+
         # Define the SDP
         prob = cp.Problem(cp.Minimize(obj), constraints)
         sdp_opts = dict(verbose=m.opts["debug"])
@@ -871,7 +880,6 @@ class SpectralBundleModel:
         m.penalty = max(A_X_norm / m.trust_reg, 1.0e-8)
 
 
-@profile
 def solve_eopt_sbm(
     Q,
     A_vec,
@@ -951,10 +959,9 @@ def solve_eopt_sbm(
         # STATUS AND VAR UPDATE
         # Compute the model-objective agreement
         delta_predict = eig_model - min_eig_best
+        assert delta_predict > 0, ValueError("predicted cost change is negative")
         delta_actual = grad_info["min_eig"] - min_eig_best
         rho_agree = delta_actual / delta_predict
-        # Relative gap between model and actual
-        gap_rel = np.abs(delta_actual / min_eig_best)
         # Update the trust region
         if m.opts["trust_reg_adapt"]:
             m.update_trust(rho_agree, delta_norm)
@@ -967,9 +974,8 @@ def solve_eopt_sbm(
         # termination criteria
         if grad_info["min_eig"] >= -opts["tol_eig"]:  # positive lower bound
             status = "POS_LB"
-        elif (
-            gap_rel * m.penalty < opts["tol_gap"]
-        ):  # converged eigenvalue and not positive
+        elif delta_predict <= opts["tol_gap"] * (1 + np.abs(min_eig_best)):
+            # Model converged but mineig not positive
             status = "GAP"
         elif m.n_vars == 0:  # no variables (i.e. no redundant constraints)
             status = "NO_VAR"
@@ -984,7 +990,7 @@ def solve_eopt_sbm(
             x=x_curr,
             min_eig_curr=grad_info["min_eig"],
             eig_model=eig_model,
-            gap_rel=gap_rel,
+            delta_actual=delta_actual,
             mult=grad_info["t"],
             rho_agree=rho_agree,
         )
@@ -1002,7 +1008,7 @@ def solve_eopt_sbm(
                 f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {min_eig_best:5.4e} | {eig_model:5.4e} |",
                 end="",
             )
-            print(f" {gap_rel:5.4e} | {m.trust_reg:5.4e} | {grad_info['t']:4d}")
+            print(f" {delta_actual:5.4e} | {m.trust_reg:5.4e} | {grad_info['t']:4d}")
         # Update Iterations
         n_iter += 1
     return x_curr, dict(
