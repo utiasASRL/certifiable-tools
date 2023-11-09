@@ -54,14 +54,14 @@ opts_sbm_dflt = dict(
     max_iter=1000,  # Maximum iterations
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     use_null=True,  # if true, reparameterize problem using null space
-    trust_reg_adapt=True # Use trust region adaptation
+    trust_reg_adapt=True,  # Use trust region adaptation
     trust_reg_init=1e2,  # Initial trust region size
     trust_reg_ub=1e3,  # Trust Region upper bound
     trust_reg_lb=1e-7,  # Trust Region lower bound
     agreement_req=0.0,  # Requirement on model agreement to take a serious step
-    r_c=4,  # Number of current eigenvectors to keep
+    r_c_max=15,  # Number of current eigenvectors to keep
     r_p=0,  # Number of previous eigenvectors to keep
-    tol_mult_eig = 1e-3 # Tolerance for multiplicity when adapting r_c
+    tol_mult_eig=1e-3,  # Tolerance for multiplicity when adapting r_c
     debug=False,  # Debugging flag
 )
 
@@ -638,8 +638,8 @@ class SpectralBundleModel:
         m.opts = opts
         # Get sizes
         r_p = opts["r_p"]
-        r_c = opts["r_c"]
-        r_bar = r_p + r_c
+        m.r_c = 1
+        r_bar = r_p + m.r_c
         # Store shape
         m.n_vars = A_vec.shape[1]
         m.n_x = Q.shape[0]
@@ -647,7 +647,7 @@ class SpectralBundleModel:
         m.Q = Q
         m.A_vec = A_vec
         # Define the eigenvector matrix
-        m.V = grad_info["eig_vecs"][:, :r_c]
+        m.V = grad_info["eig_vecs"][:, : m.r_c]
         # Define trust region
         m.trust_reg = opts["trust_reg_init"]
         m.trust_reg_ub = opts["trust_reg_ub"]
@@ -683,13 +683,15 @@ class SpectralBundleModel:
         certificate matrix
         """
         if m.opts["r_p"] == 0:
-            m.V = grad_info["eig_vecs"][:, : m.opts["r_c"]]
+            # TODO: Fix how this works later
+            m.V = grad_info["min_vec"][:, : m.opts["r_c_max"]]
+            m.r_c = m.V.shape[1]
         else:
             raise NotImplementedError
 
     def update_vars(m, opt_info, x_prev, grad_info):
         """update aggregate matrix variables"""
-        if m.opts["r_c"] == 1 and m.opts["r_p"] == 0:
+        if m.r_c == 1 and m.opts["r_p"] == 0:
             # Get optimization information
             u = opt_info["u"]
             eta = opt_info["eta"]
@@ -702,7 +704,7 @@ class SpectralBundleModel:
                 eta * m.Q_X + u * grad_info["min_vec"].T @ m.Q @ grad_info["min_vec"]
             )
 
-        elif m.opts["r_c"] > 1 and m.opts["r_p"] == 0:
+        elif m.r_c > 1 and m.opts["r_p"] == 0:
             # Get optimization information
             U = opt_info["U"]
             eta = opt_info["eta"]
@@ -731,7 +733,7 @@ class SpectralBundleModel:
 
     def get_ub(m, grad_info):
         """Compute upper bound of current model"""
-        if m.opts["r_c"] == 1 and m.opts["r_p"] == 0:
+        if m.r_c == 1 and m.opts["r_p"] == 0:
             # For simplified problem, UB problem is an LP
             # Inequalities
             # Set bounds on t level only
@@ -794,6 +796,7 @@ class SpectralBundleModel:
         )
         return opt_info
 
+    @profile
     def solve_sbm_sdp(m, x_curr, H_curr, grad_info, verbose=False):
         """Solve the spectral bundle method SDP subproblem to find optimal multiplier
         update. This function should only be called if r_p + r_c = r_bar > 1
@@ -809,7 +812,7 @@ class SpectralBundleModel:
             _type_: _description_
         """
         # Define Variables
-        r_bar = m.opts["r_p"] + m.opts["r_c"]
+        r_bar = m.opts["r_p"] + m.r_c
         U = cp.Variable((r_bar, r_bar), symmetric=True)
         eta = cp.Variable()
         # Constraints
@@ -868,6 +871,7 @@ class SpectralBundleModel:
         m.penalty = max(A_X_norm / m.trust_reg, 1.0e-8)
 
 
+@profile
 def solve_eopt_sbm(
     Q,
     A_vec,
@@ -891,7 +895,7 @@ def solve_eopt_sbm(
         kwargs_eig (dict, optional): _description_. Defaults to {}.
     """
     # Update required number of eigenvalues
-    n_eigs = np.min([opts["r_c"], Q.shape[0]])
+    n_eigs = np.min([opts["r_c_max"], Q.shape[0]])
     kwargs_eig.update(k=n_eigs)
     # Intialize status vars for optimization
     status = "RUNNING"
@@ -903,10 +907,11 @@ def solve_eopt_sbm(
     m = None
     min_eig_best = -np.inf
     H = None
+    tol_mult = 1e-10
     while status == "RUNNING":
         # SOLVE SPECTRAL BUNDLE PROGRAM
         if n_iter > 0:
-            if opts["r_c"] == 1 and opts["r_p"] == 0:
+            if n_iter == 0 or m.r_c == 1:
                 opt_info = m.solve_sbm_qp(x_curr=x_curr, grad_info=grad_info)
             else:
                 opt_info = m.solve_sbm_sdp(x_curr=x_curr, H_curr=H, grad_info=grad_info)
@@ -930,12 +935,13 @@ def solve_eopt_sbm(
         # Construct Current Certificate matrix
         H = get_cert_mat(Q, A_vec, x_curr)
         # Update gradient and eigenvalue
-        grad_info = get_grad_info(H=H, A_vec=A_vec, **kwargs_eig)
+        grad_info = get_grad_info(H=H, A_vec=A_vec, tol_mult=tol_mult, **kwargs_eig)
         # Update model with gradient information
         if m is None:
             m = SpectralBundleModel(Q, A_vec, grad_info, opts=opts)
         else:
             m.update_subspace(grad_info)
+            tol_mult = m.r_c
         # CHECKS
         if opts["debug"]:
             assert eig_model >= grad_info["min_eig"] - opts["tol_eig"], Exception(
