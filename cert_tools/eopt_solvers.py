@@ -54,10 +54,14 @@ opts_sbm_dflt = dict(
     max_iter=1000,  # Maximum iterations
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     use_null=True,  # if true, reparameterize problem using null space
-    trust_reg=1e2,  # Initial trust region size
-    agreement_req=0.0,  # multiplier for "serious step"
+    trust_reg_adapt=True # Use trust region adaptation
+    trust_reg_init=1e2,  # Initial trust region size
+    trust_reg_ub=1e3,  # Trust Region upper bound
+    trust_reg_lb=1e-7,  # Trust Region lower bound
+    agreement_req=0.0,  # Requirement on model agreement to take a serious step
     r_c=4,  # Number of current eigenvectors to keep
     r_p=0,  # Number of previous eigenvectors to keep
+    tol_mult_eig = 1e-3 # Tolerance for multiplicity when adapting r_c
     debug=False,  # Debugging flag
 )
 
@@ -199,12 +203,12 @@ def f_eopt(Q, A_vec, x, **kwargs_eig):
     return grad_info["min_eig"]
 
 
-def get_grad_info(H, A_vec, U=None, tau=1e-8, get_hessian=False, **kwargs_eig):
+def get_grad_info(H, A_vec, U=None, tol_mult=1e-8, get_hessian=False, **kwargs_eig):
     eig_vals, eig_vecs = get_min_eigpairs(H, **kwargs_eig)
     # get minimum eigenvalue
     min_eig = np.min(eig_vals)
     # split eigenvector sets based on closeness to min (multiplicity could be > 1)
-    ind_1 = np.abs(eig_vals - min_eig) < tau
+    ind_1 = np.abs(eig_vals - min_eig) < tol_mult
     Q_1 = eig_vecs[:, ind_1]
 
     # Size of matrix
@@ -223,7 +227,7 @@ def get_grad_info(H, A_vec, U=None, tau=1e-8, get_hessian=False, **kwargs_eig):
     # Compute Hessian
     if t == 1 and get_hessian:
         # Get other eigvectors and eigenvalues
-        ind_s = np.abs(eig_vals - min_eig) >= tau
+        ind_s = np.abs(eig_vals - min_eig) >= tol_mult
         Q_s = eig_vecs[:, ind_s]
         eig_inv_diffs = 1 / (min_eig - eig_vals[ind_s])
         Lambda_s = np.diag(eig_inv_diffs)
@@ -645,8 +649,10 @@ class SpectralBundleModel:
         # Define the eigenvector matrix
         m.V = grad_info["eig_vecs"][:, :r_c]
         # Define trust region
-        m.trust_reg = opts["trust_reg"]
-        m.trust_reg_ub = opts["trust_reg"]
+        m.trust_reg = opts["trust_reg_init"]
+        m.trust_reg_ub = opts["trust_reg_ub"]
+        m.trust_reg_lb = opts["trust_reg_lb"]
+        # Check if opt variables exist
         if m.n_vars > 0:
             # Define aggregate matrix variables
             # TODO: This needs to be changed for the case of r_bar > 1
@@ -657,7 +663,6 @@ class SpectralBundleModel:
                 # Store actual X (keep unit trace)
                 m.X = m.V @ m.V.T / r_bar
             # Initialize the trust region penalty parameter
-
             m.penalty = np.linalg.norm(m.A_X) / m.trust_reg
         else:
             # Random values (Don't matter)
@@ -720,9 +725,8 @@ class SpectralBundleModel:
         else:
             raise NotImplementedError
         # Update multipliers
+        # x = x_prev + m.A_X / np.linalg.norm(m.A_X) * m.trust_reg
         x = x_prev + m.A_X / m.penalty
-        # TODO Implement the null step checks here.
-
         return x
 
     def get_ub(m, grad_info):
@@ -851,15 +855,17 @@ class SpectralBundleModel:
         # Perform trust region update (See Nocedal and Wright)
         if rho < 1 / 4:
             # Shrink trust region
-            m.trust_reg = m.trust_reg / 4
+            m.trust_reg = max(m.trust_reg / 4, m.trust_reg_lb)
         else:
             # Expand trust region
-            trust_reg_num = A_X_norm / m.penalty
-            if rho > 3 / 4 and delta_norm - trust_reg_num >= -1e-10:
+            trust_reg_actual = A_X_norm / m.penalty
+            trust_violation = delta_norm - trust_reg_actual
+            assert trust_violation < 1e-2, ValueError("Trust Region Violated")
+            if rho > 3 / 4:
                 m.trust_reg = min(2 * m.trust_reg, m.trust_reg_ub)
             # Otherwise keep same region
         # Update the penalty
-        m.penalty = np.max([A_X_norm / m.trust_reg, 1.0e-8])
+        m.penalty = max(A_X_norm / m.trust_reg, 1.0e-8)
 
 
 def solve_eopt_sbm(
@@ -944,7 +950,8 @@ def solve_eopt_sbm(
         # Relative gap between model and actual
         gap_rel = np.abs(delta_actual / min_eig_best)
         # Update the trust region
-        m.update_trust(rho_agree, delta_norm)
+        if m.opts["trust_reg_adapt"]:
+            m.update_trust(rho_agree, delta_norm)
         # Check if model-objective agreement is acceptable
         if rho_agree >= opts["agreement_req"] or n_iter == 0:
             min_eig_best = grad_info["min_eig"]
@@ -962,7 +969,7 @@ def solve_eopt_sbm(
             status = "NO_VAR"
         elif n_iter >= opts["max_iter"]:  # max iterations
             status = "MAX_ITER"
-        # plot_along_grad(Q, A_vec, x_new, grad_info["subgrad"], 1)
+        # plot_along_grad(Q, A_vec, x_curr, m.A_X, 1)
 
         # Store data
         info = dict(
@@ -973,6 +980,7 @@ def solve_eopt_sbm(
             eig_model=eig_model,
             gap_rel=gap_rel,
             mult=grad_info["t"],
+            rho_agree=rho_agree,
         )
         iter_info += [info]
         if verbose:
@@ -1025,7 +1033,7 @@ def get_cert_mat(C, A_vec, mults, sparsify=True, exploit_centered=False):
 
 
 def plot_along_grad(C, A_vec, mults, step, alpha_max):
-    alphas = np.linspace(0, alpha_max, 100)
+    alphas = np.linspace(-alpha_max, alpha_max, 100)
     min_eigs = np.zeros(alphas.shape)
     for i in range(len(alphas)):
         step_alpha = mults + alphas[i] * step
