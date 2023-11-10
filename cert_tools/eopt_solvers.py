@@ -50,7 +50,7 @@ backtrack_start = 10.0
 # Options for Spectral Bundle Method
 opts_sbm_dflt = dict(
     tol_eig=1e-6,  # Eigenvalue tolerance
-    tol_gap=5e-4,  # term tolerance on relative gap btwn model eig and best eig
+    tol_gap=1e-5,  # term tolerance on relative gap btwn model eig and best eig
     max_iter=1000,  # Maximum iterations
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     use_null=True,  # if true, reparameterize problem using null space
@@ -798,6 +798,7 @@ class SpectralBundleModel:
         )
         return opt_info
 
+    # @profile
     def solve_sbm_sdp(m, x_curr, H_curr, grad_info, verbose=False):
         """Solve the spectral bundle method SDP subproblem to find optimal multiplier
         update. This function should only be called if r_p + r_c = r_bar > 1
@@ -824,18 +825,18 @@ class SpectralBundleModel:
         obj = eta * (m.Q_X + m.A_X.T @ x_curr)
         obj += cp.trace((m.V.T @ H_curr @ m.V) @ U)
         VAV = []
-        # for i in range(m.n_vars):
-        #     VAV += [(m.V.T @ m.A[i] @ m.V).reshape((1, -1), order="F")]
-        # VAV_U = np.vstack(VAV) @ cp.vec(U)
-        # # A_VUV = [cp.trace((m.V.T @ m.A[i] @ m.V) @ U) for i in range(m.n_vars)]
-        # # A_VUV = cp.vstack(A_VUV)
-        # A_X = eta * m.A_X[:, 0] + VAV_U
 
         A_VkV = m.A_vec.T @ np.kron(m.V, m.V)
         A_VUV = A_VkV @ cp.vec(U)
-        A_X = eta * m.A_X + A_VUV
-
+        A_X = eta * m.A_X[:, 0] + A_VUV
         obj += 1 / 2 / m.penalty * cp.sum_squares(A_X)
+
+        # cp_vars = cp.hstack([eta, cp.vec(U)])
+        # M1 = np.hstack([m.A_X.T @ m.A_X, (m.A_X.T @ A_VkV)])
+        # M2 = np.hstack([(m.A_X.T @ A_VkV).T, (A_VkV.T @ A_VkV)])
+        # M = np.vstack([M1, M2])
+        # M = M + np.eye(M.shape[0]) * 1e-12
+        # obj += 1 / 2 / m.penalty * cp.quad_form(cp_vars, M)
 
         # Define the SDP
         prob = cp.Problem(cp.Minimize(obj), constraints)
@@ -848,7 +849,9 @@ class SpectralBundleModel:
             prob.solve(solver="CVXOPT", **sdp_opts)
 
         # Return opt data
-        opt_info = dict(U=U.value, eta=eta.value, obj_val=obj.value, A_X=A_X.value)
+        opt_info = dict(
+            U=U.value, eta=eta.value, obj_val=obj.value, A_X=A_X.value[:, None]
+        )
         return opt_info
 
     def update_trust(m, rho, delta_norm):
@@ -915,7 +918,6 @@ def solve_eopt_sbm(
     m = None
     min_eig_best = -np.inf
     H = None
-    tol_mult = 1e-10
     while status == "RUNNING":
         # SOLVE SPECTRAL BUNDLE PROGRAM
         if n_iter > 0:
@@ -932,7 +934,7 @@ def solve_eopt_sbm(
             delta_x = x_curr - x_prev
             delta_norm = la.norm(delta_x)
             # Current model value
-            eig_model = opt_info["obj_val"][0, 0] + delta_norm**2 * m.penalty / 2
+            eig_model = (m.Q_X + m.A_X.T @ x_curr)[0, 0]
         else:
             # Init step
             delta_norm = 0.0
@@ -943,13 +945,14 @@ def solve_eopt_sbm(
         # Construct Current Certificate matrix
         H = get_cert_mat(Q, A_vec, x_curr)
         # Update gradient and eigenvalue
-        grad_info = get_grad_info(H=H, A_vec=A_vec, tol_mult=tol_mult, **kwargs_eig)
+        grad_info = get_grad_info(
+            H=H, A_vec=A_vec, tol_mult=opts["tol_mult_eig"], **kwargs_eig
+        )
         # Update model with gradient information
         if m is None:
             m = SpectralBundleModel(Q, A_vec, grad_info, opts=opts)
         else:
             m.update_subspace(grad_info)
-            tol_mult = m.r_c
         # CHECKS
         if opts["debug"]:
             assert eig_model >= grad_info["min_eig"] - opts["tol_eig"], Exception(
@@ -959,7 +962,7 @@ def solve_eopt_sbm(
         # STATUS AND VAR UPDATE
         # Compute the model-objective agreement
         delta_predict = eig_model - min_eig_best
-        assert delta_predict > 0, ValueError("predicted cost change is negative")
+        assert delta_predict > 0, ValueError("Predicted cost change is negative")
         delta_actual = grad_info["min_eig"] - min_eig_best
         rho_agree = delta_actual / delta_predict
         # Update the trust region
@@ -968,9 +971,12 @@ def solve_eopt_sbm(
         # Check if model-objective agreement is acceptable
         if rho_agree >= opts["agreement_req"] or n_iter == 0:
             min_eig_best = grad_info["min_eig"]
-        else:  # If model agreement is bad then don't step
+        else:
+            # If model agreement is then reset current step
             x_curr = x_prev
             delta_norm = 0.0
+            # Recompute certificate matrix
+            H = get_cert_mat(Q, A_vec, x_curr)
         # termination criteria
         if grad_info["min_eig"] >= -opts["tol_eig"]:  # positive lower bound
             status = "POS_LB"
@@ -1011,6 +1017,14 @@ def solve_eopt_sbm(
             print(f" {delta_actual:5.4e} | {m.trust_reg:5.4e} | {grad_info['t']:4d}")
         # Update Iterations
         n_iter += 1
+
+    # Recompute certificate
+    H = get_cert_mat(Q, A_vec, x_curr)
+    # Recompute gradient
+    grad_info = get_grad_info(
+        H=H, A_vec=A_vec, tol_mult=opts["tol_mult_eig"], **kwargs_eig
+    )
+
     return x_curr, dict(
         min_eig=grad_info["min_eig"],
         H=H,
@@ -1052,7 +1066,7 @@ def plot_along_grad(C, A_vec, mults, step, alpha_max):
         # Apply step
         H_alpha = get_cert_mat(C, A_vec, step_alpha)
         # Check new minimum eigenvalue
-        grad_info = get_grad_info(H_alpha, A_vec, k=1)
+        grad_info = get_grad_info(H_alpha, A_vec, k=1, method="direct")
         min_eigs[i] = grad_info["min_eig"]
 
     # Plot min eig
