@@ -664,11 +664,6 @@ class SpectralBundleModel:
             if opts["debug"]:
                 # Store actual X (keep unit trace)
                 m.X = m.V @ m.V.T / r_bar
-            # Initialize the trust region penalty parameter
-            m.penalty = np.linalg.norm(m.A_X) / m.trust_reg
-        else:
-            # Random values (Don't matter)
-            m.penalty = 1.0
 
     def eval_A_X(m, V):
         """computes trace(A_i @ V) for each constraint"""
@@ -729,8 +724,11 @@ class SpectralBundleModel:
         else:
             raise NotImplementedError
         # Update multipliers
-        # x = x_prev + m.A_X / np.linalg.norm(m.A_X) * m.trust_reg
-        x = x_prev + m.A_X / m.penalty
+        norm_A_X = np.linalg.norm(m.A_X)
+        if norm_A_X > 0:
+            x = x_prev + m.trust_reg * m.A_X / norm_A_X
+        else:
+            x = x_prev
         return x
 
     def get_ub(m, grad_info):
@@ -781,7 +779,7 @@ class SpectralBundleModel:
         obj = (
             eta * (m.Q_X + m.A_X.T @ x_curr)
             + u * grad_info["min_eig"]
-            + cp.sum_squares(eta * m.A_X + u * grad_info["subgrad"]) / 2 / m.penalty
+            + m.trust_reg * cp.norm(eta * m.A_X + u * grad_info["subgrad"], 2)
         )
         # Solve Quadratic Program:
         prob = cp.Problem(cp.Minimize(obj), constraints)
@@ -829,7 +827,7 @@ class SpectralBundleModel:
         A_VkV = m.A_vec.T @ np.kron(m.V, m.V)
         A_VUV = A_VkV @ cp.vec(U)
         A_X = eta * m.A_X[:, 0] + A_VUV
-        obj += 1 / 2 / m.penalty * cp.sum_squares(A_X)
+        obj += m.trust_reg * cp.norm(A_X, 2)
 
         # cp_vars = cp.hstack([eta, cp.vec(U)])
         # M1 = np.hstack([m.A_X.T @ m.A_X, (m.A_X.T @ A_VkV)])
@@ -863,24 +861,15 @@ class SpectralBundleModel:
             m (_type_): _description_
             rho (_type_): _description_
         """
-        if m.n_vars > 0:
-            A_X_norm = np.linalg.norm(m.A_X)
-        else:
-            A_X_norm = 1.0
         # Perform trust region update (See Nocedal and Wright)
         if rho < 1 / 4:
             # Shrink trust region
             m.trust_reg = max(m.trust_reg / 4, m.trust_reg_lb)
         else:
             # Expand trust region
-            trust_reg_actual = A_X_norm / m.penalty
-            trust_violation = delta_norm - trust_reg_actual
-            assert trust_violation < 1e-2, ValueError("Trust Region Violated")
             if rho > 3 / 4:
                 m.trust_reg = min(2 * m.trust_reg, m.trust_reg_ub)
             # Otherwise keep same region
-        # Update the penalty
-        m.penalty = max(A_X_norm / m.trust_reg, 1.0e-8)
 
 
 def solve_eopt_sbm(
