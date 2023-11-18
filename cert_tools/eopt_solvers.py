@@ -50,18 +50,19 @@ backtrack_start = 10.0
 # Options for Spectral Bundle Method
 opts_sbm_dflt = dict(
     tol_eig=1e-6,  # Eigenvalue tolerance
-    tol_gap=1e-5,  # term tolerance on relative gap btwn model eig and best eig
+    tol_gap=1e-7,  # term tolerance on relative gap btwn model eig and best eig
     max_iter=1000,  # Maximum iterations
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
+    tol_grad=1e-12,  # tolerance to decide when the gradient is zero.
     use_null=True,  # if true, reparameterize problem using null space
     trust_reg_adapt=True,  # Use trust region adaptation
-    trust_reg_init=1e-1,  # Initial trust region size
+    trust_reg_init=1e-0,  # Initial trust region size
     trust_reg_ub=1e3,  # Trust Region upper bound
     trust_reg_lb=1e-7,  # Trust Region lower bound
-    agreement_req=0.0,  # Requirement on model agreement to take a serious step
-    r_c_max=15,  # Number of current eigenvectors to keep
+    agreement_req=0.2,  # Requirement on model agreement to take a serious step
+    r_c_max=30,  # Number of current eigenvectors to keep
     r_p=0,  # Number of previous eigenvectors to keep
-    tol_mult_eig=1e-5,  # Tolerance for multiplicity when adapting r_c
+    tol_mult_eig=1e-3,  # Tolerance for multiplicity when adapting r_c
     debug=False,  # Debugging flag
 )
 
@@ -407,6 +408,7 @@ def solve_eopt_sub(
     A_eq=None,
     b_eq=None,
     xinit=None,
+    x_cand=None,
     opts=opts_sub_dflt,
     verbose=1,
     kwargs_eig={},
@@ -434,7 +436,7 @@ def solve_eopt_sub(
     x = xinit
     print("it \t alpha \t t \t l_min")
     np.random.seed(1)
-
+    iter_info = []
     l_new = None
     while i <= opts["max_iters"]:
         H = get_cert_mat(Q, A_vec, x)
@@ -444,6 +446,13 @@ def solve_eopt_sub(
             print(f"multiplicity {t}")
         if i == 0 and verbose > 0:
             print(f"start \t ------ \t {t} \t {grad_info['min_eig']:1.4e}")
+        # Iteration Information
+        info = dict(
+            n_iter=i,
+            x=x.copy(),
+            min_eig_curr=grad_info["min_eig"],
+        )
+        iter_info += [info]
 
         grad = grad_info["subgrad"][:, 0]
         d = grad / np.linalg.norm(grad)
@@ -474,6 +483,7 @@ def solve_eopt_sub(
             msg = "Converged in stepsize"
             success = True
             break
+
         x += alpha * d
 
         if verbose > 0:
@@ -488,7 +498,18 @@ def solve_eopt_sub(
         if i == opts["max_iters"]:
             msg = "Reached maximum iterations"
             success = False
-    info = {"success": success, "msg": msg, "min_eig": l_new, "H": H}
+    if success and (opts["tol_eig"] is not None) and (l_new >= -opts["tol_eig"]):
+        status = "CERT"
+    else:
+        status = "FAIL"
+    info = {
+        "success": success,
+        "status": status,
+        "msg": msg,
+        "min_eig": l_new,
+        "H": H,
+        "iter_info": pd.DataFrame(iter_info),
+    }
     return x, info
 
 
@@ -646,7 +667,7 @@ class SpectralBundleModel:
         # Store constraints and cost
         m.Q = Q
         m.A_vec = A_vec
-        m.A = [A_vec[:, i].reshape(m.n_x, m.n_x, order="F") for i in range(m.n_vars)]
+        # m.A = [A_vec[:, i].reshape(m.n_x, m.n_x, order="F") for i in range(m.n_vars)]
 
         # Define the eigenvector matrix
         m.V = grad_info["eig_vecs"][:, : m.r_c]
@@ -698,7 +719,8 @@ class SpectralBundleModel:
             # Update agreggate variables
             m.A_X = eta * m.A_X + u * grad_info["subgrad"]
             m.Q_X = (
-                eta * m.Q_X + u * grad_info["min_vec"].T @ m.Q @ grad_info["min_vec"]
+                eta * m.Q_X
+                + u * grad_info["min_vec"][:, 0].T @ m.Q @ grad_info["min_vec"][:, 0]
             )
 
         elif m.r_c > 1 and m.opts["r_p"] == 0:
@@ -725,7 +747,7 @@ class SpectralBundleModel:
             raise NotImplementedError
         # Update multipliers
         norm_A_X = np.linalg.norm(m.A_X)
-        if norm_A_X > 0:
+        if norm_A_X > m.opts["tol_grad"]:
             x = x_prev + m.trust_reg * m.A_X / norm_A_X
         else:
             x = x_prev
@@ -774,7 +796,7 @@ class SpectralBundleModel:
         u = cp.Variable()
         eta = cp.Variable()
         # CONSTRAINTS
-        constraints = [u + eta <= 1.0, u >= 0.0, eta >= 0.0]
+        constraints = [u + eta == 1.0, u >= 0.0, eta >= 0.0]
         # Objective
         obj = (
             eta * (m.Q_X + m.A_X.T @ x_curr)
@@ -818,7 +840,7 @@ class SpectralBundleModel:
         # Constraints
         constraints = [U >> 0]
         constraints += [eta >= 0]
-        constraints += [eta + cp.trace(U) <= 1]
+        constraints += [eta + cp.trace(U) == 1]
         # Objective
         obj = eta * (m.Q_X + m.A_X.T @ x_curr)
         obj += cp.trace((m.V.T @ H_curr @ m.V) @ U)
@@ -916,23 +938,24 @@ def solve_eopt_sbm(
                 opt_info = m.solve_sbm_sdp(x_curr=x_curr, H_curr=H, grad_info=grad_info)
             # Update variables
             x_prev = x_curr.copy()
-            x_curr = m.update_vars(
+            x_step = m.update_vars(
                 opt_info=opt_info, x_prev=x_prev, grad_info=grad_info
             )
             # Compute change in multipliers
-            delta_x = x_curr - x_prev
+            delta_x = x_step - x_prev
             delta_norm = la.norm(delta_x)
             # Current model value
-            eig_model = (m.Q_X + m.A_X.T @ x_curr)[0, 0]
+            eig_model = (m.Q_X + m.A_X.T @ x_step)[0, 0]
         else:
             # Init step
             delta_norm = 0.0
             eig_model = np.inf
             x_prev = x_curr
+            x_step = x_curr
 
         # GET CERTIFICATE AND GRADIENT INFO
         # Construct Current Certificate matrix
-        H = get_cert_mat(Q, A_vec, x_curr)
+        H = get_cert_mat(Q, A_vec, x_step)
         # Update gradient and eigenvalue
         grad_info = get_grad_info(
             H=H, A_vec=A_vec, tol_mult=opts["tol_mult_eig"], **kwargs_eig
@@ -960,6 +983,7 @@ def solve_eopt_sbm(
         # Check if model-objective agreement is acceptable
         if rho_agree >= opts["agreement_req"] or n_iter == 0:
             min_eig_best = grad_info["min_eig"]
+            x_curr = x_step
         else:
             # If model agreement is then reset current step
             x_curr = x_prev
@@ -982,7 +1006,7 @@ def solve_eopt_sbm(
         info = dict(
             n_iter=n_iter,
             delta_norm=delta_norm,
-            x=x_curr,
+            x=x_step,
             min_eig_curr=grad_info["min_eig"],
             eig_model=eig_model,
             delta_actual=delta_actual,
