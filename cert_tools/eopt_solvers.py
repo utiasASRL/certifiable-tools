@@ -47,6 +47,25 @@ backtrack_cutoff = 0.2
 # starting value for alpha
 backtrack_start = 10.0
 
+# Options for Spectral Bundle Method
+opts_sbm_dflt = dict(
+    tol_eig=1e-6,  # Eigenvalue tolerance
+    tol_gap=1e-7,  # term tolerance on relative gap btwn model eig and best eig
+    max_iter=1000,  # Maximum iterations
+    tol_null=1e-5,  # null space tolerance for first order KKT constraints
+    tol_grad=1e-12,  # tolerance to decide when the gradient is zero.
+    use_null=True,  # if true, reparameterize problem using null space
+    trust_reg_adapt=True,  # Use trust region adaptation
+    trust_reg_init=1e-0,  # Initial trust region size
+    trust_reg_ub=1e3,  # Trust Region upper bound
+    trust_reg_lb=1e-7,  # Trust Region lower bound
+    agreement_req=0.2,  # Requirement on model agreement to take a serious step
+    r_c_max=30,  # Number of current eigenvectors to keep
+    r_p=0,  # Number of previous eigenvectors to keep
+    tol_mult_eig=1e-3,  # Tolerance for multiplicity when adapting r_c
+    debug=False,  # Debugging flag
+)
+
 
 class CutPlaneModel:
     """This class stores all of the information of the cutting plane model.
@@ -185,13 +204,14 @@ def f_eopt(Q, A_vec, x, **kwargs_eig):
     return grad_info["min_eig"]
 
 
-def get_grad_info(H, A_vec, U=None, tau=1e-8, get_hessian=False, **kwargs_eig):
+def get_grad_info(H, A_vec, U=None, tol_mult=1e-8, get_hessian=False, **kwargs_eig):
     eig_vals, eig_vecs = get_min_eigpairs(H, **kwargs_eig)
     # get minimum eigenvalue
     min_eig = np.min(eig_vals)
     # split eigenvector sets based on closeness to min (multiplicity could be > 1)
-    ind_1 = np.abs(eig_vals - min_eig) < tau
+    ind_1 = np.abs(eig_vals - min_eig) < tol_mult
     Q_1 = eig_vecs[:, ind_1]
+
     # Size of matrix
     n = H.shape[0]
     # Multiplicity
@@ -208,7 +228,7 @@ def get_grad_info(H, A_vec, U=None, tau=1e-8, get_hessian=False, **kwargs_eig):
     # Compute Hessian
     if t == 1 and get_hessian:
         # Get other eigvectors and eigenvalues
-        ind_s = np.abs(eig_vals - min_eig) >= tau
+        ind_s = np.abs(eig_vals - min_eig) >= tol_mult
         Q_s = eig_vecs[:, ind_s]
         eig_inv_diffs = 1 / (min_eig - eig_vals[ind_s])
         Lambda_s = np.diag(eig_inv_diffs)
@@ -227,6 +247,7 @@ def get_grad_info(H, A_vec, U=None, tau=1e-8, get_hessian=False, **kwargs_eig):
         min_vec=Q_1,
         t=t,
         damp=damp,
+        eig_vecs=eig_vecs,
     )
     return grad_info
 
@@ -310,7 +331,7 @@ def solve_eopt(
 
     # INITIALIZE
     # Initialize multiplier variables
-    x_bar = la.lstsq(A_eq, b_eq, rcond=None)[0]
+    x_bar = la.lstsq(A_eq, b_eq, rcond=opts["tol_null"])[0]
 
     if use_null:
         # Update Q matrix to include the fixed lagrange multipliers
@@ -347,6 +368,8 @@ def solve_eopt(
         solver = solve_eopt_cuts
     elif method == "sub":
         solver = solve_eopt_sub
+    elif method == "sbm":
+        solver = solve_eopt_sbm
     else:
         raise ValueError(f"Unknown method {method} in solve_eopt")
 
@@ -385,6 +408,7 @@ def solve_eopt_sub(
     A_eq=None,
     b_eq=None,
     xinit=None,
+    x_cand=None,
     opts=opts_sub_dflt,
     verbose=1,
     kwargs_eig={},
@@ -412,7 +436,7 @@ def solve_eopt_sub(
     x = xinit
     print("it \t alpha \t t \t l_min")
     np.random.seed(1)
-
+    iter_info = []
     l_new = None
     while i <= opts["max_iters"]:
         H = get_cert_mat(Q, A_vec, x)
@@ -422,6 +446,13 @@ def solve_eopt_sub(
             print(f"multiplicity {t}")
         if i == 0 and verbose > 0:
             print(f"start \t ------ \t {t} \t {grad_info['min_eig']:1.4e}")
+        # Iteration Information
+        info = dict(
+            n_iter=i,
+            x=x.copy(),
+            min_eig_curr=grad_info["min_eig"],
+        )
+        iter_info += [info]
 
         grad = grad_info["subgrad"][:, 0]
         d = grad / np.linalg.norm(grad)
@@ -452,6 +483,7 @@ def solve_eopt_sub(
             msg = "Converged in stepsize"
             success = True
             break
+
         x += alpha * d
 
         if verbose > 0:
@@ -466,7 +498,18 @@ def solve_eopt_sub(
         if i == opts["max_iters"]:
             msg = "Reached maximum iterations"
             success = False
-    info = {"success": success, "msg": msg, "min_eig": l_new, "H": H}
+    if success and (opts["tol_eig"] is not None) and (l_new >= -opts["tol_eig"]):
+        status = "CERT"
+    else:
+        status = "FAIL"
+    info = {
+        "success": success,
+        "status": status,
+        "msg": msg,
+        "min_eig": l_new,
+        "H": H,
+        "iter_info": pd.DataFrame(iter_info),
+    }
     return x, info
 
 
@@ -603,6 +646,407 @@ def solve_eopt_cuts(
     )
 
 
+class SpectralBundleModel:
+    """SpectralBundleModel class stores all of the information associated with the spectral bundle method for eigenvalue optimization. It also stores methods for updating these variables."""
+
+    def __init__(m, Q, A_vec, grad_info, opts=opts_sbm_dflt):
+        # Check that the null space has been removed
+        if not opts["use_null"]:
+            raise ValueError(
+                "Spectral Bundle method requires that the eigenvalue problem is unconstrained. Please preprocess to remove constraints."
+            )
+        # Store Options
+        m.opts = opts
+        # Get sizes
+        r_p = opts["r_p"]
+        m.r_c = 1
+        r_bar = r_p + m.r_c
+        # Store shape
+        m.n_vars = A_vec.shape[1]
+        m.n_x = Q.shape[0]
+        # Store constraints and cost
+        m.Q = Q
+        m.A_vec = A_vec
+        # m.A = [A_vec[:, i].reshape(m.n_x, m.n_x, order="F") for i in range(m.n_vars)]
+
+        # Define the eigenvector matrix
+        m.V = grad_info["eig_vecs"][:, : m.r_c]
+        # Define trust region
+        m.trust_reg = opts["trust_reg_init"]
+        m.trust_reg_ub = opts["trust_reg_ub"]
+        m.trust_reg_lb = opts["trust_reg_lb"]
+        # Check if opt variables exist
+        if m.n_vars > 0:
+            # Define aggregate matrix variables
+            # TODO: This needs to be changed for the case of r_bar > 1
+            m.A_X = m.eval_A_X(m.V)
+            m.Q_X = np.sum(np.trace(m.V.T @ Q @ m.V)) / r_bar
+            # Debug variables
+            if opts["debug"]:
+                # Store actual X (keep unit trace)
+                m.X = m.V @ m.V.T / r_bar
+
+    def eval_A_X(m, V):
+        """computes trace(A_i @ V) for each constraint"""
+        if not V.shape[0] == V.shape[1]:
+            X = V @ V.T
+        else:
+            X = V
+        vec_X = X.reshape((-1, 1), order="F")
+
+        return m.A_vec.T @ vec_X
+
+    def update_subspace(m, grad_info):
+        """populate the subspace vectors with eigenvector information of current
+        certificate matrix
+        """
+        if m.opts["r_p"] == 0:
+            # TODO: Fix how this works later
+            m.V = grad_info["min_vec"][:, : m.opts["r_c_max"]]
+            m.r_c = m.V.shape[1]
+        else:
+            raise NotImplementedError
+
+    def update_vars(m, opt_info, x_prev, grad_info):
+        """update aggregate matrix variables"""
+        if m.r_c == 1 and m.opts["r_p"] == 0:
+            # Get optimization information
+            u = opt_info["u"]
+            eta = opt_info["eta"]
+            # Store big X if debugging
+            if m.opts["debug"]:
+                m.X = eta * m.X + u * grad_info["min_vec"] @ grad_info["min_vec"].T
+            # Update agreggate variables
+            m.A_X = eta * m.A_X + u * grad_info["subgrad"]
+            m.Q_X = (
+                eta * m.Q_X
+                + u * grad_info["min_vec"][:, 0].T @ m.Q @ grad_info["min_vec"][:, 0]
+            )
+
+        elif m.r_c > 1 and m.opts["r_p"] == 0:
+            # Get optimization information
+            U = opt_info["U"]
+            eta = opt_info["eta"]
+            # Store big X if debugging
+            if m.opts["debug"]:
+                m.X = eta * m.X + m.V @ U @ m.V.T
+                assert np.trace(m.X) < 1 + 1e-7
+            # Update agreggate variables
+            m.A_X = opt_info["A_X"]
+            VQV = m.V.T @ m.Q @ m.V
+            m.Q_X = eta * m.Q_X + np.trace(VQV @ U)
+            # DEBUG assert that the A_X and Q_X are correct
+            if m.opts["debug"]:
+                np.testing.assert_almost_equal(
+                    m.A_X, m.eval_A_X(m.X), err_msg="A_X not correct"
+                )
+                np.testing.assert_almost_equal(
+                    m.Q_X, np.trace(m.Q @ m.X), err_msg="Q_X not correct"
+                )
+        else:
+            raise NotImplementedError
+        # Update multipliers
+        norm_A_X = np.linalg.norm(m.A_X)
+        if norm_A_X > m.opts["tol_grad"]:
+            x = x_prev + m.trust_reg * m.A_X / norm_A_X
+        else:
+            x = x_prev
+        return x
+
+    def get_ub(m, grad_info):
+        """Compute upper bound of current model"""
+        if m.r_c == 1 and m.opts["r_p"] == 0:
+            # For simplified problem, UB problem is an LP
+            # Inequalities
+            # Set bounds on t level only
+            bounds = [(0.0, None), (0.0, None)]
+            A_ineq = np.array([[1.0, 1.0]])
+            b_ineq = 1.0
+            # Equalities ( A(X) = 0 )
+            A_eq = np.hstack([m.A_X, m.eval_A_X(grad_info["min_vec"])])
+            b_eq = np.zeros(A_eq.shape[0])
+            A_eq = A_eq[[0], :]
+            b_eq = 0.0
+            # Cost
+            Q_v = grad_info["min_vec"].T @ m.Q @ grad_info["min_vec"]
+            c = np.array([m.Q_X, Q_v])
+            # Run Linprog
+            res = linprog(
+                c=c.squeeze(),
+                A_eq=A_eq,
+                b_eq=b_eq,
+                A_ub=A_ineq,
+                b_ub=b_ineq,
+                method="highs-ds",
+                bounds=bounds,
+            )
+            if res.success:
+                return res.fun
+            else:
+                raise ValueError("UB linear subproblem failed.")
+            return
+        else:
+            raise NotImplementedError
+
+    def solve_sbm_qp(m, x_curr, grad_info):
+        """Solve Spectral Bundle method subproblem for the case where the SDP variable
+        is scalar."""
+
+        # VARIABLES
+        u = cp.Variable()
+        eta = cp.Variable()
+        # CONSTRAINTS
+        constraints = [u + eta == 1.0, u >= 0.0, eta >= 0.0]
+        # Objective
+        obj = (
+            eta * (m.Q_X + m.A_X.T @ x_curr)
+            + u * grad_info["min_eig"]
+            + m.trust_reg * cp.norm(eta * m.A_X + u * grad_info["subgrad"], 2)
+        )
+        # Solve Quadratic Program:
+        prob = cp.Problem(cp.Minimize(obj), constraints)
+        try:
+            prob.solve(solver="MOSEK", verbose=False)
+        except mosek.Error:
+            print("Did not find MOSEK, using different solver.")
+            prob.solve(solver="CVXOPT", verbose=False)
+        # Get solution
+        opt_info = dict(
+            u=u.value,
+            eta=eta.value,
+            obj_val=obj.value,
+        )
+        return opt_info
+
+    # @profile
+    def solve_sbm_sdp(m, x_curr, H_curr, grad_info, verbose=False):
+        """Solve the spectral bundle method SDP subproblem to find optimal multiplier
+        update. This function should only be called if r_p + r_c = r_bar > 1
+
+        Args:
+            m (_type_): _description_
+            x_curr (_type_): _description_
+            H_curr (_type_): _description_
+            grad_info (_type_): _description_
+            verbose (bool, optional): _description_. Defaults to False.
+
+        Returns:
+            _type_: _description_
+        """
+        # Define Variables
+        r_bar = m.opts["r_p"] + m.r_c
+        U = cp.Variable((r_bar, r_bar), symmetric=True)
+        eta = cp.Variable()
+        # Constraints
+        constraints = [U >> 0]
+        constraints += [eta >= 0]
+        constraints += [eta + cp.trace(U) == 1]
+        # Objective
+        obj = eta * (m.Q_X + m.A_X.T @ x_curr)
+        obj += cp.trace((m.V.T @ H_curr @ m.V) @ U)
+        VAV = []
+
+        A_VkV = m.A_vec.T @ np.kron(m.V, m.V)
+        A_VUV = A_VkV @ cp.vec(U)
+        A_X = eta * m.A_X[:, 0] + A_VUV
+        obj += m.trust_reg * cp.norm(A_X, 2)
+
+        # cp_vars = cp.hstack([eta, cp.vec(U)])
+        # M1 = np.hstack([m.A_X.T @ m.A_X, (m.A_X.T @ A_VkV)])
+        # M2 = np.hstack([(m.A_X.T @ A_VkV).T, (A_VkV.T @ A_VkV)])
+        # M = np.vstack([M1, M2])
+        # M = M + np.eye(M.shape[0]) * 1e-12
+        # obj += 1 / 2 / m.penalty * cp.quad_form(cp_vars, M)
+
+        # Define the SDP
+        prob = cp.Problem(cp.Minimize(obj), constraints)
+        sdp_opts = dict(verbose=m.opts["debug"])
+        # Solve the SDP
+        try:
+            prob.solve(solver="MOSEK", **sdp_opts)
+        except mosek.Error:
+            print("Did not find MOSEK, using different solver.")
+            prob.solve(solver="CVXOPT", **sdp_opts)
+
+        # Return opt data
+        opt_info = dict(
+            U=U.value, eta=eta.value, obj_val=obj.value, A_X=A_X.value[:, None]
+        )
+        return opt_info
+
+    def update_trust(m, rho, delta_norm):
+        """Update the effective trust region for SBM. Note that the trust region is
+        currently maintained by adapting the penalty term, since the SBM uses a
+        a penalty.
+
+        Args:
+            m (_type_): _description_
+            rho (_type_): _description_
+        """
+        # Perform trust region update (See Nocedal and Wright)
+        if rho < 1 / 4:
+            # Shrink trust region
+            m.trust_reg = max(m.trust_reg / 4, m.trust_reg_lb)
+        else:
+            # Expand trust region
+            if rho > 3 / 4:
+                m.trust_reg = min(2 * m.trust_reg, m.trust_reg_ub)
+            # Otherwise keep same region
+
+
+def solve_eopt_sbm(
+    Q,
+    A_vec,
+    xinit,
+    A_eq=None,
+    b_eq=None,
+    verbose=True,
+    opts=opts_sbm_dflt,
+    kwargs_eig={},
+):
+    """Solve Eigenvalue Optimization using the spectral bundle method.
+
+    Args:
+        Q (_type_): _description_
+        A_vec (_type_): _description_
+        xinit (_type_): _description_
+        A_eq (_type_, optional): _description_. Defaults to None.
+        b_eq (_type_, optional): _description_. Defaults to None.
+        verbose (bool, optional): _description_. Defaults to True.
+        opts (_type_, optional): _description_. Defaults to opts_cut_dflt.
+        kwargs_eig (dict, optional): _description_. Defaults to {}.
+    """
+    # Update required number of eigenvalues
+    n_eigs = np.min([opts["r_c_max"], Q.shape[0]])
+    kwargs_eig.update(k=n_eigs)
+    # Intialize status vars for optimization
+    status = "RUNNING"
+    header_printed = False
+    n_iter = 0
+    x_curr = xinit
+    iter_info = []
+    grad_info = None
+    m = None
+    min_eig_best = -np.inf
+    H = None
+    while status == "RUNNING":
+        # SOLVE SPECTRAL BUNDLE PROGRAM
+        if n_iter > 0:
+            if n_iter == 0 or m.r_c == 1:
+                opt_info = m.solve_sbm_qp(x_curr=x_curr, grad_info=grad_info)
+            else:
+                opt_info = m.solve_sbm_sdp(x_curr=x_curr, H_curr=H, grad_info=grad_info)
+            # Update variables
+            x_prev = x_curr.copy()
+            x_step = m.update_vars(
+                opt_info=opt_info, x_prev=x_prev, grad_info=grad_info
+            )
+            # Compute change in multipliers
+            delta_x = x_step - x_prev
+            delta_norm = la.norm(delta_x)
+            # Current model value
+            eig_model = (m.Q_X + m.A_X.T @ x_step)[0, 0]
+        else:
+            # Init step
+            delta_norm = 0.0
+            eig_model = np.inf
+            x_prev = x_curr
+            x_step = x_curr
+
+        # GET CERTIFICATE AND GRADIENT INFO
+        # Construct Current Certificate matrix
+        H = get_cert_mat(Q, A_vec, x_step)
+        # Update gradient and eigenvalue
+        grad_info = get_grad_info(
+            H=H, A_vec=A_vec, tol_mult=opts["tol_mult_eig"], **kwargs_eig
+        )
+        # Update model with gradient information
+        if m is None:
+            m = SpectralBundleModel(Q, A_vec, grad_info, opts=opts)
+        else:
+            m.update_subspace(grad_info)
+        # CHECKS
+        if opts["debug"]:
+            assert eig_model >= grad_info["min_eig"] - opts["tol_eig"], Exception(
+                "Model value is below actual."
+            )
+
+        # STATUS AND VAR UPDATE
+        # Compute the model-objective agreement
+        delta_predict = eig_model - min_eig_best
+        assert delta_predict > 0, ValueError("Predicted cost change is negative")
+        delta_actual = grad_info["min_eig"] - min_eig_best
+        rho_agree = delta_actual / delta_predict
+        # Update the trust region
+        if m.opts["trust_reg_adapt"]:
+            m.update_trust(rho_agree, delta_norm)
+        # Check if model-objective agreement is acceptable
+        if rho_agree >= opts["agreement_req"] or n_iter == 0:
+            min_eig_best = grad_info["min_eig"]
+            x_curr = x_step
+        else:
+            # If model agreement is then reset current step
+            x_curr = x_prev
+            delta_norm = 0.0
+            # Recompute certificate matrix
+            H = get_cert_mat(Q, A_vec, x_curr)
+        # termination criteria
+        if grad_info["min_eig"] >= -opts["tol_eig"]:  # positive lower bound
+            status = "POS_LB"
+        elif delta_predict <= opts["tol_gap"] * (1 + np.abs(min_eig_best)):
+            # Model converged but mineig not positive
+            status = "GAP"
+        elif m.n_vars == 0:  # no variables (i.e. no redundant constraints)
+            status = "NO_VAR"
+        elif n_iter >= opts["max_iter"]:  # max iterations
+            status = "MAX_ITER"
+        # plot_along_grad(Q, A_vec, x_curr, m.A_X, 1)
+
+        # Store data
+        info = dict(
+            n_iter=n_iter,
+            delta_norm=delta_norm,
+            x=x_step,
+            min_eig_curr=grad_info["min_eig"],
+            eig_model=eig_model,
+            delta_actual=delta_actual,
+            mult=grad_info["t"],
+            rho_agree=rho_agree,
+        )
+        iter_info += [info]
+        if verbose:
+            if n_iter % 10 == 0:
+                header_printed = False
+            if header_printed is False:
+                print(
+                    " N   | delta_nrm |  eig val  |  eig bst  |   mdl opt   |", end=""
+                )
+                print("  rel gap  |   trust   | mult. |")
+                header_printed = True
+            print(
+                f" {n_iter:3d} | {delta_norm:5.4e} | {grad_info['min_eig']:5.4e} | {min_eig_best:5.4e} | {eig_model:5.4e} |",
+                end="",
+            )
+            print(f" {delta_actual:5.4e} | {m.trust_reg:5.4e} | {grad_info['t']:4d}")
+        # Update Iterations
+        n_iter += 1
+
+    # Recompute certificate
+    H = get_cert_mat(Q, A_vec, x_curr)
+    # Recompute gradient
+    grad_info = get_grad_info(
+        H=H, A_vec=A_vec, tol_mult=opts["tol_mult_eig"], **kwargs_eig
+    )
+
+    return x_curr, dict(
+        min_eig=grad_info["min_eig"],
+        H=H,
+        status=status,
+        model=m,
+        iter_info=pd.DataFrame(iter_info),
+    )
+
+
 def get_cert_mat(C, A_vec, mults, sparsify=True, exploit_centered=False):
     """Generate certificate matrix from cost, constraints and multipliers
     C is the cost matrix amd A_vec is expected to be a vectorized version
@@ -628,14 +1072,14 @@ def get_cert_mat(C, A_vec, mults, sparsify=True, exploit_centered=False):
 
 
 def plot_along_grad(C, A_vec, mults, step, alpha_max):
-    alphas = np.linspace(0, alpha_max, 100)
+    alphas = np.linspace(-alpha_max, alpha_max, 100)
     min_eigs = np.zeros(alphas.shape)
     for i in range(len(alphas)):
         step_alpha = mults + alphas[i] * step
         # Apply step
         H_alpha = get_cert_mat(C, A_vec, step_alpha)
         # Check new minimum eigenvalue
-        grad_info = get_grad_info(H_alpha, A_vec, k=1)
+        grad_info = get_grad_info(H_alpha, A_vec, k=1, method="direct")
         min_eigs[i] = grad_info["min_eig"]
 
     # Plot min eig
