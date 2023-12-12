@@ -15,7 +15,12 @@ def rank_project(X, p=1, tolerance=1e-10):
     x = V[:, -p:] * np.sqrt(E[-p:])
 
     X_hat = np.outer(x, x)
-    info = {"error X": np.linalg.norm(X_hat - X), "error eigs": np.sum(np.abs(E[:p]))}
+    error = np.sum(np.abs(E[:-p]))
+    info = {
+        "error X": np.linalg.norm(X_hat - X),
+        "error eigs": error,
+        "mean error eigs": error / (X.shape[0] - p),
+    }
     return x, info
 
 
@@ -24,6 +29,7 @@ def find_dependent_columns(A_sparse, tolerance=1e-10):
     Returns a list of indices corresponding to the columns of A_sparse that are linearly dependent.
     """
     import sparseqr as sqr
+
     # Use sparse rank revealing QR
     # We "solve" a least squares problem to get the rank and permutations
     # This is the cheapest way to use sparse QR, since it does not require

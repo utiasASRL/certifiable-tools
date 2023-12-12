@@ -1,25 +1,23 @@
-# Optimization
-import mosek
-import cvxpy as cp
-import casadi as cas
+from copy import deepcopy
+import sys
 
-# Maths
+import casadi as cas
+import cvxpy as cp
+import mosek
+
 import numpy as np
 import scipy.sparse as sp
-
-#
-import sys
 
 
 # Define global default values for MOSEK IP solver
 sdp_opts_dflt = {}
 sdp_opts_dflt["mosek_params"] = {
     "MSK_IPAR_INTPNT_MAX_ITERATIONS": 500,
-    "MSK_DPAR_INTPNT_CO_TOL_PFEAS": 1e-8,
-    "MSK_DPAR_INTPNT_CO_TOL_REL_GAP": 1e-8,
+    "MSK_DPAR_INTPNT_CO_TOL_PFEAS": 1e-10,
+    "MSK_DPAR_INTPNT_CO_TOL_REL_GAP": 1e-10,
     "MSK_DPAR_INTPNT_CO_TOL_MU_RED": 1e-10,
-    "MSK_DPAR_INTPNT_CO_TOL_INFEAS": 1e-8,
-    "MSK_DPAR_INTPNT_CO_TOL_DFEAS": 1e-8,
+    "MSK_DPAR_INTPNT_CO_TOL_INFEAS": 1e-10,
+    "MSK_DPAR_INTPNT_CO_TOL_DFEAS": 1e-10,
     "MSK_IPAR_INTPNT_SOLVE_FORM": "MSK_SOLVE_DUAL",
 }
 # sdp_opts_dflt["save_file"] = "solve_cvxpy_.ptf"
@@ -27,6 +25,7 @@ sdp_opts_dflt["mosek_params"] = {
 
 def adjust_Q(Q, offset=True, scale=True):
     from copy import deepcopy
+    import scipy.sparse.linalg as spl
 
     # TODO(FD) choose if we are keeping this sanity check, might be useful
     ii, jj = (Q == Q.max()).nonzero()
@@ -43,8 +42,8 @@ def adjust_Q(Q, offset=True, scale=True):
     Q_mat[0, 0] -= Q_offset
 
     if scale:
-        # Q_scale = spl.norm(Q_mat, "fro")
-        Q_scale = Q_mat.max()
+        Q_scale = spl.norm(Q_mat, "fro")
+        # Q_scale = Q_mat.max()
     else:
         Q_scale = 1.0
     Q_mat /= Q_scale
@@ -120,6 +119,118 @@ def solve_low_rank_sdp(
     return Y_opt, info
 
 
+def solve_sdp(
+    Q,
+    Constraints,
+    adjust=False,
+    use_primal=False,
+    verbose=True,
+    sdp_opts=sdp_opts_dflt,
+    **kwargs,
+):
+    """Solve SDP using the MOSEK API.
+
+    Args:
+        Q (_type_): Cost Matrix
+        Constraints (): List of tuples representing constraints. Each tuple, (A,b) is such that
+                        tr(A @ X) == b
+        adjust (bool, optional): Whether or not to rescale and shift Q for better conditioning.
+        verbose (bool, optional): If true, prints output to screen. Defaults to True.
+
+    Returns:
+        _type_: _description_
+    """
+    Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
+
+    sdp_opts_here = deepcopy(sdp_opts_dflt)
+    sdp_opts_here.update(sdp_opts)
+    sdp_opts_here["verbose"] = verbose
+
+    if not use_primal:
+        yvals = cp.Variable(len(Constraints))
+        b = np.array([Ab[1] for Ab in Constraints])
+        objective = cp.Maximize(-yvals @ b)
+        H = cp.Variable(Q_here.shape, symmetric=True)
+        H = cp.sum([Q_here] + [yvals[i] * Ab[0] for (i, Ab) in enumerate(Constraints)])
+        constraints = [H >> 0]
+        cprob = cp.Problem(objective, constraints)
+        try:
+            try:
+                cprob.solve(
+                    solver="MOSEK",
+                    **sdp_opts_here,
+                )
+            except mosek.Error:
+                print("Did not find MOSEK, using different solver.")
+                cprob.solve(verbose=verbose, solver="CVXOPT")
+        except Exception as e:
+            cost = None
+            X = None
+            H = None
+            yvals = None
+            msg = "infeasible / unknown"
+        else:
+            if np.isfinite(cprob.value):
+                cost = cprob.value
+                X = constraints[0].dual_value
+                H = H.value
+                yvals = yvals.value
+                msg = "converged"
+            else:
+                cost = None
+                X = None
+                H = None
+                yvals = None
+                msg = "unbounded"
+    else:
+        X = cp.Variable(Q.shape, symmetric=True)
+        objective = cp.Minimize(cp.trace(Q_here @ X))
+        constraints = [X >> 0]
+        for A, b in Constraints:
+            constraints += [cp.trace(A @ X) == b]
+
+        cprob = cp.Problem(objective, constraints)
+        try:
+            sdp_opts_here["verbose"] = verbose
+            try:
+                cprob.solve(
+                    solver="MOSEK",
+                    **sdp_opts_here,
+                )
+            except mosek.Error:
+                print("Did not find MOSEK, using different solver.")
+                cprob.solve(verbose=verbose, solver="CVXOPT")
+        except Exception as e:
+            cost = None
+            X = None
+            H = None
+            yvals = None
+            msg = "infeasible / unknown"
+        else:
+            if np.isfinite(cprob.value):
+                cost = cprob.value
+                X = X.value
+                H = constraints[0].dual_value
+                yvals = [c.dual_value for c in constraints[1:]]
+                msg = "converged"
+            else:
+                cost = None
+                X = None
+                H = None
+                yvals = None
+                msg = "unbounded"
+    if verbose:
+        print(msg)
+
+    # reverse Q adjustment
+    if cost:
+        cost = cost * scale + offset
+        yvals[0] -= offset
+        yvals /= scale
+    info = {"H": H, "yvals": yvals, "cost": cost, "msg": msg}
+    return X, info
+
+
 def solve_sdp_mosek(
     Q, Constraints, adjust=False, verbose=True, sdp_opts=sdp_opts_dflt, **kwargs
 ):
@@ -129,7 +240,7 @@ def solve_sdp_mosek(
         Q (_type_): Cost Matrix
         Constraints (): List of tuples representing constraints. Each tuple, (A,b) is such that
                         tr(A @ X) == b
-        adjust (tuple, optional): Adjustment tuple: (scale,offset) for final cost.
+        adjust (bool, optional): Whether or not to rescale and shift Q for better conditioning.
         verbose (bool, optional): If true, prints output to screen. Defaults to True.
 
     Returns:
@@ -275,6 +386,10 @@ def solve_feasibility_sdp(
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
+    sdp_opts_here = deepcopy(sdp_opts_dflt)
+    sdp_opts_here.update(sdp_opts)
+    sdp_opts_here["verbose"] = verbose
+
     H = cp.sum([Q] + [y[i] * Ai for (i, Ai) in enumerate(As)])
     constraints = [H >> 0]
     if soft_epsilon:
@@ -290,11 +405,10 @@ def solve_feasibility_sdp(
 
     cprob = cp.Problem(objective, constraints)
     try:
-        sdp_opts["verbose"] = verbose
         try:
             cprob.solve(
                 solver="MOSEK",
-                **sdp_opts,
+                **sdp_opts_here,
             )
         except mosek.Error:
             print("Did not find MOSEK, using different solver.")
