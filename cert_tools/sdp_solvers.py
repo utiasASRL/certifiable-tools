@@ -13,11 +13,11 @@ import scipy.sparse as sp
 sdp_opts_dflt = {}
 sdp_opts_dflt["mosek_params"] = {
     "MSK_IPAR_INTPNT_MAX_ITERATIONS": 500,
-    "MSK_DPAR_INTPNT_CO_TOL_PFEAS": 1e-10,
-    "MSK_DPAR_INTPNT_CO_TOL_REL_GAP": 1e-10,
+    "MSK_DPAR_INTPNT_CO_TOL_PFEAS": 1e-8,
+    "MSK_DPAR_INTPNT_CO_TOL_REL_GAP": 1e-8,
     "MSK_DPAR_INTPNT_CO_TOL_MU_RED": 1e-10,
-    "MSK_DPAR_INTPNT_CO_TOL_INFEAS": 1e-10,
-    "MSK_DPAR_INTPNT_CO_TOL_DFEAS": 1e-10,
+    "MSK_DPAR_INTPNT_CO_TOL_INFEAS": 1e-8,
+    "MSK_DPAR_INTPNT_CO_TOL_DFEAS": 1e-8,
     "MSK_IPAR_INTPNT_SOLVE_FORM": "MSK_SOLVE_DUAL",
 }
 # sdp_opts_dflt["save_file"] = "solve_cvxpy_.ptf"
