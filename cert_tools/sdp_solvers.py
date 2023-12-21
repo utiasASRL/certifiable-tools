@@ -150,7 +150,6 @@ def solve_sdp(
         yvals = cp.Variable(len(Constraints))
         b = np.array([Ab[1] for Ab in Constraints])
         objective = cp.Maximize(-yvals @ b)
-        H = cp.Variable(Q_here.shape, symmetric=True)
         H = cp.sum([Q_here] + [yvals[i] * Ab[0] for (i, Ab) in enumerate(Constraints)])
         constraints = [H >> 0]
         cprob = cp.Problem(objective, constraints)
