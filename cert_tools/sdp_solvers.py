@@ -126,6 +126,7 @@ def solve_sdp(
     use_primal=False,
     verbose=True,
     sdp_opts=sdp_opts_dflt,
+    use_fusion=False,
     **kwargs,
 ):
     """Solve SDP using the MOSEK API.
@@ -140,6 +141,13 @@ def solve_sdp(
     Returns:
         _type_: _description_
     """
+    if use_fusion:
+        from cert_tools.fusion_solvers import solve_sdp_fusion
+
+        return solve_sdp_fusion(
+            Q, Constraints, adjust, use_primal=use_primal, verbose=verbose
+        )
+
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
     sdp_opts_here = deepcopy(sdp_opts_dflt)
