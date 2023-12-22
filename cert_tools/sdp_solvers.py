@@ -142,7 +142,7 @@ def solve_sdp(
         _type_: _description_
     """
     if use_fusion:
-        from cert_tools.fusion_solvers import solve_sdp_fusion
+        from cert_tools.fusion_tools import solve_sdp_fusion
 
         return solve_sdp_fusion(
             Q, Constraints, adjust, use_primal=use_primal, verbose=verbose
@@ -360,6 +360,70 @@ def solve_sdp_mosek(
         info = {"H": None, "yvals": yvals, "cost": cost, "msg": msg}
         # info = {"cost": cost, "msg": msg}
         return X, info
+
+
+def solve_sdp_fusion(Q, Constraints, adjust=False, verbose=False, use_primal=False):
+    from cert_tools.fusion_tools import mat_fusion
+    import mosek.fusion as fu
+
+    Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
+
+    if use_primal:
+        with fu.Model("primal") as M:
+            # creates (N x X_dim x X_dim) variable
+            X = M.variable("X", fu.Domain.inPSDCone(Q.shape[0]))
+
+            # standard equality constraints
+            for A, b in Constraints:
+                M.constraint(fu.Expr.dot(mat_fusion(A), X), fu.Domain.equalsTo(b))
+
+            M.objective(fu.ObjectiveSense.Minimize, fu.Expr.dot(mat_fusion(Q_here), X))
+
+            # M.setSolverParam("intpntCoTolRelGap", 1.0e-7)
+            if verbose:
+                M.setLogHandler(sys.stdout)
+            M.solve()
+
+            X = np.reshape(X.level(), Q.shape)
+            cost = M.primalObjValue() * scale + offset
+            info = {"success": True, "cost": cost}
+    else:
+        # TODO(FD) below is extremely slow and runs out of memory for 200 x 200 matrices.
+        with fu.Model("dual") as M:
+            # creates (N x X_dim x X_dim) variable
+            m = len(Constraints)
+            b = np.array([-b for A, b in Constraints])[None, :]
+            y = M.variable("y", [m, 1])
+
+            # standard equality constraints
+            con = M.constraint(
+                fu.Expr.add(
+                    mat_fusion(Q_here),
+                    fu.Expr.add(
+                        [
+                            fu.Expr.mul(mat_fusion(Constraints[i][0]), y.index([i, 0]))
+                            for i in range(m)
+                        ]
+                    ),
+                ),
+                fu.Domain.inPSDCone(Q.shape[0]),
+            )
+            M.objective(
+                fu.ObjectiveSense.Maximize,
+                fu.Expr.sum(fu.Expr.mul(fu.Matrix.dense(b), y)),
+            )
+
+            # M.setSolverParam("intpntCoTolRelGap", 1.0e-7)
+            if verbose:
+                M.setLogHandler(sys.stdout)
+            M.solve()
+
+            X = np.reshape(con.dual(), Q.shape)
+            if X[0, 0] < 1:
+                X = -X
+            cost = M.primalObjValue() * scale + offset
+            info = {"success": True, "cost": cost}
+    return X, info
 
 
 def solve_feasibility_sdp(
