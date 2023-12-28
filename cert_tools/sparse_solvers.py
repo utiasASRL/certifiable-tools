@@ -4,6 +4,7 @@ from mosek.fusion import Domain, Expr, ObjectiveSense, Model
 import numpy as np
 import cvxpy as cp
 
+from cert_tools.base_clique import BaseClique
 from cert_tools.sdp_solvers import sdp_opts_dflt
 from cert_tools.fusion_tools import mat_fusion, get_slice
 
@@ -109,6 +110,11 @@ def solve_oneshot_dual_cvxpy(clique_list):
 
 
 def solve_oneshot_primal_fusion(clique_list, verbose=False):
+    """
+    clique_list is a list of objects inheriting from BaseClique.
+    """
+    assert isinstance(clique_list[0], BaseClique)
+
     X_dim = clique_list[0].X_dim
     N = len(clique_list)
     with Model("primal") as M:
@@ -131,15 +137,28 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False):
         # interlocking equality constraints
         x_dim = clique_list[0].x_dim
         for i in range(len(clique_list) - 1):
-            X_left = X.slice([i, 0, 1 + x_dim], [i + 1, 1, 1 + 2 * x_dim])
-            X_right = X.slice([i + 1, 0, 1], [i + 2, 1, 1 + x_dim])
-            M.constraint(Expr.sub(X_left, X_right), Domain.equalsTo(0))
-
+            # TODO(FD) move this to the clique creation.
+            clique = clique_list[i]
+            clique.left_slice_start = [[0, 1 + x_dim]]
+            clique.left_slice_end = [[1, 1 + 2 * x_dim]]
+            clique.right_slice_start = [[0, 1]]
+            clique.right_slice_end = [[1, 1 + x_dim]]
             if CONSTRAIN_ALL_OVERLAP:
-                X_left = X.slice(
-                    [i, 1 + x_dim, 1 + x_dim], [i + 1, 1 + 2 * x_dim, 1 + 2 * x_dim]
-                )
-                X_right = X.slice([i + 1, 1, 1], [i + 2, 1 + x_dim, 1 + x_dim])
+                clique.left_slice_start += [[1 + x_dim, 1 + x_dim]]
+                clique.left_slice_end += [[1 + 2 * x_dim, 1 + 2 * x_dim]]
+                clique.right_slice_start += [1, 1]
+                clique.right_slice_end += [[1 + x_dim, 1 + x_dim]]
+
+            for left_start, left_end, right_start, right_end in zip(
+                [
+                    clique.left_slice_start,
+                    clique.left_slice_end,
+                    clique.right_slice_start,
+                    clique.right_slice_end,
+                ]
+            ):
+                X_left = X.slice([i] + left_start, [i + 1] + left_end)
+                X_right = X.slice([i + 1] + right_start, [i + 2] + right_end)
                 M.constraint(Expr.sub(X_left, X_right), Domain.equalsTo(0))
 
         # M.setSolverParam("intpntCoTolRelGap", 1.0e-7)
@@ -185,7 +204,7 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False):
 
 def solve_oneshot(
     clique_list,
-    use_primal=False,
+    use_primal=True,
     use_fusion=False,
     verbose=False,
 ):
