@@ -135,27 +135,15 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False):
                 M.constraint(Expr.dot(A_fusion, get_slice(X, i)), Domain.equalsTo(b))
 
         # interlocking equality constraints
-        x_dim = clique_list[0].x_dim
         for i in range(len(clique_list) - 1):
             # TODO(FD) move this to the clique creation.
             clique = clique_list[i]
-            clique.left_slice_start = [[0, 1 + x_dim]]
-            clique.left_slice_end = [[1, 1 + 2 * x_dim]]
-            clique.right_slice_start = [[0, 1]]
-            clique.right_slice_end = [[1, 1 + x_dim]]
-            if CONSTRAIN_ALL_OVERLAP:
-                clique.left_slice_start += [[1 + x_dim, 1 + x_dim]]
-                clique.left_slice_end += [[1 + 2 * x_dim, 1 + 2 * x_dim]]
-                clique.right_slice_start += [1, 1]
-                clique.right_slice_end += [[1 + x_dim, 1 + x_dim]]
 
             for left_start, left_end, right_start, right_end in zip(
-                [
-                    clique.left_slice_start,
-                    clique.left_slice_end,
-                    clique.right_slice_start,
-                    clique.right_slice_end,
-                ]
+                clique.left_slice_start,
+                clique.left_slice_end,
+                clique.right_slice_start,
+                clique.right_slice_end,
             ):
                 X_left = X.slice([i] + left_start, [i + 1] + left_end)
                 X_right = X.slice([i + 1] + right_start, [i + 2] + right_end)
