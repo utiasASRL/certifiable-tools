@@ -1,6 +1,6 @@
 import sys
 
-from mosek.fusion import Domain, Expr, ObjectiveSense, Model
+from mosek.fusion import Domain, Expr, ObjectiveSense, Model, ProblemStatus
 import numpy as np
 import cvxpy as cp
 
@@ -120,12 +120,16 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False):
     with Model("primal") as M:
         # creates (N x X_dim x X_dim) variable
         X = M.variable(Domain.inPSDCone(X_dim, N))
-        Q_list = [mat_fusion(clique.Q) for clique in clique_list]
 
         # objective
         M.objective(
             ObjectiveSense.Minimize,
-            Expr.add([Expr.dot(Q_list[i], get_slice(X, i)) for i in range(N)]),
+            Expr.add(
+                [
+                    Expr.dot(mat_fusion(clique_list[i].Q), get_slice(X, i))
+                    for i in range(N)
+                ]
+            ),
         )
 
         # standard equality constraints
@@ -136,27 +140,32 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False):
 
         # interlocking equality constraints
         for i in range(len(clique_list) - 1):
-            # TODO(FD) move this to the clique creation.
-            clique = clique_list[i]
-
             for left_start, left_end, right_start, right_end in zip(
-                clique.left_slice_start,
-                clique.left_slice_end,
-                clique.right_slice_start,
-                clique.right_slice_end,
+                clique_list[i].left_slice_start,
+                clique_list[i].left_slice_end,
+                clique_list[i].right_slice_start,
+                clique_list[i].right_slice_end,
             ):
                 X_left = X.slice([i] + left_start, [i + 1] + left_end)
                 X_right = X.slice([i + 1] + right_start, [i + 2] + right_end)
                 M.constraint(Expr.sub(X_left, X_right), Domain.equalsTo(0))
 
-        # M.setSolverParam("intpntCoTolRelGap", 1.0e-7)
+        tol = 1e-5
+        M.setSolverParam("intpntCoTolDfeas", 1e-9)  # default 1e-8
+        M.setSolverParam("intpntCoTolPfeas", 1e-5)  # default 1e-8
+        M.setSolverParam("intpntCoTolRelGap", tol)  # default 1e-8
+        M.setSolverParam("intpntCoTolMuRed", tol)  # default 1e-8
         if verbose:
             M.setLogHandler(sys.stdout)
         M.solve()
-        X_list_k = [
-            np.reshape(get_slice(X, i).level(), (X_dim, X_dim)) for i in range(N)
-        ]
-        info = {"success": True, "cost": M.primalObjValue()}
+        if M.getProblemStatus() is ProblemStatus.Unknown:
+            X_list_k = []
+            info = {"success": False, "cost": np.inf}
+        elif M.getProblemStatus() is ProblemStatus.PrimalAndDualFeasible:
+            X_list_k = [
+                np.reshape(get_slice(X, i).level(), (X_dim, X_dim)) for i in range(N)
+            ]
+            info = {"success": True, "cost": M.primalObjValue()}
         return X_list_k, info
 
 
