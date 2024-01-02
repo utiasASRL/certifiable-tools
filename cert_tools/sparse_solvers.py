@@ -10,6 +10,8 @@ from cert_tools.fusion_tools import mat_fusion, get_slice
 
 CONSTRAIN_ALL_OVERLAP = False
 
+TOL = 1e-5
+
 
 def solve_oneshot_dual_slow(clique_list):
     """Implementation of range-space clique decomposition as in [Zheng 2020]."""
@@ -48,7 +50,7 @@ def solve_oneshot_dual_slow(clique_list):
     return X_k_list, info
 
 
-def solve_oneshot_dual_cvxpy(clique_list):
+def solve_oneshot_dual_cvxpy(clique_list, tol=TOL):
     """Implementation of range-space clique decomposition using auxiliary variables."""
     B_list_left = clique_list[0].get_B_list_left()
     B_list_right = clique_list[0].get_B_list_right()
@@ -109,7 +111,7 @@ def solve_oneshot_dual_cvxpy(clique_list):
     return X_k_list, info
 
 
-def solve_oneshot_primal_fusion(clique_list, verbose=False):
+def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL):
     """
     clique_list is a list of objects inheriting from BaseClique.
     """
@@ -150,10 +152,8 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False):
                 X_right = X.slice([i + 1] + right_start, [i + 2] + right_end)
                 M.constraint(Expr.sub(X_left, X_right), Domain.equalsTo(0))
 
-        tol = 1e-5
-        M.setSolverParam("intpntCoTolDfeas", 1e-9)  # default 1e-8
-        M.setSolverParam("intpntCoTolPfeas", 1e-5)  # default 1e-8
-        M.setSolverParam("intpntCoTolRelGap", tol)  # default 1e-8
+        M.setSolverParam("intpntCoTolDfeas", tol)  # default 1e-8
+        M.setSolverParam("intpntCoTolPfeas", tol)  # default 1e-8
         M.setSolverParam("intpntCoTolMuRed", tol)  # default 1e-8
         if verbose:
             M.setLogHandler(sys.stdout)
@@ -169,7 +169,7 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False):
         return X_list_k, info
 
 
-def solve_oneshot_primal_cvxpy(clique_list, verbose=False):
+def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
     constraints = []
     for k, clique in enumerate(clique_list):
         constraints += clique.get_constraints_cvxpy(clique.X)
@@ -200,17 +200,14 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False):
 
 
 def solve_oneshot(
-    clique_list,
-    use_primal=True,
-    use_fusion=False,
-    verbose=False,
+    clique_list, use_primal=True, use_fusion=False, verbose=False, tol=TOL
 ):
     if use_primal:
         if use_fusion:
-            return solve_oneshot_primal_fusion(clique_list, verbose=verbose)
+            return solve_oneshot_primal_fusion(clique_list, verbose=verbose, tol=tol)
         else:
-            return solve_oneshot_primal_cvxpy(clique_list, verbose=verbose)
+            return solve_oneshot_primal_cvxpy(clique_list, verbose=verbose, tol=tol)
     else:
         if use_fusion:
             print("Warning: dual not implement for fusion, using cvxpy.")
-        return solve_oneshot_dual_cvxpy(clique_list, verbose=verbose)
+        return solve_oneshot_dual_cvxpy(clique_list, verbose=verbose, tol=tol)
