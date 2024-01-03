@@ -6,7 +6,7 @@ import numpy as np
 import cvxpy as cp
 
 from cert_tools.fusion_tools import mat_fusion
-from cert_tools.sdp_solvers import sdp_opts_dflt
+from cert_tools.sdp_solvers import options_cvxpy
 
 from mosek.fusion import Domain, Expr, ObjectiveSense, Model
 from mosek.fusion import Matrix
@@ -243,9 +243,9 @@ def solve_inner_sdp(clique, rho=None, verbose=False, use_fusion=True):
         objective = clique.get_objective_cvxpy(clique.X, rho)
         constraints = clique.get_constraints_cvxpy(clique.X)
         cprob = cp.Problem(objective, constraints)
-        sdp_opts_dflt["verbose"] = verbose
+        options_cvxpy["verbose"] = verbose
         try:
-            cprob.solve(solver="MOSEK", **sdp_opts_dflt)
+            cprob.solve(solver="MOSEK", **options_cvxpy)
             info = {"cost": float(cprob.value), "success": clique.X.value is not None}
         except:
             info = {"cost": np.inf, "success": False}

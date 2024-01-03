@@ -1,9 +1,13 @@
 from mosek.fusion import Matrix
+import scipy.sparse as sp
 
 
 def mat_fusion(X):
     """Convert sparse matrix X to fusion format"""
-    X.eliminate_zeros()
+    try:
+        X.eliminate_zeros()
+    except AttributeError:
+        X = sp.csr_array(X)
     I, J = X.nonzero()
     V = X.data
     return Matrix.sparse(*X.shape, I, J, V)

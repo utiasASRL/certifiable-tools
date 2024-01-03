@@ -5,7 +5,7 @@ import numpy as np
 import cvxpy as cp
 
 from cert_tools.base_clique import BaseClique
-from cert_tools.sdp_solvers import sdp_opts_dflt
+from cert_tools.sdp_solvers import options_cvxpy
 from cert_tools.fusion_tools import mat_fusion, get_slice
 
 CONSTRAIN_ALL_OVERLAP = False
@@ -34,8 +34,8 @@ def solve_oneshot_dual_slow(clique_list):
         == Q_here + cp.sum([sigmas[k] * A_list[k] for k in range(len(A_list))])
     ]
     cprob = cp.Problem(cp.Maximize(-sigmas[0]), constraints)
-    sdp_opts_dflt["verbose"] = True
-    cprob.solve(solver="MOSEK", **sdp_opts_dflt)
+    options_cvxpy["verbose"] = True
+    cprob.solve(solver="MOSEK", **options_cvxpy)
 
     # H_k_list = [clique.H.value for clique in clique_list]
     X_k_list = constraints[0].dual_value
@@ -95,8 +95,8 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL):
         constraints += [clique.H >> 0]
     cprob = cp.Problem(cp.Maximize(-cp.sum(rhos)), constraints)
     data, *__ = cprob.get_problem_data(cp.SCS)
-    sdp_opts_dflt["verbose"] = True
-    cprob.solve(solver="MOSEK", **sdp_opts_dflt)
+    options_cvxpy["verbose"] = True
+    cprob.solve(solver="MOSEK", **options_cvxpy)
 
     X_k_list = [con.dual_value for con in constraints]
     # H_k_list = [clique.H.value for clique in clique_list]
@@ -183,8 +183,8 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
         constraints,
     )
 
-    sdp_opts_dflt["verbose"] = verbose
-    cprob.solve(solver="MOSEK", **sdp_opts_dflt)
+    options_cvxpy["verbose"] = verbose
+    cprob.solve(solver="MOSEK", **options_cvxpy)
 
     X_k_list = [clique.X.value for clique in clique_list]
     sigma_dict = {
