@@ -324,16 +324,16 @@ def solve_sdp_fusion(
 
             if M.getProblemStatus() is fu.ProblemStatus.PrimalAndDualFeasible:
                 cost = M.primalObjValue() * scale + offset
+                H = np.reshape(X.dual(), Q.shape)
                 X = np.reshape(X.level(), Q.shape)
                 msg = "success"
                 success = True
-                H = np.reshape(X.dual().level().Q.shape)
             else:
                 cost = None
+                H = None
                 X = None
                 msg = "solver failed"
                 success = False
-                H = None
             info = {"success": success, "cost": cost, "msg": msg, "H": H}
             return X, info
     else:
@@ -420,13 +420,12 @@ def solve_sdp_cvxpy(
                 solver="MOSEK",
                 **options_cvxpy,
             )
-        except Exception as e:
-            print(e)
+        except cp.SolverError as e:
             cost = None
             X = None
             H = None
             yvals = None
-            msg = "infeasible / unknown"
+            msg = f"infeasible / unknown: {e}"
         else:
             if np.isfinite(cprob.value):
                 cost = cprob.value
@@ -473,13 +472,12 @@ def solve_sdp_cvxpy(
                 solver="MOSEK",
                 **options_cvxpy,
             )
-        except Exception as e:
-            print(e)
+        except cp.SolverError as e:
             cost = None
             X = None
             H = None
             yvals = None
-            msg = "infeasible / unknown"
+            msg = f"infeasible / unknown: {e}"
         else:
             if np.isfinite(cprob.value):
                 cost = cprob.value
