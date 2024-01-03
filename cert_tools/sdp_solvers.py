@@ -22,6 +22,11 @@ EPSILON = 1e-4
 ADJUST = True  # adjust the matrix Q for better conditioning
 PRIMAL = False  # governs how the problem is put into SDP solver
 
+# normalize the Q matrix by either its Frobenius norm or the maximum value.
+# this is done after extracting the biggest element (in upper-left corner, due
+# to homogenization variable)
+SCALE_METHOD = "max"
+
 # Define global default values for MOSEK IP solver
 options_cvxpy = {}
 options_cvxpy["mosek_params"] = {
@@ -64,7 +69,6 @@ def adjust_tol_fusion(options, tol):
 
 
 def adjust_Q(Q, offset=True, scale=True):
-    # TODO(FD) choose if we are keeping this sanity check, might be useful
     ii, jj = (Q == Q.max()).nonzero()
     if (ii[0], jj[0]) != (0, 0) or (len(ii) > 1):
         print(
@@ -79,11 +83,13 @@ def adjust_Q(Q, offset=True, scale=True):
     Q_mat[0, 0] -= Q_offset
 
     if scale:
-        try:
-            Q_scale = sp.linalg.norm(Q_mat, "fro")
-        except TypeError:
-            Q_scale = np.linalg.norm(Q_mat)
-        # Q_scale = Q_mat.max()
+        if SCALE_METHOD == "fro":
+            try:
+                Q_scale = sp.linalg.norm(Q_mat, "fro")
+            except TypeError:
+                Q_scale = np.linalg.norm(Q_mat)
+        elif SCALE_METHOD == "max":
+            Q_scale = Q_mat.max()
     else:
         Q_scale = 1.0
     Q_mat /= Q_scale
