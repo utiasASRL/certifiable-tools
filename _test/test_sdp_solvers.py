@@ -98,7 +98,10 @@ def test_p3_low_rank():
 
 
 def test_sdp_solvers(
-    prob_file="test_prob_1.pkl", adjust_list=[True, False], primal_list=[True, False]
+    prob_file="test_prob_1.pkl",
+    adjust_list=[True, False],
+    primal_list=[True, False],
+    verbose=False,
 ):
     fname = os.path.join(root_dir, "_examples", prob_file)
     try:
@@ -109,11 +112,10 @@ def test_sdp_solvers(
         return
 
     tol = 1e-10
-    # TODO(FD) not sure why we have to make this tolerance so loose!
-    tol_cost = 1e-4
+    tol_cost = 1e-5
 
     for adjust, primal in itertools.product(adjust_list, primal_list):
-        print(f"adjust: {adjust}, primal: {primal}")
+        print(f"adjust: {adjust}, primal: {primal} \n----------------------")
         # Run fusion solver
         try:
             X, info = solve_sdp_fusion(
@@ -122,7 +124,7 @@ def test_sdp_solvers(
                 adjust=adjust,
                 primal=primal,
                 tol=tol,
-                verbose=False,
+                verbose=verbose,
             )
             cost_ref = info["cost"]
         except mosek.fusion.OptimizeError as e:
@@ -132,29 +134,6 @@ def test_sdp_solvers(
             elif "x_cand" in data:
                 cost_ref = data["x_cand"].T @ data["Q"] @ data["x_cand"]
 
-        # Run mosek solver
-        try:
-            X, info = solve_sdp_mosek(
-                Q=data["Q"],
-                Constraints=data["Constraints"],
-                adjust=adjust,
-                primal=primal,
-                tol=tol,
-                verbose=False,
-            )
-            print("mosek", abs(info["cost"] - cost_ref))
-            try:
-                assert abs(info["cost"] - cost_ref) < tol_cost
-            except AssertionError:
-                print(f"Warning: cvxpy test failed for {fname}")
-                # cannot deal with primal yet, and without adjusting solution can be inaccurate
-                if adjust and primal:
-                    raise
-                pass
-        except mosek.Error as e:
-            print("skipping mosek because not installed")
-            pass
-
         try:
             # Run cvxpy solver
             X, info = solve_sdp_cvxpy(
@@ -163,17 +142,29 @@ def test_sdp_solvers(
                 adjust=adjust,
                 primal=primal,
                 tol=tol,
-                verbose=False,
+                verbose=verbose,
             )
-            print("cvxpy", abs(info["cost"] - cost_ref))
-            try:
-                assert abs(info["cost"] - cost_ref) < tol_cost
-            except AssertionError:
-                print(f"Warning: cvxpy test failed for {fname}")
-                # without adjusting solution can be inaccurate
-                if adjust:
-                    raise
-                pass
+            print("cvxpy", abs(info["cost"] - cost_ref) / cost_ref)
+            assert abs(info["cost"] - cost_ref) / cost_ref < tol_cost
+        except mosek.Error as e:
+            print("skipping mosek because not installed")
+            pass
+
+        # Run mosek solver
+        try:
+            if primal:
+                print("skipping primal for mosek")
+                continue
+            X, info = solve_sdp_mosek(
+                Q=data["Q"],
+                Constraints=data["Constraints"],
+                adjust=adjust,
+                primal=primal,
+                tol=tol,
+                verbose=verbose,
+            )
+            print("mosek", abs(info["cost"] - cost_ref) / cost_ref)
+            assert abs(info["cost"] - cost_ref) / cost_ref < tol_cost
         except mosek.Error as e:
             print("skipping mosek because not installed")
             pass
@@ -185,6 +176,7 @@ if __name__ == "__main__":
         # these lead to memory error
         if i in [5, 6]:
             continue
+        # test_sdp_solvers(f"test_prob_{i}.pkl", primal_list=[False], verbose=True)
         test_sdp_solvers(f"test_prob_{i}.pkl")
     # test_p1_low_rank()
     # test_p3_low_rank()
