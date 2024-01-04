@@ -34,17 +34,15 @@ options_cvxpy["mosek_params"] = {
     "MSK_DPAR_INTPNT_CO_TOL_PFEAS": TOL,
     "MSK_DPAR_INTPNT_CO_TOL_DFEAS": TOL,
     "MSK_DPAR_INTPNT_CO_TOL_MU_RED": TOL,
-    "MSK_DPAR_INTPNT_CO_TOL_INFEAS": 1e-12,
-    "MSK_IPAR_INTPNT_SOLVE_FORM": "MSK_SOLVE_DUAL",  # has no effect
+    "MSK_IPAR_INTPNT_SOLVE_FORM": "MSK_SOLVE_PRIMAL",  # has no effect
 }
-# options_cvxpy["save_file"] = "solve_cvxpy_.ptf"
+# options_cvxpy["save_file"] = "solve_cvxpy.ptf"
 options_fusion = {
     "intpntMaxIterations": 500,
     "intpntCoTolPfeas": TOL,
     "intpntCoTolDfeas": TOL,
     "intpntCoTolMuRed": TOL,
-    "intpntCoTolInfeas": 1e-12,
-    "intpntSolveForm": "dual",  # has no effect
+    "intpntSolveForm": "primal",  # has no effect
 }
 
 
@@ -87,9 +85,9 @@ def adjust_Q(Q, offset=True, scale=True):
             try:
                 Q_scale = sp.linalg.norm(Q_mat, "fro")
             except TypeError:
-                Q_scale = np.linalg.norm(Q_mat)
+                Q_scale = np.linalg.norm(Q_mat, ord="fro")
         elif SCALE_METHOD == "max":
-            Q_scale = Q_mat.max()
+            Q_scale = abs(Q_mat).max()
     else:
         Q_scale = 1.0
     Q_mat /= Q_scale
@@ -179,8 +177,10 @@ def solve_sdp_mosek(
     Returns:
         (X, info, cost_out): solution matrix, info dict and output cost.
     """
-    if not primal:
-        print("Warning: cannot use dual formulation for mosek API (yet).")
+    # WARNING: THIS SEEMS THE WRONG WAY AROUND, BUT THIS IS IN ACCORDANCE
+    # WITH WHAT CVXPY CALLS PRIMAL VS. DUAL!
+    if primal:
+        print("Warning: cannot use primal formulation for mosek API (yet).")
 
     # Define a stream printer to grab output from MOSEK
     def streamprinter(text):
@@ -204,9 +204,6 @@ def solve_sdp_mosek(
         )
         task.putdouparam(
             mosek.dparam.intpnt_co_tol_mu_red, opts["MSK_DPAR_INTPNT_CO_TOL_MU_RED"]
-        )
-        task.putdouparam(
-            mosek.dparam.intpnt_co_tol_infeas, opts["MSK_DPAR_INTPNT_CO_TOL_INFEAS"]
         )
         task.putdouparam(
             mosek.dparam.intpnt_co_tol_dfeas, opts["MSK_DPAR_INTPNT_CO_TOL_DFEAS"]
@@ -309,8 +306,10 @@ def solve_sdp_fusion(
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
-    if primal:
-        with fu.Model("primal") as M:
+    # WARNING: THIS SEEMS THE WRONG WAY AROUND, BUT THIS IS IN ACCORDANCE
+    # WITH WHAT CVXPY CALLS PRIMAL VS. DUAL!
+    if not primal:
+        with fu.Model("dual") as M:
             # creates (N x X_dim x X_dim) variable
             X = M.variable("X", fu.Domain.inPSDCone(Q.shape[0]))
 
@@ -320,11 +319,11 @@ def solve_sdp_fusion(
 
             M.objective(fu.ObjectiveSense.Minimize, fu.Expr.dot(mat_fusion(Q_here), X))
 
-            for key, val in options_fusion.items():
-                M.setSolverParam(key, val)
-
             if verbose:
                 M.setLogHandler(sys.stdout)
+
+            for key, val in options_fusion.items():
+                M.setSolverParam(key, val)
 
             M.solve()
 
@@ -344,7 +343,7 @@ def solve_sdp_fusion(
             return X, info
     else:
         # TODO(FD) below is extremely slow and runs out of memory for 200 x 200 matrices.
-        with fu.Model("dual") as M:
+        with fu.Model("primal") as M:
             m = len(Constraints)
             b = fu.Matrix.dense(np.array([-b for A, b in Constraints])[None, :])
             y = M.variable("y", [m, 1])
@@ -365,11 +364,11 @@ def solve_sdp_fusion(
                 fu.Expr.sum(fu.Expr.mul(b, y)),
             )
 
-            for key, val in options_fusion.items():
-                M.setSolverParam(key, val)
-
             if verbose:
                 M.setLogHandler(sys.stdout)
+
+            for key, val in options_fusion.items():
+                M.setSolverParam(key, val)
 
             M.solve()
 
@@ -679,11 +678,12 @@ def solve_lambda_fusion(
             )
         M.objective(fu.ObjectiveSense.Minimize, fu.Expr.sum(z)),
 
+        if verbose:
+            M.setLogHandler(sys.stdout)
+
         for key, val in options_fusion.items():
             M.setSolverParam(key, val)
 
-        if verbose:
-            M.setLogHandler(sys.stdout)
         M.solve()
         cost = M.primalObjValue() * scale + offset
         lamda = np.array(y.level())
