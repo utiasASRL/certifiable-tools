@@ -1,4 +1,6 @@
+import itertools
 import sys
+
 
 from mosek.fusion import Domain, Expr, ObjectiveSense, Model, ProblemStatus
 import numpy as np
@@ -111,10 +113,15 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL):
     return X_k_list, info
 
 
-def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL):
+def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=False):
     """
     clique_list is a list of objects inheriting from BaseClique.
     """
+    if adjust:
+        from cert_tools.sdp_solvers import adjust_Q
+
+        raise ValueError("adjust_Q does not work when dealing with cliques")
+
     assert isinstance(clique_list[0], BaseClique)
 
     X_dim = clique_list[0].X_dim
@@ -123,34 +130,69 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL):
         # creates (N x X_dim x X_dim) variable
         X = M.variable(Domain.inPSDCone(X_dim, N))
 
+        if adjust:
+            Q_scale_offsets = [adjust_Q(c.Q) for c in clique_list]
+        else:
+            Q_scale_offsets = [(c.Q, 1.0, 0.0) for c in clique_list]
+
         # objective
         M.objective(
             ObjectiveSense.Minimize,
             Expr.add(
                 [
-                    Expr.dot(mat_fusion(clique_list[i].Q), get_slice(X, i))
+                    Expr.dot(mat_fusion(Q_scale_offsets[i][0]), get_slice(X, i))
                     for i in range(N)
                 ]
             ),
         )
 
         # standard equality constraints
+        A_0_constraints = []
         for i, clique in enumerate(clique_list):
             for A, b in zip(clique.A_list, clique.b_list):
                 A_fusion = mat_fusion(A)
-                M.constraint(Expr.dot(A_fusion, get_slice(X, i)), Domain.equalsTo(b))
+                con = M.constraint(
+                    Expr.dot(A_fusion, get_slice(X, i)), Domain.equalsTo(b)
+                )
+                if b == 1:
+                    A_0_constraints.append(con)
 
         # interlocking equality constraints
-        for i in range(len(clique_list) - 1):
+        for i in range(N - 1):
             for left_start, left_end, right_start, right_end in zip(
                 clique_list[i].left_slice_start,
                 clique_list[i].left_slice_end,
                 clique_list[i].right_slice_start,
                 clique_list[i].right_slice_end,
             ):
+                raise ValueError(
+                    "do not use this anymore! Use clique.var_dict instead for better generalizability"
+                )
                 X_left = X.slice([i] + left_start, [i + 1] + left_end)
                 X_right = X.slice([i + 1] + right_start, [i + 2] + right_end)
                 M.constraint(Expr.sub(X_left, X_right), Domain.equalsTo(0))
+
+        for cl, ck in itertools.combinations(clique_list, 2):
+            overlap = BaseClique.get_overlap(cl, ck)
+            for l in overlap:
+                for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
+                    # cl.X_var[rl[0], rl[1]] == ck.X[rk[0], rk[1]])
+                    left_start = [rl[0][0], rl[1][0]]
+                    left_end = [rl[0][-1] + 1, rl[1][-1] + 1]
+                    right_start = [rk[0][0], rk[1][0]]
+                    right_end = [rk[0][-1] + 1, rk[1][-1] + 1]
+                    X_left = X.slice([cl.index] + left_start, [cl.index + 1] + left_end)
+                    X_right = X.slice(
+                        [ck.index] + right_start, [ck.index + 1] + right_end
+                    )
+                    M.constraint(Expr.sub(X_left, X_right), Domain.equalsTo(0))
+
+                    np.testing.assert_allclose(
+                        cl.X[left_start[0] : left_end[0], left_start[1] : left_end[1]],
+                        ck.X[
+                            right_start[0] : right_end[0], right_start[1] : right_end[1]
+                        ],
+                    )
 
         M.setSolverParam("intpntCoTolDfeas", tol)  # default 1e-8
         M.setSolverParam("intpntCoTolPfeas", tol)  # default 1e-8
@@ -165,28 +207,46 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL):
             X_list_k = [
                 np.reshape(get_slice(X, i).level(), (X_dim, X_dim)) for i in range(N)
             ]
-            info = {"success": True, "cost": M.primalObjValue()}
+            cost_raw = M.primalObjValue()
+            costs_per_clique = [con.dual()[0] for con in A_0_constraints]
+            cost_test = sum(costs_per_clique)
+            assert abs((cost_raw - cost_test) / cost_test) < 1e-1
+            cost = sum(
+                costs_per_clique[i] * Q_scale_offsets[i][1] + Q_scale_offsets[i][2]
+                for i in range(N)
+            )
+            info = {"success": True, "cost": cost}
         return X_list_k, info
 
 
 def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
     constraints = []
-    for k, clique in enumerate(clique_list):
-        constraints += clique.get_constraints_cvxpy(clique.X)
+    for clique in clique_list:
+        clique.X_var = cp.Variable((clique.X_dim, clique.X_dim), PSD=True)
+        constraints += [
+            cp.trace(A @ clique.X_var) == b
+            for A, b in zip(clique.A_list, clique.b_list)
+        ]
 
     # add constraints for overlapping regions
-    for k, clique in enumerate(clique_list):
-        constraints += [clique.evaluate_F(clique.X, g=clique.g) == 0]
+    for cl, ck in itertools.combinations(clique_list, 2):
+        overlap = BaseClique.get_overlap(cl, ck)
+        for l in overlap:
+            for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
+                constraints.append(cl.X_var[rl[0], rl[1]] == ck.X_var[rk[0], rk[1]])
+                np.testing.assert_allclose(cl.X[rl[0], rl[1]], ck.X[rk[0], rk[1]])
 
     cprob = cp.Problem(
-        cp.Minimize(cp.sum([cp.trace(clique.Q @ clique.X) for clique in clique_list])),
+        cp.Minimize(
+            cp.sum([cp.trace(clique.Q @ clique.X_var) for clique in clique_list])
+        ),
         constraints,
     )
 
     options_cvxpy["verbose"] = verbose
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
-    X_k_list = [clique.X.value for clique in clique_list]
+    X_k_list = [clique.X_var.value for clique in clique_list]
     sigma_dict = {
         i: constraint.dual_value
         for i, constraint in enumerate(constraints[-len(clique_list) :])
