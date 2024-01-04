@@ -1,4 +1,6 @@
+import itertools
 import sys
+
 
 from mosek.fusion import Domain, Expr, ObjectiveSense, Model, ProblemStatus
 import numpy as np
@@ -195,21 +197,30 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
 def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
     constraints = []
     for k, clique in enumerate(clique_list):
-        constraints += clique.get_constraints_cvxpy(clique.X)
+        clique.X_var = cp.Variable((clique.X_dim, clique.X_dim), PSD=True)
+        constraints += [
+            cp.trace(A @ clique.X_var) == b
+            for A, b in zip(clique.A_list, clique.b_list)
+        ]
 
     # add constraints for overlapping regions
-    for k, clique in enumerate(clique_list):
-        constraints += [clique.evaluate_F(clique.X, g=clique.g) == 0]
+    for cl, ck in itertools.combinations(clique_list, 2):
+        overlap = BaseClique.get_overlap(cl, ck)
+        for l in overlap:
+            for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
+                constraints.append(cl.X_var[rl[0], rl[1]] == ck.X[rk[0], rk[1]])
 
     cprob = cp.Problem(
-        cp.Minimize(cp.sum([cp.trace(clique.Q @ clique.X) for clique in clique_list])),
+        cp.Minimize(
+            cp.sum([cp.trace(clique.Q @ clique.X_var) for clique in clique_list])
+        ),
         constraints,
     )
 
     options_cvxpy["verbose"] = verbose
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
-    X_k_list = [clique.X.value for clique in clique_list]
+    X_k_list = [clique.X_var.value for clique in clique_list]
     sigma_dict = {
         i: constraint.dual_value
         for i, constraint in enumerate(constraints[-len(clique_list) :])
