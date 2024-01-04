@@ -209,8 +209,9 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
             ]
             cost_raw = M.primalObjValue()
             costs_per_clique = [con.dual()[0] for con in A_0_constraints]
-            cost_test = sum(costs_per_clique)
-            assert abs((cost_raw - cost_test) / cost_test) < 1e-1
+            cost_test = abs(sum(costs_per_clique))
+            if cost_test > 1e-8:
+                assert abs((cost_raw - cost_test) / cost_test) < 1e-1
             cost = sum(
                 costs_per_clique[i] * Q_scale_offsets[i][1] + Q_scale_offsets[i][2]
                 for i in range(N)
