@@ -47,13 +47,13 @@ def find_dependent_columns(A_sparse, tolerance=1e-10):
         print(f"clean_constraints: keeping {rank}/{A_sparse.shape[1]} independent")
 
     bad_idx = list(range(A_sparse.shape[1]))
-    keep_idx = sorted(E[sort_inds[:rank]])[::-1]
-    for good_idx in keep_idx:
+    good_idx_list = sorted(E[sort_inds[:rank]])[::-1]
+    for good_idx in good_idx_list:
         del bad_idx[good_idx]
 
     # Sanity check
     Z, R, E, rank_full = sqr.rz(
-        A_sparse.tocsc()[:, keep_idx],
+        A_sparse.tocsc()[:, good_idx_list],
         np.zeros((A_sparse.shape[0], 1)),
         tolerance=tolerance,
     )

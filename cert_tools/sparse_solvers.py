@@ -157,21 +157,8 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                 if b == 1:
                     A_0_constraints.append(con)
 
-        # interlocking equality constraints
-        for i in range(N - 1):
-            for left_start, left_end, right_start, right_end in zip(
-                clique_list[i].left_slice_start,
-                clique_list[i].left_slice_end,
-                clique_list[i].right_slice_start,
-                clique_list[i].right_slice_end,
-            ):
-                raise ValueError(
-                    "do not use this anymore! Use clique.var_dict instead for better generalizability"
-                )
-                X_left = X.slice([i] + left_start, [i + 1] + left_end)
-                X_right = X.slice([i + 1] + right_start, [i + 2] + right_end)
-                M.constraint(Expr.sub(X_left, X_right), Domain.equalsTo(0))
-
+        # for cl, ck in zip(clique_list[:-1], clique_list[1:]):
+        # for cl, ck in itertools.permutations(clique_list, 2):
         for cl, ck in itertools.combinations(clique_list, 2):
             overlap = BaseClique.get_overlap(cl, ck)
             for l in overlap:
