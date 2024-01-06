@@ -24,7 +24,7 @@ def rank_project(X, p=1, tolerance=1e-10):
     return x, info
 
 
-def find_dependent_columns(A_sparse, tolerance=1e-10):
+def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False):
     """
     Returns a list of indices corresponding to the columns of A_sparse that are linearly dependent.
     """
@@ -43,7 +43,7 @@ def find_dependent_columns(A_sparse, tolerance=1e-10):
     # to acheive sparsity.
     r_vals = np.abs(R.diagonal())
     sort_inds = np.argsort(r_vals)[::-1]
-    if rank < A_sparse.shape[1]:
+    if (rank < A_sparse.shape[1]) and verbose:
         print(f"clean_constraints: keeping {rank}/{A_sparse.shape[1]} independent")
 
     bad_idx = list(range(A_sparse.shape[1]))

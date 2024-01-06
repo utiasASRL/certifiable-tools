@@ -15,6 +15,21 @@ CONSTRAIN_ALL_OVERLAP = False
 TOL = 1e-5
 
 
+# TODO(FD) this is extremely hacky but I don't know how to read solution data when the
+# status is UNKNOWN...
+def read_costs_from_mosek(fname):
+    f = open(fname, "r")
+    ls = f.readlines()
+    primal_line = ls[-2].split(" ")
+    assert "Primal." in primal_line
+    primal_value = float(primal_line[primal_line.index("obj:") + 1])
+
+    dual_line = ls[-1].split(" ")
+    assert "Dual." in dual_line
+    dual_value = float(dual_line[dual_line.index("obj:") + 1])
+    return primal_value, dual_value
+
+
 def solve_oneshot_dual_slow(clique_list):
     """Implementation of range-space clique decomposition as in [Zheng 2020]."""
     from cert_tools.sdp_solvers import adjust_Q
@@ -157,9 +172,9 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                 if b == 1:
                     A_0_constraints.append(con)
 
-        # for cl, ck in zip(clique_list[:-1], clique_list[1:]):
         # for cl, ck in itertools.permutations(clique_list, 2):
-        for cl, ck in itertools.combinations(clique_list, 2):
+        # for cl, ck in itertools.combinations(clique_list, 2):
+        for cl, ck in zip(clique_list[:-1], clique_list[1:]):
             overlap = BaseClique.get_overlap(cl, ck)
             for l in overlap:
                 for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
@@ -186,10 +201,20 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
         M.setSolverParam("intpntCoTolMuRed", tol)  # default 1e-8
         if verbose:
             M.setLogHandler(sys.stdout)
+        else:
+            f = open("mosek_output.tmp", "a+")
+            M.setLogHandler(f)
         M.solve()
         if M.getProblemStatus() is ProblemStatus.Unknown:
             X_list_k = []
-            info = {"success": False, "cost": np.inf}
+            cost = np.inf
+            if not verbose:
+                f.close()
+                primal_value, dual_value = read_costs_from_mosek("mosek_output.tmp")
+                if (abs(primal_value) - abs(dual_value)) / abs(primal_value) > 1e-2:
+                    print("Warning: solution not good")
+                cost = abs(primal_value)
+            info = {"success": False, "cost": cost, "msg": "UNKNOWN"}
         elif M.getProblemStatus() is ProblemStatus.PrimalAndDualFeasible:
             X_list_k = [
                 np.reshape(get_slice(X, i).level(), (X_dim, X_dim)) for i in range(N)
