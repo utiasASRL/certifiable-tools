@@ -38,6 +38,8 @@ def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False):
     Z, R, E, rank = sqr.rz(
         A_sparse, np.zeros((A_sparse.shape[0], 1)), tolerance=tolerance
     )
+    if rank == A_sparse.shape[1]:
+        return []
 
     # Sort the diagonal values. Note that SuiteSparse uses A_sparseMD/METIS ordering
     # to acheive sparsity.
