@@ -9,6 +9,7 @@ import numpy as np
 import scipy.sparse as sp
 from cert_tools.fusion_tools import mat_fusion
 
+# General tolerance parameter for SDPs (see "adjust_tol" function for its exact effect)
 TOL = 1e-11
 
 # for computing the lambda parameter, we are adding all possible constraints
@@ -16,10 +17,12 @@ TOL = 1e-11
 # was found to lead to less cases where the solver terminates with "UNKNOWN" status.
 # see https://docs.mosek.com/latest/pythonapi/parameters.html#doc-all-parameter-list
 LAMBDA_REL_GAP = 0.1
+LAMBDA_TOL = 1e-7  # looser tolerance for sparsity-promiting problem
 
 # for the sparsity-promoting problem: |Hx| < EPSILON
 # can set EPSILON to None, and we will minimize it.
-EPSILON = None  # was: 1e-4
+EPSILON = None
+# EPSILON = 1e-4
 
 ADJUST = True  # adjust the matrix Q for better conditioning
 PRIMAL = False  # governs how the problem is put into SDP solver
@@ -626,8 +629,9 @@ def solve_lambda_fusion(
     force_first=1,
     adjust=ADJUST,
     primal=PRIMAL,
-    tol=TOL,
+    tol=LAMBDA_TOL,
     verbose=False,
+    fixed_epsilon=EPSILON,
 ):
     """Determine lambda with an SDP.
     :param force_first: number of constraints on which we do not put a L1 cost, effectively encouraging the problem to use them.
@@ -636,6 +640,8 @@ def solve_lambda_fusion(
         raise NotImplementedError("primal not implemented yet")
     elif len(B_list):
         raise NotImplementedError("B_list not implemented yet")
+    if fixed_epsilon is None:
+        raise NotImplementedError("variable expsilon not implemented yet")
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
@@ -657,14 +663,14 @@ def solve_lambda_fusion(
                 ]
             ),
         )
-        con = M.constraint(H, fu.Domain.inPSDCone(Q.shape[0]))
+        M.constraint(H, fu.Domain.inPSDCone(Q.shape[0]))
         xhat = fu.Matrix.dense(xhat[:, None])
-        if epsilon != 0:
+        if fixed_epsilon is not None:
             # |Hx| <= eps: Hx > -eps,  Hx <= eps
-            con = M.constraint(fu.Expr.dot(H, xhat), fu.Domain.lessThan(epsilon))
-            con = M.constraint(fu.Expr.dot(H, xhat), fu.Domain.greaterThan(-epsilon))
+            M.constraint(fu.Expr.dot(H, xhat), fu.Domain.lessThan(fixed_epsilon))
+            M.constraint(fu.Expr.dot(H, xhat), fu.Domain.greaterThan(-fixed_epsilon))
         else:
-            con = M.constraint(fu.Expr.dot(H, xhat), fu.Domain.equalsTo(0.0))
+            M.constraint(fu.Expr.dot(H, xhat), fu.Domain.equalsTo(0.0))
 
         # model the l1 norm |y[force_first:]|
         # see section 2.2.3 https://docs.mosek.com/modeling-cookbook/linear.html#sec-lo-modeling-abs
@@ -702,7 +708,7 @@ def solve_lambda_cvxpy(
     force_first=1,
     adjust=ADJUST,
     primal=PRIMAL,
-    tol=TOL,
+    tol=LAMBDA_TOL,
     verbose=False,
     fixed_epsilon=EPSILON,
 ):
@@ -755,11 +761,12 @@ def solve_lambda_cvxpy(
 
         constraints = [H >> 0]  # >> 0 denotes positive SEMI-definite
 
-        if epsilon != 0:
+        if (fixed_epsilon is not None and epsilon != 0) or (fixed_epsilon is None):
             constraints += [H @ xhat <= epsilon]
             constraints += [H @ xhat >= -epsilon]
-        else:
+        elif fixed_epsilon is not None:
             constraints += [H @ xhat == 0]
+
         if k > 0:
             constraints += [u >= 0]
 
