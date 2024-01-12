@@ -9,7 +9,7 @@ import numpy as np
 import scipy.sparse as sp
 from cert_tools.fusion_tools import mat_fusion
 
-TOL = 1e-3
+TOL = 1e-11
 
 # for computing the lambda parameter, we are adding all possible constraints
 # and therefore we might run into numerical problems. Setting below to a high value
@@ -27,7 +27,7 @@ PRIMAL = False  # governs how the problem is put into SDP solver
 # normalize the Q matrix by either its Frobenius norm or the maximum value.
 # this is done after extracting the biggest element (in upper-left corner, due
 # to homogenization variable)
-SCALE_METHOD = "max"
+SCALE_METHOD = "max"  # max or fro
 
 # Define global default values for MOSEK IP solver
 options_cvxpy = {}
@@ -90,6 +90,8 @@ def adjust_Q(Q, offset=True, scale=True):
                 Q_scale = np.linalg.norm(Q_mat, ord="fro")
         elif SCALE_METHOD == "max":
             Q_scale = abs(Q_mat).max()
+        else:
+            raise ValueError("Unknown cost scaling method")
     else:
         Q_scale = 1.0
     Q_mat /= Q_scale
