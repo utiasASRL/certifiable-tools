@@ -1,5 +1,5 @@
-from copy import deepcopy
 import sys
+from copy import deepcopy
 
 import casadi as cas
 import cvxpy as cp
@@ -7,7 +7,6 @@ import mosek
 import mosek.fusion as fu
 import numpy as np
 import scipy.sparse as sp
-
 from cert_tools.fusion_tools import mat_fusion
 
 TOL = 1e-3
@@ -17,7 +16,10 @@ TOL = 1e-3
 # was found to lead to less cases where the solver terminates with "UNKNOWN" status.
 # see https://docs.mosek.com/latest/pythonapi/parameters.html#doc-all-parameter-list
 LAMBDA_REL_GAP = 0.1
-EPSILON = 1e-4
+
+# for the sparsity-promoting problem: |Hx| < EPSILON
+# can set EPSILON to None, and we will minimize it.
+EPSILON = None  # was: 1e-4
 
 ADJUST = True  # adjust the matrix Q for better conditioning
 PRIMAL = False  # governs how the problem is put into SDP solver
@@ -467,7 +469,6 @@ def solve_sdp_cvxpy(
         )
         # this does not include symmetry of Q!!
         constraints = [LHS << Q_here]
-        constraints += [LHS == LHS.T]
         if k > 0:
             constraints.append(u >= 0)
 
@@ -656,10 +657,10 @@ def solve_lambda_fusion(
         )
         con = M.constraint(H, fu.Domain.inPSDCone(Q.shape[0]))
         xhat = fu.Matrix.dense(xhat[:, None])
-        if EPSILON != 0:
+        if epsilon != 0:
             # |Hx| <= eps: Hx > -eps,  Hx <= eps
-            con = M.constraint(fu.Expr.dot(H, xhat), fu.Domain.lessThan(EPSILON))
-            con = M.constraint(fu.Expr.dot(H, xhat), fu.Domain.greaterThan(-EPSILON))
+            con = M.constraint(fu.Expr.dot(H, xhat), fu.Domain.lessThan(epsilon))
+            con = M.constraint(fu.Expr.dot(H, xhat), fu.Domain.greaterThan(-epsilon))
         else:
             con = M.constraint(fu.Expr.dot(H, xhat), fu.Domain.equalsTo(0.0))
 
@@ -701,6 +702,7 @@ def solve_lambda_cvxpy(
     primal=PRIMAL,
     tol=TOL,
     verbose=False,
+    fixed_epsilon=EPSILON,
 ):
     """Determine lambda (the importance of each constraint) with an SDP.
 
@@ -725,10 +727,10 @@ def solve_lambda_cvxpy(
         m = len(Constraints)
         y = cp.Variable(shape=(m,))
 
-        if EPSILON is None:
+        if fixed_epsilon is None:
             epsilon = cp.Variable()
         else:
-            epsilon = EPSILON
+            epsilon = fixed_epsilon
 
         k = len(B_list)
         if k > 0:
@@ -740,18 +742,18 @@ def solve_lambda_cvxpy(
             + [u[i] * Bi for (i, Bi) in enumerate(B_list)]
         )
 
-        if k > 0 and EPSILON is None:
+        if k > 0 and fixed_epsilon is None:
             objective = cp.Minimize(cp.norm1(y[force_first:]) + cp.norm1(u) + epsilon)
         elif k > 0:  # EPSILONS is fixed
             objective = cp.Minimize(cp.norm1(y[force_first:]) + cp.norm1(u))
-        elif EPSILON is None:
+        elif fixed_epsilon is None:
             objective = cp.Minimize(cp.norm1(y[force_first:]) + epsilon)
         else:  # EPSILONS is fixed
             objective = cp.Minimize(cp.norm1(y[force_first:]))
 
         constraints = [H >> 0]  # >> 0 denotes positive SEMI-definite
 
-        if EPSILON != 0:
+        if epsilon != 0:
             constraints += [H @ xhat <= epsilon]
             constraints += [H @ xhat >= -epsilon]
         else:
@@ -766,9 +768,9 @@ def solve_lambda_cvxpy(
             X = None
             lamda = None
         else:
-            try:
+            if fixed_epsilon is None:
                 print("solve_lamda: epsilon is", epsilon.value)
-            except Exception:
+            else:
                 print("solve_lamda: epsilon is", epsilon)
             X = constraints[0].dual_value
             lamda = y.value
