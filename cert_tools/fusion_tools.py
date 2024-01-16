@@ -1,5 +1,5 @@
-from mosek.fusion import Matrix
 import scipy.sparse as sp
+from mosek.fusion import Matrix
 
 
 def mat_fusion(X):

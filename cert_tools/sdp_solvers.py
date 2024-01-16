@@ -171,7 +171,7 @@ def solve_low_rank_sdp(
 
 
 def solve_sdp_mosek(
-    Q, Constraints, adjust=ADJUST, primal=PRIMAL, tol=TOL, verbose=True
+    Q, Constraints, adjust=ADJUST, use_primal=PRIMAL, tol=TOL, verbose=True
 ):
     """Solve SDP using the MOSEK API.
 

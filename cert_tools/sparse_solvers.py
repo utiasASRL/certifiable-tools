@@ -173,7 +173,7 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
         # for cl, ck in itertools.permutations(clique_list, 2):
         # for cl, ck in itertools.combinations(clique_list, 2):
         for cl, ck in zip(clique_list[:-1], clique_list[1:]):
-            overlap = BaseClique.get_overlap(cl, ck)
+            overlap = BaseClique.get_overlap(cl, ck, h=cl.hom)
             for l in overlap:
                 for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
                     # cl.X_var[rl[0], rl[1]] == ck.X[rk[0], rk[1]])
@@ -187,12 +187,16 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                     )
                     M.constraint(Expr.sub(X_left, X_right), Domain.equalsTo(0))
 
-                    np.testing.assert_allclose(
-                        cl.X[left_start[0] : left_end[0], left_start[1] : left_end[1]],
-                        ck.X[
-                            right_start[0] : right_end[0], right_start[1] : right_end[1]
-                        ],
-                    )
+                    if cl.X is not None and ck.X is not None:
+                        np.testing.assert_allclose(
+                            cl.X[
+                                left_start[0] : left_end[0], left_start[1] : left_end[1]
+                            ],
+                            ck.X[
+                                right_start[0] : right_end[0],
+                                right_start[1] : right_end[1],
+                            ],
+                        )
 
         M.setSolverParam("intpntCoTolDfeas", tol)  # default 1e-8
         M.setSolverParam("intpntCoTolPfeas", tol)  # default 1e-8
@@ -241,7 +245,7 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
 
     # add constraints for overlapping regions
     for cl, ck in itertools.combinations(clique_list, 2):
-        overlap = BaseClique.get_overlap(cl, ck)
+        overlap = BaseClique.get_overlap(cl, ck, h=cl.hom)
         for l in overlap:
             for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
                 constraints.append(cl.X_var[rl[0], rl[1]] == ck.X_var[rk[0], rk[1]])

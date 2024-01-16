@@ -1,11 +1,13 @@
 import cvxpy as cp
-import numpy as np
-
 import mosek
-
+import numpy as np
 from cert_tools.eig_tools import get_min_eigpairs
-from cert_tools.eopt_solvers import get_cert_mat
-from cert_tools.eopt_solvers import backtrack_cutoff, backtrack_factor, backtrack_start
+from cert_tools.eopt_solvers import (
+    backtrack_cutoff,
+    backtrack_factor,
+    backtrack_start,
+    get_cert_mat,
+)
 from cert_tools.sdp_solvers import options_cvxpy
 
 # tolerance for minimum eigevalue: mineig >= -TOL_EIG <=> A >= 0

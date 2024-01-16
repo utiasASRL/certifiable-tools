@@ -1,15 +1,12 @@
+import sys
 from copy import deepcopy
 from multiprocessing import Pipe, Process
-import sys
 
-import numpy as np
 import cvxpy as cp
-
+import numpy as np
 from cert_tools.fusion_tools import mat_fusion
 from cert_tools.sdp_solvers import options_cvxpy
-
-from mosek.fusion import Domain, Expr, ObjectiveSense, Model
-from mosek.fusion import Matrix
+from mosek.fusion import Domain, Expr, Matrix, Model, ObjectiveSense
 
 EARLY_STOP_MIN = 1e-2
 
@@ -282,7 +279,7 @@ def solve_alternating(
             left = clique_list[k - 1].Z_new if k > 0 else None
             right = clique_list[k].Z_new if k < len(clique_list) - 1 else None
             clique.generate_g(left=left, right=right)
-            if clique.X.value is not None:
+            if clique.X_var.value is not None:
                 pass
 
             X, info = solve_inner_sdp(

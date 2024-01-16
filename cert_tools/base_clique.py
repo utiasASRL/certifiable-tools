@@ -5,10 +5,8 @@ OVERLAP_ALL = False
 
 class BaseClique(object):
     @staticmethod
-    def get_overlap(cl, ck):
-        return (
-            set(cl.var_dict.keys()).intersection(ck.var_dict.keys()).difference({"h"})
-        )
+    def get_overlap(cl, ck, h):
+        return set(cl.var_dict.keys()).intersection(ck.var_dict.keys()).difference(h)
 
     def __init__(
         self,
@@ -22,6 +20,7 @@ class BaseClique(object):
         var_dict=None,
         X=None,
         index=0,
+        hom="h",
     ):
         assert Q is not None or X is not None
         self.Q = Q
@@ -34,19 +33,23 @@ class BaseClique(object):
         self.right_slice_end = right_slice_end
 
         if var_dict is not None:
-            assert "h" in var_dict, "Each clique must has a h."
+            assert hom in var_dict, f"Each clique must have a {hom}."
         self.var_dict = var_dict
         self.var_start_index = None
         self.X = X
 
         self.X_dim = Q.shape[0] if Q is not None else X.shape[0]
         self.index = index
+        self.hom = hom
 
-    def get_ranges(self, j_key: str, i_key="h"):
+    def get_ranges(self, j_key: str, i_key: str = None):
         """Return the index range of var_key.
 
         :param var_key: name of overlapping  variable
         """
+        if i_key is None:
+            i_key = self.hom
+
         if self.var_start_index is None:
             self.var_start_index = dict(
                 zip(self.var_dict.keys(), np.cumsum([0] + list(self.var_dict.values())))
