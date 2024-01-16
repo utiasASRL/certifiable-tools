@@ -1,7 +1,6 @@
 import numpy as np
 import scipy.linalg as la
 
-
 METHOD = "qrp"
 NULL_THRESH = 1e-5
 
@@ -17,6 +16,7 @@ def rank_project(X, p=1, tolerance=1e-10):
     X_hat = np.outer(x, x)
     error = np.sum(np.abs(E[:-p]))
     info = {
+        "EVR": abs(E[-p]) / abs(E[-p - 1]),
         "error X": np.linalg.norm(X_hat - X),
         "error eigs": error,
         "mean error eigs": error / (X.shape[0] - p),

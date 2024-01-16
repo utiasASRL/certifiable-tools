@@ -1,14 +1,12 @@
 import itertools
 import sys
 
-
-from mosek.fusion import Domain, Expr, ObjectiveSense, Model, ProblemStatus
-import numpy as np
 import cvxpy as cp
-
+import numpy as np
 from cert_tools.base_clique import BaseClique
+from cert_tools.fusion_tools import get_slice, mat_fusion
 from cert_tools.sdp_solvers import options_cvxpy
-from cert_tools.fusion_tools import mat_fusion, get_slice
+from mosek.fusion import Domain, Expr, Model, ObjectiveSense, ProblemStatus
 
 CONSTRAIN_ALL_OVERLAP = False
 
@@ -67,7 +65,7 @@ def solve_oneshot_dual_slow(clique_list):
     return X_k_list, info
 
 
-def solve_oneshot_dual_cvxpy(clique_list, tol=TOL):
+def solve_oneshot_dual_cvxpy(clique_list, tol=TOL, verbose=False, adjust=False):
     """Implementation of range-space clique decomposition using auxiliary variables."""
     B_list_left = clique_list[0].get_B_list_left()
     B_list_right = clique_list[0].get_B_list_right()
@@ -112,7 +110,7 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL):
         constraints += [clique.H >> 0]
     cprob = cp.Problem(cp.Maximize(-cp.sum(rhos)), constraints)
     data, *__ = cprob.get_problem_data(cp.SCS)
-    options_cvxpy["verbose"] = True
+    options_cvxpy["verbose"] = verbose
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
     X_k_list = [con.dual_value for con in constraints]
@@ -275,12 +273,12 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
 def solve_oneshot(
     clique_list, use_primal=True, use_fusion=False, verbose=False, tol=TOL
 ):
-    if use_primal:
-        if use_fusion:
-            return solve_oneshot_primal_fusion(clique_list, verbose=verbose, tol=tol)
-        else:
-            return solve_oneshot_primal_cvxpy(clique_list, verbose=verbose, tol=tol)
+    if not use_primal:
+        print("Defaulting to primal because dual cliques not implemented yet.")
+    if use_fusion:
+        return solve_oneshot_primal_fusion(clique_list, verbose=verbose, tol=tol)
     else:
-        if use_fusion:
-            print("Warning: dual not implement for fusion, using cvxpy.")
-        return solve_oneshot_dual_cvxpy(clique_list, verbose=verbose, tol=tol)
+        return solve_oneshot_primal_cvxpy(clique_list, verbose=verbose, tol=tol)
+    # return solve_oneshot_dual_cvxpy(
+    #        clique_list, verbose=verbose, tol=tol, adjust=adjust
+    #    )

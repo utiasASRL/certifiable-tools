@@ -74,9 +74,10 @@ def adjust_tol_fusion(options, tol):
 def adjust_Q(Q, offset=True, scale=True):
     ii, jj = (Q == Q.max()).nonzero()
     if (ii[0], jj[0]) != (0, 0) or (len(ii) > 1):
-        print(
-            "Warning: largest element of Q is not unique or not in top-left. Check ordering?"
-        )
+        pass
+        # print(
+        #    "Warning: largest element of Q is not unique or not in top-left. Check ordering?"
+        # )
 
     Q_mat = deepcopy(Q)
     if offset:
@@ -784,3 +785,19 @@ def solve_lambda_cvxpy(
             X = constraints[0].dual_value
             lamda = y.value
     return X, lamda
+
+
+def solve_sdp(
+    Q,
+    Constraints,
+    B_list=[],
+    adjust=ADJUST,
+    primal=PRIMAL,
+    tol=TOL,
+    verbose=False,
+    use_fusion=False,
+):
+    if use_fusion:
+        return solve_sdp_fusion(Q, Constraints, B_list, adjust, primal, tol, verbose)
+    else:
+        return solve_sdp_cvxpy(Q, Constraints, B_list, adjust, primal, tol, verbose)
