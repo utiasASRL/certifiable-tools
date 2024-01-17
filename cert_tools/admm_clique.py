@@ -9,13 +9,14 @@ from cert_tools.base_clique import BaseClique
 CONSTRAIN_ALL_OVERLAP = False
 
 
-class CliqueADMM(BaseClique):
+class ADMMClique(BaseClique):
     def __init__(
         self,
         Q,
         A_list: list,
         b_list: list,
         var_dict: dict,
+        X: np.ndarray = None,
         index: int = 0,
         N: int = 0,
         hom="l",
@@ -26,6 +27,8 @@ class CliqueADMM(BaseClique):
             A_list=A_list,
             b_list=b_list,
             var_dict=var_dict,
+            X=X,
+            index=index,
             hom=hom,
         )
         self.x_dim = x_dim
@@ -40,6 +43,7 @@ class CliqueADMM(BaseClique):
         self.F = None
         self.g = None
 
+        assert N > 0, "must give total number of nodes N"
         self.E = self.get_E(N=N)
 
     def get_E(self, N):

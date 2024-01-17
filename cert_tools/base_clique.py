@@ -20,7 +20,8 @@ class BaseClique(object):
         var_dict=None,
         X=None,
         index=0,
-        hom="h",
+        x_dim=None,
+        hom="h"
     ):
         assert Q is not None or X is not None
         self.Q = Q
@@ -38,7 +39,12 @@ class BaseClique(object):
         self.var_start_index = None
         self.X = X
 
+        # dimension of full clique
         self.X_dim = Q.shape[0] if Q is not None else X.shape[0]
+
+        # dimension of each node inside clique
+        self.x_dim = x_dim
+
         self.index = index
         self.hom = hom
 
