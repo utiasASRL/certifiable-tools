@@ -4,10 +4,12 @@ from multiprocessing import Pipe, Process
 
 import cvxpy as cp
 import numpy as np
+from cert_tools.admm_clique import ADMMClique
 from cert_tools.fusion_tools import mat_fusion
 from cert_tools.sdp_solvers import options_cvxpy
 from mosek.fusion import Domain, Expr, Matrix, Model, ObjectiveSense
 
+EARLY_STOP = True
 EARLY_STOP_MIN = 1e-2
 
 RHO_START = 1.0
@@ -15,8 +17,8 @@ RHO_START = 1.0
 MAX_ITER = 1000
 
 # See [Boyd 2010] for explanations of these.
-MU_RHO = 2.0
-TAU_RHO = 2.0
+MU_RHO = 2.0  # how much dual and primal residual may get unbalanced.
+TAU_RHO = 2.0  # how much to change rho in each iteration.
 EPS_ABS = 0.0  # set to 0 to use relative only
 EPS_REL = 1e-4
 
@@ -24,7 +26,7 @@ EPS_REL = 1e-4
 N_ADMM = 3
 
 
-def initialize(clique_list, X0=None):
+def initialize_Z(clique_list, X0=None):
     """Initialize Z (consensus variable) based on contents of X0 (initial feasible points)"""
     x_dim = clique_list[0].x_dim
     indices = [0] + list(range(1 + x_dim, 1 + 2 * x_dim))
@@ -89,7 +91,9 @@ def update_Z(clique_list):
 def update_sigmas(clique_list, rho_k):
     """Update dual variables."""
     primal_res = []
+    dual_res = []
     for k, clique in enumerate(clique_list):
+        assert isinstance(clique, ADMMClique)
         left = clique_list[k - 1].Z_new if k > 0 else None
         right = clique_list[k].Z_new if k < len(clique_list) - 1 else None
         clique.generate_g(left=left, right=right)
@@ -97,11 +101,14 @@ def update_sigmas(clique_list, rho_k):
 
         clique.sigmas += rho_k * primal_res_k
         primal_res.append(primal_res_k)
-    primal_res = np.hstack(primal_res)
 
-    dual_res = rho_k * np.hstack(
-        [clique.get_dual_residual().flatten() for clique in clique_list[:-1]]
-    )
+        if k < len(clique_list) - 1:
+            dual_res_k = rho_k * clique.get_dual_residual().flatten()
+            dual_res.append(dual_res_k)
+
+    primal_res = np.hstack(primal_res)
+    dual_res = np.hstack(dual_res)
+
     primal_err = np.linalg.norm(primal_res)
     dual_err = np.linalg.norm(dual_res)
     return primal_err, dual_err
@@ -142,7 +149,7 @@ def wrap_up(
         info["stop"] = True
     elif early_stop and rel_diff and (rel_diff < EARLY_STOP_MIN):
         info["success"] = True
-        info["msg"] = f"stopping after {iter} because cost didn't change"
+        info["msg"] = f"stopping after {iter} because cost didn't change enough"
         info["stop"] = True
     # All cliques did not solve in the last iteration.
     elif all([c.status < 0 for c in clique_list]):
@@ -222,7 +229,7 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False):
     return X, info
 
 
-def solve_inner_sdp(clique, rho=None, verbose=False, use_fusion=True):
+def solve_inner_sdp(clique: ADMMClique, rho=None, verbose=False, use_fusion=True):
     """Solve the inner SDP of the ADMM algorithm, similar to [Dall'Anese 2013]
 
     min <Q, X> + y'e(X) + rho/2*||e(X)||^2
@@ -237,16 +244,19 @@ def solve_inner_sdp(clique, rho=None, verbose=False, use_fusion=True):
             clique.Q, Constraints, clique.F, clique.g, clique.sigmas, rho, verbose
         )
     else:
-        objective = clique.get_objective_cvxpy(clique.X, rho)
-        constraints = clique.get_constraints_cvxpy(clique.X)
+        objective = clique.get_objective_cvxpy(clique.X_var, rho)
+        constraints = clique.get_constraints_cvxpy(clique.X_var)
         cprob = cp.Problem(objective, constraints)
         options_cvxpy["verbose"] = verbose
         try:
             cprob.solve(solver="MOSEK", **options_cvxpy)
-            info = {"cost": float(cprob.value), "success": clique.X.value is not None}
+            info = {
+                "cost": float(cprob.value),
+                "success": clique.X_var.value is not None,
+            }
         except:
             info = {"cost": np.inf, "success": False}
-        return clique.X.value, info
+        return clique.X_var.value, info
 
 
 def solve_alternating(
@@ -255,8 +265,11 @@ def solve_alternating(
     sigmas: dict = None,
     rho_start: float = RHO_START,
     use_fusion: bool = True,
-    early_stop: bool = False,
+    early_stop: bool = EARLY_STOP,
     verbose: bool = False,
+    max_iter=MAX_ITER,
+    mu_rho=MU_RHO,
+    tau_rho=TAU_RHO,
 ):
     """Use ADMM to solve decomposed SDP, but without using parallelism."""
     if sigmas is not None:
@@ -268,8 +281,8 @@ def solve_alternating(
 
     cost_history = []
 
-    initialize(clique_list, X0)  # fill Z_new
-    for iter in range(MAX_ITER):
+    initialize_Z(clique_list, X0)  # fill Z_new
+    for iter in range(max_iter):
         cost_lagrangian = 0
         cost_original = 0
 
@@ -303,7 +316,7 @@ def solve_alternating(
         # ADMM step 3: update Lagrange multipliers
         primal_err, dual_err = update_sigmas(clique_list, rho_k)
 
-        rho_k = update_rho(rho_k, dual_err, primal_err)
+        rho_k = update_rho(rho_k, dual_err, primal_err, mu=mu_rho, tau=tau_rho)
 
         info_here["cost"] = cost_original
         cost_history.append(cost_original)
@@ -353,7 +366,7 @@ def solve_parallel(
                 pass
             pipe.send(clique)
 
-    initialize(clique_list, X0)
+    initialize_Z(clique_list, X0)
 
     # Setup the workers
     pipes = []

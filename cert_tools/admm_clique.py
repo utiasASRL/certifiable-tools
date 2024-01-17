@@ -146,11 +146,14 @@ class ADMMClique(BaseClique):
                 for k, (i, j) in enumerate(
                     itertools.combinations_with_replacement(range(self.x_dim), 2)
                 ):
-                    # the upper-left corner of current estimate ...
+                    # pick upper-left corner of variable
                     here = np.zeros(self.X.shape)
                     here[1 + i, 1 + j] = 1.0
                     F[k, :] = here.flatten()
+                assert k == Nx - 1
                 for i in range(self.x_dim):
+                    here = np.zeros(self.X.shape)
+                    here[0, 1 + i] = 1.0
                     F[Nx + i] = here.flatten()
                 Fs.append(F)
             if right is not None:
@@ -158,11 +161,11 @@ class ADMMClique(BaseClique):
                 for k, (i, j) in enumerate(
                     itertools.combinations_with_replacement(range(self.x_dim), 2)
                 ):
-                    # the lower corner of current estimate ...
+                    # pick lower-right corner of variable
                     here = np.zeros(self.X.shape)
                     here[1 + self.x_dim + i, 1 + self.x_dim + j] = 1.0
                     F[k, :] = here.flatten()
-                    # should equal the lower corner of left estimate
+                assert k == Nx - 1
                 for i in range(self.x_dim):
                     here = np.zeros(self.X.shape)
                     here[0, 1 + self.x_dim + i] = 1.0
@@ -192,18 +195,19 @@ class ADMMClique(BaseClique):
                 for k, (i, j) in enumerate(
                     itertools.combinations_with_replacement(range(self.x_dim), 2)
                 ):
-                    # should equal the lower-right corner of left estimate
+                    # pick lower-right corner of left variable
                     gs.append(left[1 + shift + i, 1 + shift + j])
 
                 for i in range(self.x_dim):
-                    gs.append(left[0, 1 + shift + i])
+                    gs.append(left[1 + shift + i, 0])
             if right is not None:
                 for k, (i, j) in enumerate(
                     itertools.combinations_with_replacement(range(self.x_dim), 2)
                 ):
+                    # pick upper-left corner of right variable
                     gs.append(right[1 + i, 1 + j])
                 for i in range(self.x_dim):
-                    gs.append(right[0, 1 + i])
+                    gs.append(right[1 + i, 0])
         else:
             if left is not None:
                 gs += list(left[1 + shift : 1 + shift + self.x_dim, 0])
