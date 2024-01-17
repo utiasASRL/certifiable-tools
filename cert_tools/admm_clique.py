@@ -9,6 +9,21 @@ from cert_tools.base_clique import BaseClique
 CONSTRAIN_ALL_OVERLAP = False
 
 
+def initialize_overlap(clique_list):
+    for k, clique in enumerate(clique_list):
+        assert isinstance(clique, ADMMClique)
+
+        # below are for solving with fusion API
+        clique.generate_overlap_slices()
+
+        # below are for solving with cvxpy
+        left = clique_list[k - 1].X_var if k > 0 else None
+        right = clique_list[k + 1].X_var if k < len(clique_list) - 1 else None
+        clique.generate_F(left=left, right=right)
+        clique.generate_g(left=left, right=right)
+        assert clique.F.shape[0] == clique.g.shape[0]
+
+
 class ADMMClique(BaseClique):
     def __init__(
         self,
