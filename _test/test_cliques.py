@@ -2,8 +2,8 @@ import itertools
 import os
 
 import numpy as np
-
 from cert_tools.base_clique import BaseClique
+
 from poly_matrix import PolyMatrix
 
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
@@ -44,9 +44,9 @@ def test_overlap():
     # sanity check
     c0 = clique_list[0]
     assert isinstance(c0, BaseClique)
-    assert c0.get_ranges("h") == [[range(0, 1), range(0, 1)]]
+    assert c0.get_ranges("h") == [[[0], [0]]]
     assert c0.get_ranges("x") == [
-        [range(0, 1), range(1, X.variable_dict_i["x"] + 1)]
+        [[0], list(range(1, X.variable_dict_i["x"] + 1))]
     ], c0.get_ranges("x")
 
     for cl, ck in itertools.combinations(clique_list, 2):

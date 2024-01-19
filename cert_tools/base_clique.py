@@ -5,7 +5,7 @@ OVERLAP_ALL = False
 
 class BaseClique(object):
     @staticmethod
-    def get_overlap(cl, ck, h):
+    def get_overlap(cl, ck, h="h"):
         return set(cl.var_dict.keys()).intersection(ck.var_dict.keys()).difference(h)
 
     def __init__(
@@ -21,7 +21,7 @@ class BaseClique(object):
         X=None,
         index=0,
         x_dim=None,
-        hom="h"
+        hom="h",
     ):
         assert Q is not None or X is not None
         self.Q = Q
