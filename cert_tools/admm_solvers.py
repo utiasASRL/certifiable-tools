@@ -10,7 +10,7 @@ from cert_tools.sdp_solvers import options_cvxpy
 from mosek.fusion import Domain, Expr, Matrix, Model, ObjectiveSense
 
 EARLY_STOP = True
-EARLY_STOP_MIN = 1e-2
+EARLY_STOP_MIN = 1e-5
 
 RHO_START = 1.0
 
@@ -20,7 +20,7 @@ MAX_ITER = 1000
 MU_RHO = 2.0  # how much dual and primal residual may get unbalanced.
 TAU_RHO = 2.0  # how much to change rho in each iteration.
 EPS_ABS = 0.0  # set to 0 to use relative only
-EPS_REL = 1e-4
+EPS_REL = 1e-10
 
 # Stop ADMM if the last N_ADMM iterations don't have significant change in cost.
 N_ADMM = 3
@@ -139,7 +139,7 @@ def wrap_up(
             )
 
     rel_diff = (
-        np.max(np.abs(np.diff(cost_history[-N_ADMM:]))) / cost_history[-1]
+        np.max(np.abs(np.diff(cost_history[-N_ADMM:]))) / abs(cost_history[-1])
         if len(cost_history) >= N_ADMM
         else None
     )
