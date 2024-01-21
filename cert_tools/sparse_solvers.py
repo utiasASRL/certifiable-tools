@@ -222,15 +222,25 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                 np.reshape(get_slice(X, i).level(), (X_dim, X_dim)) for i in range(N)
             ]
             cost_raw = M.primalObjValue()
+            if cost_raw < 0:
+                print("cost is negative! sanity check:")
+                for i, c in enumerate(clique_list):
+                    print("mineig Q", np.linalg.eigvalsh(c.Q.toarray())[0])
+                    print("mineig X", np.linalg.eigvalsh(X_list_k[i])[0])
+
             costs_per_clique = [con.dual()[0] for con in A_0_constraints]
-            cost_test = abs(sum(costs_per_clique))
-            if cost_test > 1e-8:
-                assert abs((cost_raw - cost_test) / cost_test) < 1e-1
+            cost_test = sum(costs_per_clique)
+            if abs(cost_test) > 1e-8:
+                rel_err = abs((cost_raw - cost_test) / cost_test)
+                assert rel_err < 1e-1, rel_err
             cost = sum(
                 costs_per_clique[i] * Q_scale_offsets[i][1] + Q_scale_offsets[i][2]
                 for i in range(N)
             )
             info = {"success": True, "cost": cost}
+        elif M.getProblemStatus() is ProblemStatus.DualInfeasible:
+            X_k_list = []
+            info = {"success": False, "cost": -np.inf, "msg": "dual infeasible"}
         return X_list_k, info
 
 
