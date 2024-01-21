@@ -249,7 +249,8 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
         for l in overlap:
             for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
                 constraints.append(cl.X_var[rl[0], rl[1]] == ck.X_var[rk[0], rk[1]])
-                np.testing.assert_allclose(cl.X[rl[0], rl[1]], ck.X[rk[0], rk[1]])
+                if (cl.X is not None) and (cr.X is not None):
+                    np.testing.assert_allclose(cl.X[rl[0], rl[1]], ck.X[rk[0], rk[1]])
 
     cprob = cp.Problem(
         cp.Minimize(

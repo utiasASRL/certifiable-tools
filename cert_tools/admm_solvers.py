@@ -8,7 +8,7 @@ from cert_tools.fusion_tools import mat_fusion
 from cert_tools.sdp_solvers import options_cvxpy
 from mosek.fusion import Domain, Expr, Matrix, Model, ObjectiveSense
 
-EARLY_STOP_MIN = 1e-2
+EARLY_STOP_MIN = 1e-5
 
 RHO_START = 1.0
 
@@ -17,8 +17,8 @@ MAX_ITER = 1000
 # See [Boyd 2010] for explanations of these.
 MU_RHO = 2.0
 TAU_RHO = 2.0
-EPS_ABS = 0.0  # set to 0 to use relative only
-EPS_REL = 1e-4
+EPS_ABS = 0  # set to 0 to use relative only
+EPS_REL = 1e-10
 
 # Stop ADMM if the last N_ADMM iterations don't have significant change in cost.
 N_ADMM = 3
@@ -132,7 +132,7 @@ def wrap_up(
             )
 
     rel_diff = (
-        np.max(np.abs(np.diff(cost_history[-N_ADMM:]))) / cost_history[-1]
+        np.max(np.abs(np.diff(cost_history[-N_ADMM:]))) / abs(cost_history[-1])
         if len(cost_history) >= N_ADMM
         else None
     )
@@ -237,16 +237,19 @@ def solve_inner_sdp(clique, rho=None, verbose=False, use_fusion=True):
             clique.Q, Constraints, clique.F, clique.g, clique.sigmas, rho, verbose
         )
     else:
-        objective = clique.get_objective_cvxpy(clique.X, rho)
-        constraints = clique.get_constraints_cvxpy(clique.X)
+        objective = clique.get_objective_cvxpy(clique.X_var, rho)
+        constraints = clique.get_constraints_cvxpy(clique.X_var)
         cprob = cp.Problem(objective, constraints)
         options_cvxpy["verbose"] = verbose
         try:
             cprob.solve(solver="MOSEK", **options_cvxpy)
-            info = {"cost": float(cprob.value), "success": clique.X.value is not None}
+            info = {
+                "cost": float(cprob.value),
+                "success": clique.X_var.value is not None,
+            }
         except:
             info = {"cost": np.inf, "success": False}
-        return clique.X.value, info
+        return clique.X_var.value, info
 
 
 def solve_alternating(
