@@ -2,11 +2,16 @@ import itertools
 import sys
 
 import cvxpy as cp
+import mosek.fusion as fu
 import numpy as np
 from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
-from cert_tools.sdp_solvers import options_cvxpy
-from mosek.fusion import Domain, Expr, Model, ObjectiveSense, ProblemStatus
+from cert_tools.sdp_solvers import (
+    adjust_tol,
+    adjust_tol_fusion,
+    options_cvxpy,
+    options_fusion,
+)
 
 CONSTRAIN_ALL_OVERLAP = False
 
@@ -28,7 +33,7 @@ def read_costs_from_mosek(fname):
     return primal_value, dual_value
 
 
-def solve_oneshot_dual_slow(clique_list):
+def solve_oneshot_dual_slow(clique_list, tol=TOL):
     """Implementation of range-space clique decomposition as in [Zheng 2020]."""
     from cert_tools.sdp_solvers import adjust_Q
 
@@ -49,7 +54,10 @@ def solve_oneshot_dual_slow(clique_list):
         == Q_here + cp.sum([sigmas[k] * A_list[k] for k in range(len(A_list))])
     ]
     cprob = cp.Problem(cp.Maximize(-sigmas[0]), constraints)
+
     options_cvxpy["verbose"] = True
+    adjust_tol(options_cvxpy, tol)
+    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol * 10
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
     # H_k_list = [clique.H.value for clique in clique_list]
@@ -108,9 +116,14 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL, verbose=False, adjust=False):
                 [z_var_right[i] * B_list_right[i] for i in range(len(B_list_right))]
             )
         constraints += [clique.H >> 0]
+
     cprob = cp.Problem(cp.Maximize(-cp.sum(rhos)), constraints)
-    data, *__ = cprob.get_problem_data(cp.SCS)
+
+    # data, *__ = cprob.get_problem_data(cp.SCS)
+
     options_cvxpy["verbose"] = verbose
+    adjust_tol(options_cvxpy, tol)
+    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol * 10
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
     X_k_list = [con.dual_value for con in constraints]
@@ -139,9 +152,9 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
 
     X_dim = clique_list[0].X_dim
     N = len(clique_list)
-    with Model("primal") as M:
+    with fu.Model("primal") as M:
         # creates (N x X_dim x X_dim) variable
-        X = M.variable(Domain.inPSDCone(X_dim, N))
+        X = M.variable(fu.Domain.inPSDCone(X_dim, N))
 
         if adjust:
             Q_scale_offsets = [adjust_Q(c.Q) for c in clique_list]
@@ -150,10 +163,10 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
 
         # objective
         M.objective(
-            ObjectiveSense.Minimize,
-            Expr.add(
+            fu.ObjectiveSense.Minimize,
+            fu.Expr.add(
                 [
-                    Expr.dot(mat_fusion(Q_scale_offsets[i][0]), get_slice(X, i))
+                    fu.Expr.dot(mat_fusion(Q_scale_offsets[i][0]), get_slice(X, i))
                     for i in range(N)
                 ]
             ),
@@ -165,7 +178,7 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
             for A, b in zip(clique.A_list, clique.b_list):
                 A_fusion = mat_fusion(A)
                 con = M.constraint(
-                    Expr.dot(A_fusion, get_slice(X, i)), Domain.equalsTo(b)
+                    fu.Expr.dot(A_fusion, get_slice(X, i)), fu.Domain.equalsTo(b)
                 )
                 if b == 1:
                     A_0_constraints.append(con)
@@ -185,7 +198,7 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                     X_right = X.slice(
                         [ck.index] + right_start, [ck.index + 1] + right_end
                     )
-                    M.constraint(Expr.sub(X_left, X_right), Domain.equalsTo(0))
+                    M.constraint(fu.Expr.sub(X_left, X_right), fu.Domain.equalsTo(0))
 
                     if cl.X is not None and ck.X is not None:
                         np.testing.assert_allclose(
@@ -198,16 +211,18 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                             ],
                         )
 
-        M.setSolverParam("intpntCoTolDfeas", tol)  # default 1e-8
-        M.setSolverParam("intpntCoTolPfeas", tol)  # default 1e-8
-        M.setSolverParam("intpntCoTolMuRed", tol)  # default 1e-8
+        adjust_tol_fusion(options_fusion, tol)
+        options_fusion["intpntCoTolRelGap"] = tol * 10
+        for key, val in options_fusion.items():
+            M.setSolverParam(key, val)  # default 1e-8
+
         if verbose:
             M.setLogHandler(sys.stdout)
         else:
             f = open("mosek_output.tmp", "a+")
             M.setLogHandler(f)
         M.solve()
-        if M.getProblemStatus() is ProblemStatus.Unknown:
+        if M.getProblemStatus() is fu.ProblemStatus.Unknown:
             X_list_k = []
             cost = np.inf
             if not verbose:
@@ -217,7 +232,7 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                     print("Warning: solution not good")
                 cost = abs(primal_value)
             info = {"success": False, "cost": cost, "msg": "UNKNOWN"}
-        elif M.getProblemStatus() is ProblemStatus.PrimalAndDualFeasible:
+        elif M.getProblemStatus() is fu.ProblemStatus.PrimalAndDualFeasible:
             X_list_k = [
                 np.reshape(get_slice(X, i).level(), (X_dim, X_dim)) for i in range(N)
             ]
@@ -238,7 +253,7 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                 for i in range(N)
             )
             info = {"success": True, "cost": cost}
-        elif M.getProblemStatus() is ProblemStatus.DualInfeasible:
+        elif M.getProblemStatus() is fu.ProblemStatus.DualInfeasible:
             X_k_list = []
             info = {"success": False, "cost": -np.inf, "msg": "dual infeasible"}
         return X_list_k, info
@@ -259,7 +274,7 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
         for l in overlap:
             for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
                 constraints.append(cl.X_var[rl[0], rl[1]] == ck.X_var[rk[0], rk[1]])
-                if (cl.X is not None) and (cr.X is not None):
+                if (cl.X is not None) and (ck.X is not None):
                     np.testing.assert_allclose(cl.X[rl[0], rl[1]], ck.X[rk[0], rk[1]])
 
     cprob = cp.Problem(
@@ -270,6 +285,8 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
     )
 
     options_cvxpy["verbose"] = verbose
+    adjust_tol(options_cvxpy, tol)
+    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol * 10
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
     X_k_list = [clique.X_var.value for clique in clique_list]

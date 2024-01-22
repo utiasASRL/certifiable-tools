@@ -35,6 +35,9 @@ UPDATE_RHO = True  # if False, never update rho at all
 # Stop ADMM if the last N_ADMM iterations don't have significant change in cost.
 N_ADMM = 3
 
+# Tolerance of inner SDP for ADMM
+TOL_INNER = 1e-5
+
 
 def initialize_z(clique_list, X0=None):
     """Initialize Z (consensus variable) based on contents of X0 (initial feasible points)"""
@@ -216,7 +219,7 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol
             M.objective(fu.ObjectiveSense.Minimize, fu.Expr.dot(Q_here, X))
 
         adjust_tol_fusion(options_fusion, tol)
-        options_fusion["intpntCoTolRelGap"] = tol
+        options_fusion["intpntCoTolRelGap"] = tol * 10
         for key, val in options_fusion.items():
             M.setSolverParam(key, val)
         if verbose:
@@ -272,8 +275,8 @@ def solve_inner_sdp(
         constraints = clique.get_constraints_cvxpy(clique.X_var)
         cprob = cp.Problem(objective, constraints)
         options_cvxpy["verbose"] = verbose
-        options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
         adjust_tol(options_cvxpy, tol)
+        options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol * 10
         try:
             cprob.solve(solver="MOSEK", **options_cvxpy)
             info = {
@@ -329,7 +332,11 @@ def solve_alternating(
             assert clique.g is not None
 
             X, info = solve_inner_sdp(
-                clique, clique.rho_k, verbose=False, use_fusion=use_fusion, tol=1e-3
+                clique,
+                clique.rho_k,
+                verbose=False,
+                use_fusion=use_fusion,
+                tol=TOL_INNER,
             )
             cost = info["cost"]
 
