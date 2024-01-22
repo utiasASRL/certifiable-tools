@@ -19,12 +19,12 @@ from cert_tools.sparse_solvers import read_costs_from_mosek
 EARLY_STOP = True
 EARLY_STOP_MIN = 1e-3
 
-RHO_START = 1e2
+RHO_START = 1e5  # 1e2 for ro
 
 MAXITER = 1000
 
-# See [Boyd 2010] for explanations of these.
-MU_RHO = 2.0  # how much dual and primal residual may get unbalanced.
+# See eq. (3.13) in Boyd 2010 for explanations of these.
+MU_RHO = 10.0  # how much dual and primal residual may get unbalanced.
 TAU_RHO = 2.0  # how much to change rho in each iteration.
 EPS_ABS = 0.0  # set to 0 to use relative only
 EPS_REL = 1e-10
@@ -111,7 +111,7 @@ def update_sigmas(clique_list):
         assert isinstance(clique, ADMMClique)
         g = clique.z_new
         clique.primal_res_k = clique.F @ clique.X_new.flatten() - g
-        clique.dual_res_k = clique.z_new - clique.z_prev
+        clique.dual_res_k = clique.rho_k * (clique.z_new - clique.z_prev)
         clique.sigmas += clique.rho_k * clique.primal_res_k
 
 
@@ -181,7 +181,8 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol
                     fu.Matrix.dense(g.value[:, None]),
                 )
             else:
-                err = fu.Expr.sub(fu.Expr.mul(F, fu.Expr.flatten(X)), g)
+                F_fu = mat_fusion(F)
+                err = fu.Expr.sub(fu.Expr.mul(F_fu, fu.Expr.flatten(X)), g)
 
             # doesn't work unforuntately:
             # Expr.mul(0.5 * rho, Expr.sum(Expr.mulElm(err, err))),

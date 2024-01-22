@@ -9,7 +9,7 @@ def mat_fusion(X):
     except AttributeError:
         X = sp.csr_array(X)
     I, J = X.nonzero()
-    V = X.data
+    V = X.data.astype(float)
     return Matrix.sparse(*X.shape, I, J, V)
 
 
