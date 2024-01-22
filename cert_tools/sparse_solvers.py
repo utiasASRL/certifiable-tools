@@ -57,7 +57,7 @@ def solve_oneshot_dual_slow(clique_list, tol=TOL):
 
     options_cvxpy["verbose"] = True
     adjust_tol(options_cvxpy, tol)
-    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol * 10
+    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
     # H_k_list = [clique.H.value for clique in clique_list]
@@ -123,7 +123,7 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL, verbose=False, adjust=False):
 
     options_cvxpy["verbose"] = verbose
     adjust_tol(options_cvxpy, tol)
-    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol * 10
+    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
     X_k_list = [con.dual_value for con in constraints]
@@ -212,7 +212,7 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                         )
 
         adjust_tol_fusion(options_fusion, tol)
-        options_fusion["intpntCoTolRelGap"] = tol * 10
+        options_fusion["intpntCoTolRelGap"] = tol
         for key, val in options_fusion.items():
             M.setSolverParam(key, val)  # default 1e-8
 
@@ -286,7 +286,7 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
 
     options_cvxpy["verbose"] = verbose
     adjust_tol(options_cvxpy, tol)
-    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol * 10
+    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
     X_k_list = [clique.X_var.value for clique in clique_list]

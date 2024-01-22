@@ -1,5 +1,4 @@
 import itertools
-from copy import deepcopy
 
 import cvxpy as cp
 import matplotlib.pylab as plt
@@ -49,6 +48,10 @@ class ADMMClique(BaseClique):
         )
         self.x_dim = x_dim
         self.constrain_all = CONSTRAIN_ALL_OVERLAP
+        if self.constrain_all:
+            self.num_overlap = x_dim**2 + x_dim
+        else:
+            self.num_overlap = x_dim
         self.status = 0
 
         self.X_var = cp.Variable((self.X_dim, self.X_dim), PSD=True)
@@ -163,6 +166,7 @@ class ADMMClique(BaseClique):
             (end[0] - start[0]) * (end[1] - start[1])
             for start, end in zip(starts, ends)
         )
+        assert n_constraints == self.num_overlap
         counter = 0
         i_list = []
         j_list = []
@@ -208,7 +212,7 @@ class ADMMClique(BaseClique):
         right_slice_start = [[0, 1]]
         right_slice_end = [[1, 1 + self.x_dim]]
         if self.constrain_all:
-            right_slice_start += [1, 1]
+            right_slice_start += [[1, 1]]
             right_slice_end += [[1 + self.x_dim, 1 + self.x_dim]]
         return right_slice_start, right_slice_end
 

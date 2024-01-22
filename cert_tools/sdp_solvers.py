@@ -200,6 +200,7 @@ def solve_sdp_mosek(
 
     if tol:
         adjust_tol(options_cvxpy, tol)
+    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
@@ -314,6 +315,7 @@ def solve_sdp_fusion(
 
     if tol:
         adjust_tol_fusion(options_fusion, tol)
+    options_fusion["intpntCoTolRelGap"] = tol
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
