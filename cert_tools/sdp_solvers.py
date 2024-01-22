@@ -71,7 +71,10 @@ def adjust_tol_fusion(options, tol):
     )
 
 
-def adjust_Q(Q, offset=True, scale=True):
+def adjust_Q(Q, scale=True, offset=True, scale_method=SCALE_METHOD):
+    """
+    :returns: Q scaled, scale, offset.
+    """
     ii, jj = (Q == Q.max()).nonzero()
     if (ii[0], jj[0]) != (0, 0) or (len(ii) > 1):
         pass
@@ -87,12 +90,12 @@ def adjust_Q(Q, offset=True, scale=True):
     Q_mat[0, 0] -= Q_offset
 
     if scale:
-        if SCALE_METHOD == "fro":
+        if scale_method == "fro":
             try:
                 Q_scale = sp.linalg.norm(Q_mat, "fro")
             except TypeError:
                 Q_scale = np.linalg.norm(Q_mat, ord="fro")
-        elif SCALE_METHOD == "max":
+        elif scale_method == "max":
             Q_scale = abs(Q_mat).max()
         else:
             raise ValueError("Unknown cost scaling method")

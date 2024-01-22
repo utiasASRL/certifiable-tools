@@ -3,39 +3,46 @@ from copy import deepcopy
 from multiprocessing import Pipe, Process
 
 import cvxpy as cp
+import mosek.fusion as fu
 import numpy as np
 from cert_tools.admm_clique import ADMMClique
 from cert_tools.fusion_tools import mat_fusion
-from cert_tools.sdp_solvers import options_cvxpy
-from mosek.fusion import Domain, Expr, Matrix, Model, ObjectiveSense
+from cert_tools.sdp_solvers import (
+    adjust_Q,
+    adjust_tol,
+    adjust_tol_fusion,
+    options_cvxpy,
+    options_fusion,
+)
+from cert_tools.sparse_solvers import read_costs_from_mosek
 
 EARLY_STOP = True
-EARLY_STOP_MIN = 1e-5
+EARLY_STOP_MIN = 1e-3
 
-RHO_START = 1.0
+RHO_START = 1e2
 
-MAX_ITER = 1000
+MAXITER = 1000
 
 # See [Boyd 2010] for explanations of these.
 MU_RHO = 2.0  # how much dual and primal residual may get unbalanced.
 TAU_RHO = 2.0  # how much to change rho in each iteration.
 EPS_ABS = 0.0  # set to 0 to use relative only
 EPS_REL = 1e-10
+INDIVIDUAL_RHO = False  # use different rho for each clique
+VECTOR_RHO = False  # use different rho for each error term.
+UPDATE_RHO = True  # if False, never update rho at all
 
 # Stop ADMM if the last N_ADMM iterations don't have significant change in cost.
 N_ADMM = 3
 
 
-def initialize_Z(clique_list, X0=None):
+def initialize_z(clique_list, X0=None):
     """Initialize Z (consensus variable) based on contents of X0 (initial feasible points)"""
-    x_dim = clique_list[0].x_dim
-    indices = [0] + list(range(1 + x_dim, 1 + 2 * x_dim))
-    ii, jj = np.meshgrid(indices, indices)
-    for k, clique in enumerate(clique_list[:-1]):
+    for k, clique in enumerate(clique_list):
         if X0 is not None:
-            clique.Z_new = deepcopy(X0[k][ii, jj])
+            clique.z_new = deepcopy(clique.F @ X0[k].flatten())
         else:
-            clique.Z_new = np.zeros((1 + clique.x_dim, 1 + clique.x_dim))
+            clique.z_new = np.zeros(clique.F.shape[0])
 
 
 def check_convergence(clique_list, primal_err, dual_err):
@@ -44,7 +51,7 @@ def check_convergence(clique_list, primal_err, dual_err):
     dim_dual = len(clique_list) * clique_list[0].X_dim
     eps_max = np.max(
         [
-            np.max(np.hstack([clique.X_new.flatten(), clique.Z_new.flatten()]))
+            np.max(np.hstack([clique.X_new.flatten(), clique.z_new]))
             for clique in clique_list[:-1]
         ]
     )
@@ -59,59 +66,50 @@ def update_rho(rho, dual_res, primal_res, mu=MU_RHO, tau=TAU_RHO):
     """Update rho as suggested by [Boyd 2010]."""
     assert tau >= 1.0
     assert mu >= 0
-    if primal_res >= mu * dual_res:
-        return rho * tau
-    elif dual_res >= mu * primal_res:
-        return rho / tau
-    else:
+    if np.ndim(rho) > 0:
+        rho[np.where(primal_res >= mu * dual_res)[0]] *= tau
+        rho[np.where(dual_res >= mu * primal_res)[0]] /= tau
         return rho
+    else:
+        if primal_res >= mu * dual_res:
+            return rho * tau
+        elif dual_res >= mu * primal_res:
+            return rho / tau
+        else:
+            return rho
 
 
-def update_Z(clique_list):
+def update_z(clique_list):
     """Average the overlapping areas of X_new for consensus (stored in Z_new)."""
-    x_dim = clique_list[0].x_dim
-    for i in range(len(clique_list) - 1):
+    for i, c in enumerate(clique_list):
+        this = c.X_new.flatten()
+        left = clique_list[i - 1].X_new.flatten() if i > 0 else None
+        right = clique_list[i + 1].X_new.flatten() if i < len(clique_list) - 1 else None
+
+        c.z_prev = deepcopy(c.z_new)
         # for each Z, average over the neighboring cliques.
-        left = clique_list[i].X_new
-        right = clique_list[i + 1].X_new
-
-        clique_list[i].Z_prev = deepcopy(clique_list[i].Z_new)
-
-        average = np.zeros((1 + x_dim, 1 + x_dim))
-        average[0, 0] = 1.0
-        average[0, 1:] = average[1:, 0] = 0.5 * (
-            left[1 + x_dim :, 0] + right[1 : 1 + x_dim, 0]
-        )
-        average[1:, 1:] = 0.5 * (
-            left[1 + x_dim :, 1 + x_dim :] + right[1 : 1 + x_dim, 1 : 1 + x_dim]
-        )
-        clique_list[i].Z_new = average
+        if i == 0:
+            c.z_new = 0.5 * (c.F_right @ this + c.F_left @ right)
+        elif i == len(clique_list) - 1:
+            c.z_new = 0.5 * (c.F_right @ left + c.F_left @ this)
+        else:
+            c.z_new = 0.5 * np.hstack(
+                [
+                    c.F_right @ left + c.F_left @ this,
+                    c.F_right @ this + c.F_left @ right,
+                ]
+            )
+        assert c.z_new.shape == c.z_prev.shape
 
 
-def update_sigmas(clique_list, rho_k):
-    """Update dual variables."""
-    primal_res = []
-    dual_res = []
-    for k, clique in enumerate(clique_list):
+def update_sigmas(clique_list):
+    """Update sigmas (dual variables) and residual terms."""
+    for clique in clique_list:
         assert isinstance(clique, ADMMClique)
-        left = clique_list[k - 1].Z_new if k > 0 else None
-        right = clique_list[k].Z_new if k < len(clique_list) - 1 else None
-        clique.generate_g(left=left, right=right)
-        primal_res_k = clique.evaluate_F(clique.X_new)
-
-        clique.sigmas += rho_k * primal_res_k
-        primal_res.append(primal_res_k)
-
-        if k < len(clique_list) - 1:
-            dual_res_k = rho_k * clique.get_dual_residual().flatten()
-            dual_res.append(dual_res_k)
-
-    primal_res = np.hstack(primal_res)
-    dual_res = np.hstack(dual_res)
-
-    primal_err = np.linalg.norm(primal_res)
-    dual_err = np.linalg.norm(dual_res)
-    return primal_err, dual_err
+        g = clique.z_new
+        clique.primal_res_k = clique.F @ clique.X_new.flatten() - g
+        clique.dual_res_k = clique.z_new - clique.z_prev
+        clique.sigmas += clique.rho_k * clique.primal_res_k
 
 
 # TODO(FD): this function is hideous. Can we simplify / remove it somehow?
@@ -120,7 +118,6 @@ def wrap_up(
     cost_history,
     primal_err,
     dual_err,
-    rho_k,
     iter,
     early_stop,
     verbose=False,
@@ -131,12 +128,11 @@ def wrap_up(
     if verbose:
         with np.printoptions(precision=2, suppress=True, threshold=5):
             if iter % 20 == 0:
-                print(
-                    "iter     rho_k          prim. error         dual error       cost"
-                )
+                print("iter          prim. error         dual error       cost")
             print(
-                f"{iter} \t {rho_k:2.4e} \t {primal_err:2.4e} \t {dual_err:2.4e} \t {cost_original:5.5f}"
+                f"{iter} \t {primal_err:2.4e} \t {dual_err:2.4e} \t {cost_original:5.5f}"
             )
+            # print("rho:", [c.rho_k for c in clique_list])
 
     rel_diff = (
         np.max(np.abs(np.diff(cost_history[-N_ADMM:]))) / abs(cost_history[-1])
@@ -159,50 +155,50 @@ def wrap_up(
     return info
 
 
-def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False):
+def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol=1e-8):
     """Solve X update of ADMM using fusion."""
-    with Model("primal") as M:
+    with fu.Model("primal") as M:
         # creates (N x X_dim x X_dim) variable
-        X = M.variable("X", Domain.inPSDCone(Q.shape[0]))
+        X = M.variable("X", fu.Domain.inPSDCone(Q.shape[0]))
         if F is not None:
-            S = M.variable("S", Domain.inPSDCone(F.shape[0] + 2))
-            a = M.variable("a", Domain.inPSDCone(1))
+            S = M.variable("S", fu.Domain.inPSDCone(F.shape[0] + 2))
+            a = M.variable("a", fu.Domain.inPSDCone(1))
 
         # standard equality constraints
         for A, b in Constraints:
-            M.constraint(Expr.dot(mat_fusion(A), X), Domain.equalsTo(b))
+            M.constraint(fu.Expr.dot(mat_fusion(A), X), fu.Domain.equalsTo(b))
 
         # interlocking equality constraints
-        # objective
+        Q_here, offset, scale = adjust_Q(Q, scale_method="fro")
         if F is not None:
             assert g is not None
             if F.shape[1] == Q.shape[0]:
-                err = Expr.sub(
-                    Expr.mul(F, X.slice([0, 0], [Q.shape[0], 1])),
-                    Matrix.dense(g.value[:, None]),
+                err = fu.Expr.sub(
+                    fu.Expr.mul(F, X.slice([0, 0], [Q.shape[0], 1])),
+                    fu.Matrix.dense(g.value[:, None]),
                 )
             else:
-                err = Expr.sub(Expr.mul(F, Expr.flatten(X)), g)
+                err = fu.Expr.sub(fu.Expr.mul(F, fu.Expr.flatten(X)), g)
 
             # doesn't work unforuntately:
             # Expr.mul(0.5 * rho, Expr.sum(Expr.mulElm(err, err))),
             M.objective(
-                ObjectiveSense.Minimize,
-                Expr.add(
+                fu.ObjectiveSense.Minimize,
+                fu.Expr.add(
                     [
-                        Expr.dot(mat_fusion(Q), X),
-                        Expr.sum(
-                            Expr.mul(Matrix.dense(sigmas[None, :]), err)
+                        fu.Expr.dot(mat_fusion(Q), X),
+                        fu.Expr.sum(
+                            fu.Expr.mul(fu.Matrix.dense(sigmas[None, :]), err)
                         ),  # sum is to go from [1,1] to scalar
-                        Expr.sum(a),
+                        fu.Expr.sum(a),
                     ]
                 ),
             )
-            M.constraint(Expr.sub(S.index([0, 0]), a), Domain.equalsTo(0.0))
+            M.constraint(fu.Expr.sub(S.index([0, 0]), a), fu.Domain.equalsTo(0.0))
             M.constraint(
-                Expr.sub(
+                fu.Expr.sub(
                     S.slice([1, 1], [1 + F.shape[0], 1 + F.shape[0]]),
-                    Matrix.sparse(
+                    fu.Matrix.sparse(
                         F.shape[0],
                         F.shape[0],
                         range(F.shape[0]),
@@ -210,26 +206,47 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False):
                         [2 / rho] * F.shape[0],
                     ),
                 ),
-                Domain.equalsTo(0.0),
+                fu.Domain.equalsTo(0.0),
             )
             M.constraint(
-                Expr.sub(S.slice([1, 0], [1 + F.shape[0], 1]), err),
-                Domain.equalsTo(0.0),
+                fu.Expr.sub(S.slice([1, 0], [1 + F.shape[0], 1]), err),
+                fu.Domain.equalsTo(0.0),
             )
         else:
-            M.objective(ObjectiveSense.Minimize, Expr.dot(Q, X))
+            M.objective(fu.ObjectiveSense.Minimize, fu.Expr.dot(Q_here, X))
 
-        # M.setSolverParam("intpntCoTolRelGap", 1.0e-7)
+        adjust_tol_fusion(options_fusion, tol)
+        options_fusion["intpntCoTolRelGap"] = tol
+        for key, val in options_fusion.items():
+            M.setSolverParam(key, val)
         if verbose:
             M.setLogHandler(sys.stdout)
+        else:
+            f = open("mosek_output.tmp", "a+")
+            M.setLogHandler(f)
         M.solve()
-
-        X = np.reshape(X.level(), Q.shape)
-        info = {"success": True, "cost": M.primalObjValue()}
+        if M.getProblemStatus() is fu.ProblemStatus.Unknown:
+            cost = np.inf
+            if not verbose:
+                f.close()
+                primal_value, dual_value = read_costs_from_mosek("mosek_output.tmp")
+                if (abs(primal_value) - abs(dual_value)) / abs(primal_value) > 1e-2:
+                    print("Warning: solution not good")
+                cost = abs(primal_value)
+            cost = cost * scale + offset
+            info = {"success": False, "cost": cost, "msg": "UNKNOWN"}
+            X = None
+        elif M.getProblemStatus() is fu.ProblemStatus.PrimalAndDualFeasible:
+            X = np.reshape(X.level(), Q.shape)
+            cost = M.primalObjValue()
+            cost = cost * scale + offset
+            info = {"success": True, "cost": cost, "msg": "solved"}
     return X, info
 
 
-def solve_inner_sdp(clique: ADMMClique, rho=None, verbose=False, use_fusion=True):
+def solve_inner_sdp(
+    clique: ADMMClique, rho=None, verbose=False, use_fusion=True, tol=1e-8
+):
     """Solve the inner SDP of the ADMM algorithm, similar to [Dall'Anese 2013]
 
     min <Q, X> + y'e(X) + rho/2*||e(X)||^2
@@ -241,20 +258,29 @@ def solve_inner_sdp(clique: ADMMClique, rho=None, verbose=False, use_fusion=True
     if use_fusion:
         Constraints = list(zip(clique.A_list, clique.b_list))
         return solve_inner_sdp_fusion(
-            clique.Q, Constraints, clique.F, clique.g, clique.sigmas, rho, verbose
+            clique.Q,
+            Constraints,
+            clique.F,
+            clique.g,
+            clique.sigmas,
+            rho,
+            verbose,
+            tol=tol,
         )
     else:
         objective = clique.get_objective_cvxpy(clique.X_var, rho)
         constraints = clique.get_constraints_cvxpy(clique.X_var)
         cprob = cp.Problem(objective, constraints)
         options_cvxpy["verbose"] = verbose
+        options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
+        adjust_tol(options_cvxpy, tol)
         try:
             cprob.solve(solver="MOSEK", **options_cvxpy)
             info = {
                 "cost": float(cprob.value),
                 "success": clique.X_var.value is not None,
             }
-        except:
+        except Exception as e:
             info = {"cost": np.inf, "success": False}
         return clique.X_var.value, info
 
@@ -267,56 +293,83 @@ def solve_alternating(
     use_fusion: bool = True,
     early_stop: bool = EARLY_STOP,
     verbose: bool = False,
-    max_iter=MAX_ITER,
+    maxiter=MAXITER,
     mu_rho=MU_RHO,
     tau_rho=TAU_RHO,
+    individual_rho=INDIVIDUAL_RHO,
+    vector_rho=VECTOR_RHO,
 ):
     """Use ADMM to solve decomposed SDP, but without using parallelism."""
+    assert not (vector_rho and not individual_rho), "incompatible combination"
     if sigmas is not None:
         for k, sigma in sigmas.items():
-            clique_list[k] = sigma
+            clique_list[k].sigmas = sigma
 
-    rho_k = rho_start
+    for c in clique_list:
+        if vector_rho:
+            c.rho_k = np.full(c.F.shape[0], rho_start).astype(float)
+        else:
+            c.rho_k = rho_start
+
+    # rho_k = rho_start
     info_here = {"success": False, "msg": "did not converge.", "stop": False}
 
     cost_history = []
 
-    initialize_Z(clique_list, X0)  # fill Z_new
-    for iter in range(max_iter):
+    initialize_z(clique_list, X0)  # fill Z_new
+    for iter in range(maxiter):
         cost_lagrangian = 0
         cost_original = 0
 
         # ADMM step 1: update X
         for k, clique in enumerate(clique_list):
+            assert isinstance(clique, ADMMClique)
             # update g with solved value from previous iteration
-            left = clique_list[k - 1].Z_new if k > 0 else None
-            right = clique_list[k].Z_new if k < len(clique_list) - 1 else None
-            clique.generate_g(left=left, right=right)
-            if clique.X_var.value is not None:
-                pass
+            clique.g = clique_list[k].z_new
+            assert clique.g is not None
 
             X, info = solve_inner_sdp(
-                clique, rho_k, verbose=False, use_fusion=use_fusion
+                clique, clique.rho_k, verbose=False, use_fusion=use_fusion, tol=1e-3
             )
             cost = info["cost"]
 
             if X is not None:
                 clique.X_new = deepcopy(X)
                 clique.status = 1
+                cost_original += float(np.trace(clique.Q @ clique.X_new))
             else:
                 print(f"clique {k:02.0f} did not converge!!")
                 clique.status = -1
-
             cost_lagrangian += cost
-            cost_original += float(np.trace(clique.Q @ clique.X_new))
 
         # ADMM step 2: update Z
-        update_Z(clique_list)
+        update_z(clique_list)
 
         # ADMM step 3: update Lagrange multipliers
-        primal_err, dual_err = update_sigmas(clique_list, rho_k)
+        update_sigmas(clique_list)
+        primal_err = np.linalg.norm(np.hstack([c.primal_res_k for c in clique_list]))
+        dual_err = np.linalg.norm(np.hstack([c.dual_res_k for c in clique_list]))
 
-        rho_k = update_rho(rho_k, dual_err, primal_err, mu=mu_rho, tau=tau_rho)
+        # update rho
+        if UPDATE_RHO:
+            for c in clique_list:
+                if np.ndim(c.rho_k) > 0:
+                    c.rho_k = update_rho(
+                        c.rho_k, c.dual_res_k, c.primal_res_k, mu=mu_rho, tau=tau_rho
+                    )
+                else:
+                    if individual_rho:
+                        c.rho_k = update_rho(
+                            c.rho_k,
+                            np.linalg.norm(c.dual_res_k),
+                            np.linalg.norm(c.primal_res_k),
+                            mu=mu_rho,
+                            tau=tau_rho,
+                        )
+                    else:
+                        c.rho_k = update_rho(
+                            c.rho_k, dual_err, primal_err, mu=mu_rho, tau=tau_rho
+                        )
 
         info_here["cost"] = cost_original
         cost_history.append(cost_original)
@@ -326,7 +379,6 @@ def solve_alternating(
                 cost_history,
                 primal_err,
                 dual_err,
-                rho_k,
                 iter,
                 early_stop,
                 verbose,
@@ -340,18 +392,15 @@ def solve_alternating(
 
 
 def solve_parallel(
-    clique_list,
-    X0=None,
-    rho_start=RHO_START,
-    early_stop=False,
+    clique_list, X0=None, rho_start=RHO_START, early_stop=False, maxiter=MAXITER
 ):
     """Use ADMM to solve decomposed SDP, with simple parallelism."""
 
     def run_worker(clique, pipe):
         # ADMM loop.
         while True:
-            left, right = pipe.recv()
-            clique.generate_g(left=left, right=right)
+            g = pipe.recv()
+            clique.g = g
 
             X, info = solve_inner_sdp(
                 clique, rho=clique.rho_k, verbose=False, use_fusion=True
@@ -366,7 +415,7 @@ def solve_parallel(
                 pass
             pipe.send(clique)
 
-    initialize_Z(clique_list, X0)
+    initialize_z(clique_list, X0)
 
     # Setup the workers
     pipes = []
@@ -384,16 +433,16 @@ def solve_parallel(
     rho_k = rho_start
     info_here = {"success": False, "msg": "did not converge", "stop": False}
     cost_history = []
-    for iter in range(MAX_ITER):
+    for iter in range(maxiter):
         # ADMM step 1: update X varaibles (in parallel)
         for k, pipe in enumerate(pipes):
-            left = clique_list[k - 1].Z_new if k > 0 else None
-            right = clique_list[k].Z_new if k < len(clique_list) - 1 else None
-            pipe.send([left, right])
+            left = list(clique_list[k - 1].z_new) if k > 0 else []
+            right = list(clique_list[k].z_new) if k < len(clique_list) - 1 else []
+            pipe.send(cp.vstack([left, right]))
         clique_list = [pipe.recv() for pipe in pipes]
 
         # ADMM step 2: update Z variables
-        update_Z(clique_list)
+        update_z(clique_list)
 
         # ADMM step 3: update Lagrange multipliers
         primal_err, dual_err = update_sigmas(clique_list, rho_k)
@@ -409,9 +458,7 @@ def solve_parallel(
         cost_history.append(cost_original)
         info_here["cost"] = cost_original
         info_here.update(
-            wrap_up(
-                clique_list, cost_history, primal_err, dual_err, rho_k, iter, early_stop
-            )
+            wrap_up(clique_list, cost_history, primal_err, dual_err, iter, early_stop)
         )
         if info_here["stop"]:
             break
