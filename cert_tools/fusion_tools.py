@@ -1,3 +1,4 @@
+import numpy as np
 import scipy.sparse as sp
 from mosek.fusion import Matrix
 
@@ -9,7 +10,9 @@ def mat_fusion(X):
     except AttributeError:
         X = sp.csr_array(X)
     I, J = X.nonzero()
-    V = X.data.astype(float)
+    I = I.astype(np.int32)
+    J = J.astype(np.int32)
+    V = X.data.astype(np.double)
     return Matrix.sparse(*X.shape, I, J, V)
 
 
