@@ -254,8 +254,12 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
             )
             info = {"success": True, "cost": cost}
         elif M.getProblemStatus() is fu.ProblemStatus.DualInfeasible:
-            X_k_list = []
+            X_list_k = []
             info = {"success": False, "cost": -np.inf, "msg": "dual infeasible"}
+        else:
+            print("Unknown status:", M.getProblemStatus())
+            X_list_k = []
+            info = {"success": False, "cost": -np.inf, "msg": M.getProblemStatus()}
         return X_list_k, info
 
 
