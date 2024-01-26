@@ -1,11 +1,12 @@
 import sys
+import time
 from copy import deepcopy
 from multiprocessing import Pipe, Process
 
 import cvxpy as cp
 import mosek.fusion as fu
 import numpy as np
-from cert_tools.admm_clique import ADMMClique
+from cert_tools.admm_clique import ADMMClique, update_rho
 from cert_tools.fusion_tools import mat_fusion
 from cert_tools.sdp_solvers import (
     adjust_Q,
@@ -38,6 +39,10 @@ N_ADMM = 3
 # Tolerance of inner SDP for ADMM
 TOL_INNER = 1e-5
 
+# Number of pipes to create for parallel ADMM implementation.
+# Set to inf to create as many as cliques.
+N_MAX_PIPES = 4  # np.inf
+
 
 def initialize_z(clique_list, X0=None):
     """Initialize Z (consensus variable) based on contents of X0 (initial feasible points)"""
@@ -63,23 +68,6 @@ def check_convergence(clique_list, primal_err, dual_err):
         np.hstack([clique.sigmas for clique in clique_list])
     )
     return (primal_err < eps_pri) and (dual_err < eps_dual)
-
-
-def update_rho(rho, dual_res, primal_res, mu=MU_RHO, tau=TAU_RHO):
-    """Update rho as suggested by [Boyd 2010]."""
-    assert tau >= 1.0
-    assert mu >= 0
-    if np.ndim(rho) > 0:
-        rho[np.where(primal_res >= mu * dual_res)[0]] *= tau
-        rho[np.where(dual_res >= mu * primal_res)[0]] /= tau
-        return rho
-    else:
-        if primal_res >= mu * dual_res:
-            return rho * tau
-        elif dual_res >= mu * primal_res:
-            return rho / tau
-        else:
-            return rho
 
 
 def update_z(clique_list):
@@ -290,7 +278,7 @@ def solve_inner_sdp(
 
 
 def solve_alternating(
-    clique_list,
+    clique_list: list[ADMMClique],
     X0: list[np.ndarray] = None,
     sigmas: dict = None,
     rho_start: float = RHO_START,
@@ -327,7 +315,7 @@ def solve_alternating(
 
         # ADMM step 1: update X
         for k, clique in enumerate(clique_list):
-            assert isinstance(clique, ADMMClique)
+            assert isinstance(clique, ADMMClique)  # for debugging only
             # update g with solved value from previous iteration
             clique.g = clique_list[k].z_new
             assert clique.g is not None
@@ -360,24 +348,15 @@ def solve_alternating(
 
         # update rho
         if UPDATE_RHO:
-            for c in clique_list:
-                if np.ndim(c.rho_k) > 0:
-                    c.rho_k = update_rho(
-                        c.rho_k, c.dual_res_k, c.primal_res_k, mu=mu_rho, tau=tau_rho
-                    )
-                else:
-                    if individual_rho:
-                        c.rho_k = update_rho(
-                            c.rho_k,
-                            np.linalg.norm(c.dual_res_k),
-                            np.linalg.norm(c.primal_res_k),
-                            mu=mu_rho,
-                            tau=tau_rho,
-                        )
-                    else:
-                        c.rho_k = update_rho(
-                            c.rho_k, dual_err, primal_err, mu=mu_rho, tau=tau_rho
-                        )
+            if individual_rho:
+                for c in clique_list:
+                    c.update_rho(mu_rho=mu_rho, tau_rho=tau_rho)
+            else:
+                rho_new = update_rho(
+                    clique_list[0].rho_k, dual_err, primal_err, mu=MU_RHO, tau=TAU_RHO
+                )
+                for c in clique_list:
+                    c.rho_k = rho_new
 
         info_here["cost"] = cost_original
         cost_history.append(cost_original)
@@ -400,76 +379,130 @@ def solve_alternating(
 
 
 def solve_parallel(
-    clique_list, X0=None, rho_start=RHO_START, early_stop=False, maxiter=MAXITER
+    clique_list,
+    X0=None,
+    rho_start=RHO_START,
+    early_stop=False,
+    maxiter=MAXITER,
+    use_fusion=False,
+    verbose=False,
 ):
     """Use ADMM to solve decomposed SDP, with simple parallelism."""
 
-    def run_worker(clique, pipe):
-        # ADMM loop.
+    def run_worker(cliques_per_pipe, pipe):
+        # signal thta the worker has been built (only for time measurements)
+        assert pipe.recv() == 1
+
         while True:
-            g = pipe.recv()
-            clique.g = g
+            g_list = pipe.recv()
+            for g, clique in zip(g_list, cliques_per_pipe):
+                clique.g = g
+                X, info = solve_inner_sdp(
+                    clique,
+                    clique.rho_k,
+                    verbose=verbose,
+                    use_fusion=use_fusion,
+                    tol=TOL_INNER,
+                )
 
-            X, info = solve_inner_sdp(
-                clique, rho=clique.rho_k, verbose=False, use_fusion=True
-            )
-
-            if X is not None:
-                clique.X_new = X
-                clique.counter += 1
-                clique.status = 1
-            else:
-                clique.status = -1
+                if X is not None:
+                    clique.X_new = X
+                    clique.counter += 1
+                    clique.status = 1
+                else:
+                    clique.status = -1
+                    pass
+            if cliques_per_pipe[0].index == 0:
                 pass
-            pipe.send(clique)
+            pipe.send([c.X_new for c in cliques_per_pipe])
 
     initialize_z(clique_list, X0)
 
     # Setup the workers
-    pipes = []
-    procs = []
+    n_pipes = min(N_MAX_PIPES, len(clique_list))
+    n_per_pipe = n_per_pipe = len(clique_list) // n_pipes
+
+    indices_per_pipe = {i: [] for i in range(n_pipes)}
     for i, clique in enumerate(clique_list):
+        # initialize clique
         clique.rho_k = rho_start
         clique.counter = 0
         clique.status = 0
+        k = min(i // n_per_pipe, n_pipes - 1)  # find pipe assignment
+        indices_per_pipe[k].append(i)
+
+    pipes = []
+    procs = []
+    for k in range(n_pipes):
+        cliques_per_pipe = [clique_list[i] for i in indices_per_pipe[k]]
         local, remote = Pipe()
-        pipes += [local]
-        procs += [Process(target=run_worker, args=(clique, remote))]
+        pipes.append(local)
+        procs.append(
+            Process(target=run_worker, args=(deepcopy(cliques_per_pipe), remote))
+        )
         procs[-1].start()
 
+    # this is just to make sure we wait for all pipes to be set up, before
+    # starting the timer.
+    [pipe.send(1) for pipe in pipes]
+    t1 = time.time()
+
     # Run ADMM
-    rho_k = rho_start
     info_here = {"success": False, "msg": "did not converge", "stop": False}
     cost_history = []
     for iter in range(maxiter):
         # ADMM step 1: update X varaibles (in parallel)
         for k, pipe in enumerate(pipes):
-            left = list(clique_list[k - 1].z_new) if k > 0 else []
-            right = list(clique_list[k].z_new) if k < len(clique_list) - 1 else []
-            pipe.send(cp.vstack([left, right]))
-        clique_list = [pipe.recv() for pipe in pipes]
+            g_list = [clique_list[i].z_new for i in indices_per_pipe[k]]
+            pipe.send(g_list)
+
+        for k, pipe in enumerate(pipes):
+            X_new_list = pipe.recv()
+            for count, i in enumerate(indices_per_pipe[k]):
+                clique_list[i].X_new = X_new_list[count]
 
         # ADMM step 2: update Z variables
         update_z(clique_list)
 
         # ADMM step 3: update Lagrange multipliers
-        primal_err, dual_err = update_sigmas(clique_list, rho_k)
+        update_sigmas(clique_list)
+        primal_err = np.linalg.norm(np.hstack([c.primal_res_k for c in clique_list]))
+        dual_err = np.linalg.norm(np.hstack([c.dual_res_k for c in clique_list]))
 
         # Intermediate steps: update rho and check convergence
-        rho_k = update_rho(rho_k, dual_err, primal_err)
-        for clique in clique_list:
-            clique.rho_k = rho_k
-
+        if UPDATE_RHO:
+            if INDIVIDUAL_RHO:
+                for c in clique_list:
+                    c.update_rho(
+                        mu_rho=MU_RHO, tau_rho=TAU_RHO, individual_rho=INDIVIDUAL_RHO
+                    )
+            else:
+                rho_new = update_rho(
+                    clique_list[0].rho_k, dual_err, primal_err, mu=MU_RHO, tau=TAU_RHO
+                )
+                for c in clique_list:
+                    c.rho_k = rho_new
         cost_original = np.sum(
             [np.trace(clique.X_new @ clique.Q) for clique in clique_list]
         )
         cost_history.append(cost_original)
         info_here["cost"] = cost_original
         info_here.update(
-            wrap_up(clique_list, cost_history, primal_err, dual_err, iter, early_stop)
+            wrap_up(
+                clique_list,
+                cost_history,
+                primal_err,
+                dual_err,
+                iter,
+                early_stop,
+                verbose=True,
+            )
         )
         if info_here["stop"]:
             break
 
+    info_here["time running"] = time.time() - t1
+
     [p.terminate() for p in procs]
-    return [clique.X_new for clique in clique_list], info_here
+    X_k_list = [clique.X_new for clique in clique_list]
+    return X_k_list, info_here

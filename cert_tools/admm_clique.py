@@ -9,6 +9,23 @@ from cert_tools.base_clique import BaseClique
 CONSTRAIN_ALL_OVERLAP = False
 
 
+def update_rho(rho, dual_res, primal_res, mu, tau):
+    """Update rho as suggested by [Boyd 2010]."""
+    assert tau >= 1.0
+    assert mu >= 0
+    if np.ndim(rho) > 0:
+        rho[np.where(primal_res >= mu * dual_res)[0]] *= tau
+        rho[np.where(dual_res >= mu * primal_res)[0]] /= tau
+        return rho
+    else:
+        if primal_res >= mu * dual_res:
+            return rho * tau
+        elif dual_res >= mu * primal_res:
+            return rho / tau
+        else:
+            return rho
+
+
 def initialize_overlap(clique_list):
     for k, clique in enumerate(clique_list):
         assert isinstance(clique, ADMMClique)
@@ -236,4 +253,18 @@ class ADMMClique(BaseClique):
                 cp.trace(self.Q @ X)
                 + self.sigmas.T @ (self.F @ X.flatten() - self.g)
                 + 0.5 * rho_k * cp.norm2(self.F @ X.flatten() - self.g) ** 2
+            )
+
+    def update_rho(c, mu_rho, tau_rho, individual_rho):
+        if np.ndim(c.rho_k) > 0:
+            c.rho_k = update_rho(
+                c.rho_k, c.dual_res_k, c.primal_res_k, mu=mu_rho, tau=tau_rho
+            )
+        else:
+            c.rho_k = update_rho(
+                c.rho_k,
+                np.linalg.norm(c.dual_res_k),
+                np.linalg.norm(c.primal_res_k),
+                mu=mu_rho,
+                tau=tau_rho,
             )
