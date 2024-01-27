@@ -44,9 +44,12 @@ TOL_INNER = 1e-5
 N_THREADS = 4  # np.inf
 
 
-def initialize_z(clique_list, X0=None):
+def initialize_admm(clique_list, X0=None, rho_start=None):
     """Initialize Z (consensus variable) based on contents of X0 (initial feasible points)"""
     for k, clique in enumerate(clique_list):
+        clique.rho_k = rho_start
+        clique.counter = 0
+        clique.status = 0
         if X0 is not None:
             clique.z_new = deepcopy(clique.F @ X0[k].flatten())
         else:
@@ -308,7 +311,7 @@ def solve_alternating(
 
     cost_history = []
 
-    initialize_z(clique_list, X0)  # fill Z_new
+    initialize_admm(clique_list, X0, rho_start=rho_start)  # fill Z_new
     for iter in range(maxiter):
         cost_lagrangian = 0
         cost_original = 0
@@ -397,6 +400,7 @@ def solve_parallel(
         while True:
             g_list = pipe.recv()
             for g, clique in zip(g_list, cliques_per_pipe):
+                print(f"solving clique {clique.index}")
                 clique.g = g
                 X, info = solve_inner_sdp(
                     clique,
@@ -417,18 +421,12 @@ def solve_parallel(
                 pass
             pipe.send([c.X_new for c in cliques_per_pipe])
 
-    initialize_z(clique_list, X0)
-
     # Setup the workers
     n_pipes = min(n_threads, len(clique_list))
-    n_per_pipe = n_per_pipe = len(clique_list) // n_pipes
+    n_per_pipe = len(clique_list) // n_pipes
 
     indices_per_pipe = {i: [] for i in range(n_pipes)}
     for i, clique in enumerate(clique_list):
-        # initialize clique
-        clique.rho_k = rho_start
-        clique.counter = 0
-        clique.status = 0
         k = min(i // n_per_pipe, n_pipes - 1)  # find pipe assignment
         indices_per_pipe[k].append(i)
 
@@ -446,7 +444,11 @@ def solve_parallel(
     # this is just to make sure we wait for all pipes to be set up, before
     # starting the timer.
     [pipe.send(1) for pipe in pipes]
+
     t1 = time.time()
+
+    # Initialize z of all cliques
+    initialize_admm(clique_list, X0, rho_start=rho_start)
 
     # Run ADMM
     info_here = {"success": False, "msg": "did not converge", "stop": False}
