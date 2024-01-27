@@ -41,7 +41,7 @@ TOL_INNER = 1e-5
 
 # Number of pipes to create for parallel ADMM implementation.
 # Set to inf to create as many as cliques.
-N_MAX_PIPES = 4  # np.inf
+N_THREADS = 4  # np.inf
 
 
 def initialize_z(clique_list, X0=None):
@@ -381,6 +381,7 @@ def solve_alternating(
 def solve_parallel(
     clique_list,
     X0=None,
+    n_threads=N_THREADS,
     rho_start=RHO_START,
     early_stop=False,
     maxiter=MAXITER,
@@ -419,7 +420,7 @@ def solve_parallel(
     initialize_z(clique_list, X0)
 
     # Setup the workers
-    n_pipes = min(N_MAX_PIPES, len(clique_list))
+    n_pipes = min(n_threads, len(clique_list))
     n_per_pipe = n_per_pipe = len(clique_list) // n_pipes
 
     indices_per_pipe = {i: [] for i in range(n_pipes)}
@@ -502,6 +503,7 @@ def solve_parallel(
             break
 
     info_here["time running"] = time.time() - t1
+    info_here["cost history"] = cost_history
 
     [p.terminate() for p in procs]
     X_k_list = [clique.X_new for clique in clique_list]
