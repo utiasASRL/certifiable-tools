@@ -423,11 +423,11 @@ def solve_parallel(
 
     # Setup the workers
     n_pipes = min(n_threads, len(clique_list))
-    n_per_pipe = len(clique_list) // n_pipes
-
+    boundaries = np.linspace(0, len(clique_list), n_pipes + 1)
     indices_per_pipe = {i: [] for i in range(n_pipes)}
-    for i, clique in enumerate(clique_list):
-        k = min(i // n_per_pipe, n_pipes - 1)  # find pipe assignment
+    k = 0
+    for i in range(len(clique_list)):
+        k = np.where(boundaries <= i)[0][-1]
         indices_per_pipe[k].append(i)
 
     # Initialize z of all cliques
@@ -435,14 +435,17 @@ def solve_parallel(
 
     pipes = []
     procs = []
+    lengths = []
     for k in range(n_pipes):
         cliques_per_pipe = [clique_list[i] for i in indices_per_pipe[k]]
+        lengths.append(len(cliques_per_pipe))
         local, remote = Pipe()
         pipes.append(local)
         procs.append(
             Process(target=run_worker, args=(deepcopy(cliques_per_pipe), remote))
         )
         procs[-1].start()
+    assert np.all(np.diff(lengths) < 2)
 
     # this is just to make sure we wait for all pipes to be set up, before
     # starting the timer.
