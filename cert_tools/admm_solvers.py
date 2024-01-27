@@ -396,11 +396,11 @@ def solve_parallel(
     def run_worker(cliques_per_pipe, pipe):
         # signal thta the worker has been built (only for time measurements)
         assert pipe.recv() == 1
+        pipe.send(1)
 
         while True:
             g_list = pipe.recv()
             for g, clique in zip(g_list, cliques_per_pipe):
-                print(f"solving clique {clique.index}")
                 clique.g = g
                 X, info = solve_inner_sdp(
                     clique,
@@ -430,6 +430,9 @@ def solve_parallel(
         k = min(i // n_per_pipe, n_pipes - 1)  # find pipe assignment
         indices_per_pipe[k].append(i)
 
+    # Initialize z of all cliques
+    initialize_admm(clique_list, X0, rho_start=rho_start)
+
     pipes = []
     procs = []
     for k in range(n_pipes):
@@ -444,11 +447,9 @@ def solve_parallel(
     # this is just to make sure we wait for all pipes to be set up, before
     # starting the timer.
     [pipe.send(1) for pipe in pipes]
+    [pipe.recv() for pipe in pipes]
 
     t1 = time.time()
-
-    # Initialize z of all cliques
-    initialize_admm(clique_list, X0, rho_start=rho_start)
 
     # Run ADMM
     info_here = {"success": False, "msg": "did not converge", "stop": False}
