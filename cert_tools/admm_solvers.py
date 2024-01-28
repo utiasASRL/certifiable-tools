@@ -37,7 +37,7 @@ UPDATE_RHO = True  # if False, never update rho at all
 N_ADMM = 3
 
 # Tolerance of inner SDP for ADMM
-TOL_INNER = 1e-5
+TOL_INNER = 1e-3
 
 # Number of pipes to create for parallel ADMM implementation.
 # Set to inf to create as many as cliques.
@@ -425,7 +425,6 @@ def solve_parallel(
     n_pipes = min(n_threads, len(clique_list))
     boundaries = np.linspace(0, len(clique_list), n_pipes + 1)
     indices_per_pipe = {i: [] for i in range(n_pipes)}
-    k = 0
     for i in range(len(clique_list)):
         k = np.where(boundaries <= i)[0][-1]
         indices_per_pipe[k].append(i)
@@ -466,7 +465,8 @@ def solve_parallel(
         for k, pipe in enumerate(pipes):
             X_new_list = pipe.recv()
             for count, i in enumerate(indices_per_pipe[k]):
-                clique_list[i].X_new = X_new_list[count]
+                if X_new_list[count] is not None:
+                    clique_list[i].X_new = X_new_list[count]
 
         # ADMM step 2: update Z variables
         update_z(clique_list)
