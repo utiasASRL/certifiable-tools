@@ -19,3 +19,18 @@ def mat_fusion(X):
 def get_slice(X: Matrix, i: int):
     (N, X_dim, X_dim) = X.getShape()
     return X.slice([i, 0, 0], [i + 1, X_dim, X_dim]).reshape([X_dim, X_dim])
+
+
+# TODO(FD) not used anymore as now we are setting accSolutionStatus to Anything.
+# Before, this was used to read from UNKNOWN problem status.
+def read_costs_from_mosek(fname):
+    f = open(fname, "r")
+    ls = f.readlines()
+    primal_line = ls[-2].split(" ")
+    assert "Primal." in primal_line
+    primal_value = float(primal_line[primal_line.index("obj:") + 1])
+
+    dual_line = ls[-1].split(" ")
+    assert "Dual." in dual_line
+    dual_value = float(dual_line[dual_line.index("obj:") + 1])
+    return primal_value, dual_value

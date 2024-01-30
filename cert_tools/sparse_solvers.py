@@ -5,7 +5,7 @@ import cvxpy as cp
 import mosek.fusion as fu
 import numpy as np
 from cert_tools.base_clique import BaseClique
-from cert_tools.fusion_tools import get_slice, mat_fusion
+from cert_tools.fusion_tools import get_slice, mat_fusion, read_costs_from_mosek
 from cert_tools.sdp_solvers import (
     adjust_tol,
     adjust_tol_fusion,
@@ -16,21 +16,6 @@ from cert_tools.sdp_solvers import (
 CONSTRAIN_ALL_OVERLAP = False
 
 TOL = 1e-5
-
-
-# TODO(FD) this is extremely hacky but I don't know how to read solution data when the
-# status is UNKNOWN...
-def read_costs_from_mosek(fname):
-    f = open(fname, "r")
-    ls = f.readlines()
-    primal_line = ls[-2].split(" ")
-    assert "Primal." in primal_line
-    primal_value = float(primal_line[primal_line.index("obj:") + 1])
-
-    dual_line = ls[-1].split(" ")
-    assert "Dual." in dual_line
-    dual_value = float(dual_line[dual_line.index("obj:") + 1])
-    return primal_value, dual_value
 
 
 def solve_oneshot_dual_slow(clique_list, tol=TOL):
@@ -58,7 +43,7 @@ def solve_oneshot_dual_slow(clique_list, tol=TOL):
     options_cvxpy["verbose"] = True
     adjust_tol(options_cvxpy, tol)
     options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
-    cprob.solve(solver="MOSEK", **options_cvxpy)
+    cprob.solve(solver="MOSEK", accept_unknown=True, **options_cvxpy)
 
     # H_k_list = [clique.H.value for clique in clique_list]
     X_k_list = constraints[0].dual_value
@@ -124,7 +109,7 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL, verbose=False, adjust=False):
     options_cvxpy["verbose"] = verbose
     adjust_tol(options_cvxpy, tol)
     options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
-    cprob.solve(solver="MOSEK", **options_cvxpy)
+    cprob.solve(solver="MOSEK", accept_unknown=True, **options_cvxpy)
 
     X_k_list = [con.dual_value for con in constraints]
     # H_k_list = [clique.H.value for clique in clique_list]
@@ -221,18 +206,13 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
         else:
             f = open("mosek_output.tmp", "a+")
             M.setLogHandler(f)
+
+        M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
         M.solve()
-        if M.getProblemStatus() is fu.ProblemStatus.Unknown:
-            X_list_k = []
-            cost = np.inf
-            if not verbose:
-                f.close()
-                primal_value, dual_value = read_costs_from_mosek("mosek_output.tmp")
-                if (abs(primal_value) - abs(dual_value)) / abs(primal_value) > 1e-2:
-                    print("Warning: solution not good")
-                cost = abs(primal_value)
-            info = {"success": False, "cost": cost, "msg": "UNKNOWN"}
-        elif M.getProblemStatus() is fu.ProblemStatus.PrimalAndDualFeasible:
+        if M.getProblemStatus() in [
+            fu.ProblemStatus.PrimalAndDualFeasible,
+            fu.ProblemStatus.Unknown,
+        ]:
             X_list_k = [
                 np.reshape(get_slice(X, i).level(), (X_dim, X_dim)) for i in range(N)
             ]
@@ -252,7 +232,18 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                 costs_per_clique[i] * Q_scale_offsets[i][1] + Q_scale_offsets[i][2]
                 for i in range(N)
             )
-            info = {"success": True, "cost": cost}
+            info = {"success": True, "cost": cost, "msg": M.getProblemStatus()}
+        # TODO(FD) below is not used anymore. Delete eventually.
+        elif M.getProblemStatus() is fu.ProblemStatus.Unknown:
+            X_list_k = []
+            cost = np.inf
+            if not verbose:
+                f.close()
+                primal_value, dual_value = read_costs_from_mosek("mosek_output.tmp")
+                if (abs(primal_value) - abs(dual_value)) / abs(primal_value) > 1e-2:
+                    print("Warning: solution not good")
+                cost = abs(primal_value)
+            info = {"success": False, "cost": cost, "msg": "UNKNOWN"}
         elif M.getProblemStatus() is fu.ProblemStatus.DualInfeasible:
             X_list_k = []
             info = {"success": False, "cost": -np.inf, "msg": "dual infeasible"}
@@ -291,7 +282,7 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
     options_cvxpy["verbose"] = verbose
     adjust_tol(options_cvxpy, tol)
     options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
-    cprob.solve(solver="MOSEK", **options_cvxpy)
+    cprob.solve(solver="MOSEK", accept_unknown=True, **options_cvxpy)
 
     X_k_list = [clique.X_var.value for clique in clique_list]
     sigma_dict = {

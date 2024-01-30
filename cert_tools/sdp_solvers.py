@@ -7,7 +7,7 @@ import mosek
 import mosek.fusion as fu
 import numpy as np
 import scipy.sparse as sp
-from cert_tools.fusion_tools import mat_fusion
+from cert_tools.fusion_tools import mat_fusion, read_costs_from_mosek
 
 # General tolerance parameter for SDPs (see "adjust_tol" function for its exact effect)
 TOL = 1e-11
@@ -49,6 +49,8 @@ options_fusion = {
     "intpntCoTolMuRed": TOL,
     "intpntSolveForm": "primal",  # has no effect
 }
+
+MOSEK_FILE = "mosek_output.tmp"
 
 
 def adjust_tol(options, tol):
@@ -338,19 +340,23 @@ def solve_sdp_fusion(
             for key, val in options_fusion.items():
                 M.setSolverParam(key, val)
 
+            M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
             M.solve()
 
-            if M.getProblemStatus() is fu.ProblemStatus.PrimalAndDualFeasible:
+            if M.getProblemStatus() in [
+                fu.ProblemStatus.PrimalAndDualFeasible,
+                fu.ProblemStatus.Unknown,
+            ]:
                 cost = M.primalObjValue() * scale + offset
                 H = np.reshape(X.dual(), Q.shape)
                 X = np.reshape(X.level(), Q.shape)
-                msg = "success"
+                msg = f"success with status {M.getProblemStatus()}"
                 success = True
             else:
                 cost = None
                 H = None
                 X = None
-                msg = "solver failed"
+                msg = f"solver failed with status {M.getProblemStatus()}"
                 success = False
             info = {"success": success, "cost": cost, "msg": msg, "H": H}
             return X, info
@@ -383,14 +389,18 @@ def solve_sdp_fusion(
             for key, val in options_fusion.items():
                 M.setSolverParam(key, val)
 
+            M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
             M.solve()
 
-            if M.getProblemStatus() is fu.ProblemStatus.PrimalAndDualFeasible:
+            if M.getProblemStatus() in [
+                fu.ProblemStatus.PrimalAndDualFeasible,
+                fu.ProblemStatus.Unknown,
+            ]:
                 cost = M.primalObjValue() * scale + offset
                 X = np.reshape(con.dual(), Q.shape)
                 if X[0, 0] < 1:
                     X = -X
-                msg = "success"
+                msg = f"success with status {M.getProblemStatus()}"
                 success = True
             else:
                 cost = None
@@ -436,6 +446,7 @@ def solve_sdp_cvxpy(
         try:
             cprob.solve(
                 solver="MOSEK",
+                accept_unknown=True,
                 **options_cvxpy,
             )
         except cp.SolverError as e:
@@ -487,6 +498,7 @@ def solve_sdp_cvxpy(
         try:
             cprob.solve(
                 solver="MOSEK",
+                accept_unknown=True,
                 **options_cvxpy,
             )
         except cp.SolverError as e:
@@ -588,7 +600,7 @@ def solve_feasibility_sdp(
     cprob = cp.Problem(objective, constraints)
     try:
         try:
-            cprob.solve(solver="MOSEK", **options_cvxpy)
+            cprob.solve(solver="MOSEK", accept_unknown=True, **options_cvxpy)
         except mosek.Error:
             print("Did not find MOSEK, using different solver.")
             cprob.solve(verbose=verbose, solver="CVXOPT")
@@ -699,6 +711,7 @@ def solve_lambda_fusion(
         for key, val in options_fusion.items():
             M.setSolverParam(key, val)
 
+        M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
         M.solve()
         cost = M.primalObjValue() * scale + offset
         lamda = np.array(y.level())
@@ -778,7 +791,7 @@ def solve_lambda_cvxpy(
 
         cprob = cp.Problem(objective, constraints)
         try:
-            cprob.solve(solver="MOSEK", **options_cvxpy)
+            cprob.solve(solver="MOSEK", accept_unknown=True, **options_cvxpy)
         except Exception:
             X = None
             lamda = None

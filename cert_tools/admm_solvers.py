@@ -7,7 +7,7 @@ import cvxpy as cp
 import mosek.fusion as fu
 import numpy as np
 from cert_tools.admm_clique import ADMMClique, update_rho
-from cert_tools.fusion_tools import mat_fusion
+from cert_tools.fusion_tools import mat_fusion, read_costs_from_mosek
 from cert_tools.sdp_solvers import (
     adjust_Q,
     adjust_tol,
@@ -15,7 +15,6 @@ from cert_tools.sdp_solvers import (
     options_cvxpy,
     options_fusion,
 )
-from cert_tools.sparse_solvers import read_costs_from_mosek
 
 EARLY_STOP = True
 EARLY_STOP_MIN = 1e-3
@@ -122,7 +121,7 @@ def wrap_up(
     if verbose:
         with np.printoptions(precision=2, suppress=True, threshold=5):
             if iter % 20 == 0:
-                print("iter          prim. error         dual error       cost")
+                print("iter     prim. error     dual error       cost")
             print(
                 f"{iter} \t {primal_err:2.4e} \t {dual_err:2.4e} \t {cost_original:5.5f}"
             )
@@ -219,8 +218,23 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol
         else:
             f = open("mosek_output.tmp", "a+")
             M.setLogHandler(f)
+
+        M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
         M.solve()
-        if M.getProblemStatus() is fu.ProblemStatus.Unknown:
+        if M.getProblemStatus() in [
+            fu.ProblemStatus.PrimalAndDualFeasible,
+            fu.ProblemStatus.Unknown,
+        ]:
+            X = np.reshape(X.level(), Q.shape)
+            cost = M.primalObjValue()
+            cost = cost * scale + offset
+            info = {
+                "success": True,
+                "cost": cost,
+                "msg": f"solved with status {M.getProblemStatus()}",
+            }
+        # TODO(FD) below is not used anymore. Delete eventually.
+        elif M.getProblemStatus() is fu.ProblemStatus.Unknown:
             cost = np.inf
             if not verbose:
                 f.close()
@@ -231,11 +245,6 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol
             cost = cost * scale + offset
             info = {"success": False, "cost": cost, "msg": "UNKNOWN"}
             X = None
-        elif M.getProblemStatus() is fu.ProblemStatus.PrimalAndDualFeasible:
-            X = np.reshape(X.level(), Q.shape)
-            cost = M.primalObjValue()
-            cost = cost * scale + offset
-            info = {"success": True, "cost": cost, "msg": "solved"}
     return X, info
 
 
@@ -270,7 +279,7 @@ def solve_inner_sdp(
         adjust_tol(options_cvxpy, tol)
         options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol * 10
         try:
-            cprob.solve(solver="MOSEK", **options_cvxpy)
+            cprob.solve(solver="MOSEK", accept_unknown=True, **options_cvxpy)
             info = {
                 "cost": float(cprob.value),
                 "success": clique.X_var.value is not None,
