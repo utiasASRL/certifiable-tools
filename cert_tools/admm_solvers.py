@@ -16,11 +16,11 @@ from cert_tools.sdp_solvers import (
     options_fusion,
 )
 
-EARLY_STOP = True
+EARLY_STOP = False
 EARLY_STOP_MIN = 1e-3
 
-RHO_START = 1e5  # 1e2 for ro
-
+# currently overwritten by lifters:
+RHO_START = 1e5
 MAXITER = 1000
 
 # See eq. (3.13) in Boyd 2010 for explanations of these.
