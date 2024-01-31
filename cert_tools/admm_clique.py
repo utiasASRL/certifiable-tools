@@ -53,6 +53,7 @@ class ADMMClique(BaseClique):
         N: int = 0,
         hom="l",
         x_dim: int = 0,
+        base_size: int = 1,
     ):
         super().__init__(
             Q=Q,
@@ -64,6 +65,9 @@ class ADMMClique(BaseClique):
             hom=hom,
         )
         self.x_dim = x_dim
+        # usually, this corresponds to just the homogenization, which is shared.
+        # for the robust lifters and stereo, it also comprises the pose.
+        self.base_size = base_size
         self.constrain_all = CONSTRAIN_ALL_OVERLAP
         if self.constrain_all:
             self.num_overlap = x_dim**2 + x_dim
@@ -79,8 +83,11 @@ class ADMMClique(BaseClique):
         self.g = None
 
         assert N > 0, "must give total number of nodes N"
-        self.F = self.generate_F(N=N)
-        self.E = self.get_E(N=N)
+        try:
+            self.F = self.generate_F(N=N)
+            self.E = self.get_E(N=N)
+        except:
+            self.E = None
 
     def get_E(self, N):
         """Create the indexing matrix that picks the k-th out of N cliques.
@@ -95,22 +102,16 @@ class ADMMClique(BaseClique):
          | 0 ... 0 1 ... |
 
         """
-        return sp.coo_matrix(
-            (
-                np.ones(self.X_dim),
-                [
-                    range(self.X_dim),
-                    [0]
-                    + list(
-                        range(
-                            1 + self.index * self.x_dim,
-                            1 + self.index * self.x_dim + 2 * self.x_dim,
-                        )
-                    ),
-                ],
-            ),
-            shape=(self.X_dim, 1 + N * self.x_dim),
+        data = np.ones(self.X_dim)
+        rows = range(self.X_dim)
+        columns = [0] + list(
+            range(
+                self.base_size + self.index * self.x_dim,
+                self.base_size + self.index * self.x_dim + 2 * self.x_dim,
+            )
         )
+        shape = self.X_dim, 1 + N * self.x_dim
+        return sp.coo_matrix((data, [rows, columns]), shape=shape)
 
     def get_B_list_right(self):
         B_list = []
@@ -119,13 +120,13 @@ class ADMMClique(BaseClique):
         # B_list.append(B)
         for i, j in itertools.combinations_with_replacement(range(self.x_dim), 2):
             B = np.zeros((self.X_dim, self.X_dim))
-            B[1 + self.x_dim + i, 1 + self.x_dim + j] = 1.0
-            B[1 + self.x_dim + j, 1 + self.x_dim + i] = 1.0
+            B[self.base_size + self.x_dim + i, self.base_size + self.x_dim + j] = 1.0
+            B[self.base_size + self.x_dim + j, self.base_size + self.x_dim + i] = 1.0
             B_list.append(B)
         for i in range(self.x_dim):
             B = np.zeros((self.X_dim, self.X_dim))
-            B[0, 1 + self.x_dim + i] = 1.0
-            B[1 + self.x_dim + i, 0] = 1.0
+            B[0, self.base_size + self.x_dim + i] = 1.0
+            B[self.base_size + self.x_dim + i, 0] = 1.0
             B_list.append(B)
         return B_list
 
@@ -136,13 +137,13 @@ class ADMMClique(BaseClique):
         # B_list.append(B)
         for i, j in itertools.combinations_with_replacement(range(self.x_dim), 2):
             B = np.zeros((self.X_dim, self.X_dim))
-            B[1 + i, 1 + j] = -1.0
-            B[1 + j, 1 + i] = -1.0
+            B[self.base_size + i, self.base_size + j] = -1.0
+            B[self.base_size + j, self.base_size + i] = -1.0
             B_list.append(B)
         for i in range(self.x_dim):
             B = np.zeros((self.X_dim, self.X_dim))
-            B[0, 1 + i] = -1.0
-            B[1 + i, 0] = -1.0
+            B[0, self.base_size + i] = -1.0
+            B[self.base_size + i, 0] = -1.0
             B_list.append(B)
         return B_list
 
@@ -217,20 +218,26 @@ class ADMMClique(BaseClique):
 
     def get_slices_right(self):
         """Picks the right part of a node"""
-        left_slice_start = [[0, 1 + self.x_dim]]  # i_start, i_end
-        left_slice_end = [[1, 1 + 2 * self.x_dim]]
+        left_slice_start = [[0, self.base_size + self.x_dim]]  # i_start, i_end
+        left_slice_end = [[1, self.base_size + 2 * self.x_dim]]
         if self.constrain_all:
-            left_slice_start += [[1 + self.x_dim, 1 + self.x_dim]]
-            left_slice_end += [[1 + 2 * self.x_dim, 1 + 2 * self.x_dim]]
+            left_slice_start += [
+                [self.base_size + self.x_dim, self.base_size + self.x_dim]
+            ]
+            left_slice_end += [
+                [self.base_size + 2 * self.x_dim, self.base_size + 2 * self.x_dim]
+            ]
         return left_slice_start, left_slice_end
 
     def get_slices_left(self):
         """Picks the left part of a node"""
-        right_slice_start = [[0, 1]]
-        right_slice_end = [[1, 1 + self.x_dim]]
+        right_slice_start = [[0, self.base_size]]
+        right_slice_end = [[1, self.base_size + self.x_dim]]
         if self.constrain_all:
-            right_slice_start += [[1, 1]]
-            right_slice_end += [[1 + self.x_dim, 1 + self.x_dim]]
+            right_slice_start += [[self.base_size, self.base_size]]
+            right_slice_end += [
+                [self.base_size + self.x_dim, self.base_size + self.x_dim]
+            ]
         return right_slice_start, right_slice_end
 
     def current_error(self):
