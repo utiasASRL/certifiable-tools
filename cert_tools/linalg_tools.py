@@ -1,8 +1,23 @@
+from copy import deepcopy
+
 import numpy as np
 import scipy.linalg as la
 
 METHOD = "qrp"
 NULL_THRESH = 1e-5
+
+
+def project_so3(X):
+    if X.shape[0] == 4:
+        X = deepcopy(X)
+        rot = X[:3, :3]
+        U, S, Vh = np.linalg.svd(rot)
+        rot = U @ Vh
+        X[:3, :3] = rot
+        return X
+    else:
+        U, S, Vh = np.linalg.svd(X)
+        return U @ Vh
 
 
 def rank_project(X, p=1, tolerance=1e-10):
