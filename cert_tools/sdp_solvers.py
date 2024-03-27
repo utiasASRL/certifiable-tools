@@ -596,6 +596,7 @@ def solve_feasibility_sdp(
         msg = "infeasible / unknown"
     else:
         if np.isfinite(cprob.value):
+            eps = eps.value if soft_epsilon else eps_tol
             cost = cprob.value
             X = constraints[0].dual_value
             H = H.value
@@ -616,7 +617,6 @@ def solve_feasibility_sdp(
         cost = cost * scale + offset
         yvals[0] = yvals[0] * scale + offset
         H = Q_here + cp.sum([yvals[i] * Ai for (i, Ai) in enumerate(As)])
-        eps = eps.value if soft_epsilon else eps_tol
 
     info = {"X": X, "yvals": yvals, "cost": cost, "msg": msg, "eps": eps}
     return H, info
