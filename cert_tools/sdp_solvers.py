@@ -74,10 +74,9 @@ def adjust_tol_fusion(options, tol):
 def adjust_Q(Q, offset=True, scale=True):
     ii, jj = (Q == Q.max()).nonzero()
     if (ii[0], jj[0]) != (0, 0) or (len(ii) > 1):
-        pass
-        # print(
-        #    "Warning: largest element of Q is not unique or not in top-left. Check ordering?"
-        # )
+        print(
+            "Warning: largest element of Q is not unique or not in top-left. Check ordering?"
+        )
 
     Q_mat = deepcopy(Q)
     if offset:
@@ -118,6 +117,7 @@ def solve_low_rank_sdp(
     rank=1,
     x_cand=None,
     adjust=(1, 0),
+    options=None,
     limit_constraints=False,
 ):
     """Use the factorization proposed by Burer and Monteiro to solve a
@@ -171,7 +171,13 @@ def solve_low_rank_sdp(
 
 
 def solve_sdp_mosek(
-    Q, Constraints, adjust=ADJUST, primal=PRIMAL, tol=TOL, verbose=True
+    Q,
+    Constraints,
+    adjust=ADJUST,
+    primal=PRIMAL,
+    tol=TOL,
+    verbose=True,
+    options=options_cvxpy,
 ):
     """Solve SDP using the MOSEK API.
 
@@ -196,7 +202,7 @@ def solve_sdp_mosek(
         sys.stdout.flush()
 
     if tol:
-        adjust_tol(options_cvxpy, tol)
+        adjust_tol(options, tol)
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
@@ -205,7 +211,7 @@ def solve_sdp_mosek(
         if verbose:
             task.set_Stream(mosek.streamtype.log, streamprinter)
         # Set options
-        opts = options_cvxpy["mosek_params"]
+        opts = options["mosek_params"]
 
         task.putdouparam(
             mosek.dparam.intpnt_co_tol_pfeas, opts["MSK_DPAR_INTPNT_CO_TOL_PFEAS"]
@@ -300,6 +306,7 @@ def solve_sdp_fusion(
     primal=PRIMAL,
     tol=TOL,
     verbose=False,
+    options=options_fusion,
 ):
     """Run Mosek's Fusion API to solve a semidefinite program.
 
@@ -310,7 +317,7 @@ def solve_sdp_fusion(
         raise ValueError("cannot deal with B_list yet.")
 
     if tol:
-        adjust_tol_fusion(options_fusion, tol)
+        adjust_tol_fusion(options, tol)
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
@@ -330,7 +337,7 @@ def solve_sdp_fusion(
             if verbose:
                 M.setLogHandler(sys.stdout)
 
-            for key, val in options_fusion.items():
+            for key, val in options.items():
                 M.setSolverParam(key, val)
 
             M.solve()
@@ -375,7 +382,7 @@ def solve_sdp_fusion(
             if verbose:
                 M.setLogHandler(sys.stdout)
 
-            for key, val in options_fusion.items():
+            for key, val in options.items():
                 M.setSolverParam(key, val)
 
             M.solve()
@@ -404,6 +411,7 @@ def solve_sdp_cvxpy(
     primal=PRIMAL,
     tol=TOL,
     verbose=False,
+    options=options_cvxpy,
 ):
     """Run CVXPY with MOSEK to solve a semidefinite program.
 
@@ -411,8 +419,8 @@ def solve_sdp_cvxpy(
     """
 
     if tol:
-        adjust_tol(options_cvxpy, tol)
-    options_cvxpy["verbose"] = verbose
+        adjust_tol(options, tol)
+    options["verbose"] = verbose
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
@@ -431,7 +439,7 @@ def solve_sdp_cvxpy(
         try:
             cprob.solve(
                 solver="MOSEK",
-                **options_cvxpy,
+                **options,
             )
         except cp.SolverError as e:
             cost = None
@@ -482,7 +490,7 @@ def solve_sdp_cvxpy(
         try:
             cprob.solve(
                 solver="MOSEK",
-                **options_cvxpy,
+                **options,
             )
         except cp.SolverError as e:
             cost = None
@@ -540,9 +548,10 @@ def solve_feasibility_sdp(
     tol=None,
     soft_epsilon=True,
     eps_tol=1e-8,
-    verbose=True,
+    verbose=False,
+    options=options_cvxpy,
 ):
-    """Solve feasibility SDP using cvxpy
+    """Solve feasibility SDP using the MOSEK API.
 
     Args:
         Q (_type_): Cost Matrix
@@ -564,8 +573,8 @@ def solve_feasibility_sdp(
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
     if tol:
-        adjust_tol(options_cvxpy, tol)
-    options_cvxpy["verbose"] = verbose
+        adjust_tol(options, tol)
+    options["verbose"] = verbose
 
     H = cp.sum([Q] + [y[i] * Ai for (i, Ai) in enumerate(As)])
     constraints = [H >> 0]
@@ -583,7 +592,7 @@ def solve_feasibility_sdp(
     cprob = cp.Problem(objective, constraints)
     try:
         try:
-            cprob.solve(solver="MOSEK", **options_cvxpy)
+            cprob.solve(solver="MOSEK", **options)
         except mosek.Error:
             print("Did not find MOSEK, using different solver.")
             cprob.solve(verbose=verbose, solver="CVXOPT")
@@ -601,14 +610,14 @@ def solve_feasibility_sdp(
             X = constraints[0].dual_value
             H = H.value
             yvals = [x.value for x in y]
-            msg = "converged"
+            msg = f"converged: {cprob.status}"
         else:
             eps = None
             cost = None
             X = None
             H = None
             yvals = None
-            msg = "unbounded"
+            msg = f"unbounded: {cprob.status}"
     if verbose:
         print(msg)
 
@@ -633,6 +642,7 @@ def solve_lambda_fusion(
     tol=LAMBDA_TOL,
     verbose=False,
     fixed_epsilon=EPSILON,
+    options=options_fusion,
 ):
     """Determine lambda with an SDP.
     :param force_first: number of constraints on which we do not put a L1 cost, effectively encouraging the problem to use them.
@@ -647,8 +657,8 @@ def solve_lambda_fusion(
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
     if tol:
-        adjust_tol_fusion(options_fusion, tol)
-    options_fusion["intpntCoTolRelGap"] = LAMBDA_REL_GAP
+        adjust_tol_fusion(options, tol)
+    options["intpntCoTolRelGap"] = LAMBDA_REL_GAP
 
     with fu.Model("dual") as M:
         m = len(Constraints)
@@ -691,7 +701,7 @@ def solve_lambda_fusion(
         if verbose:
             M.setLogHandler(sys.stdout)
 
-        for key, val in options_fusion.items():
+        for key, val in options.items():
             M.setSolverParam(key, val)
 
         M.solve()
@@ -712,6 +722,7 @@ def solve_lambda_cvxpy(
     tol=LAMBDA_TOL,
     verbose=False,
     fixed_epsilon=EPSILON,
+    options=options_cvxpy,
 ):
     """Determine lambda (the importance of each constraint) with an SDP.
 
@@ -719,9 +730,9 @@ def solve_lambda_cvxpy(
         because we will use them either way (usually the known substitution constraints).
     """
     if tol:
-        adjust_tol(options_cvxpy, tol)
-    options_cvxpy["verbose"] = verbose
-    options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = LAMBDA_REL_GAP
+        adjust_tol(options, tol)
+    options["verbose"] = verbose
+    options["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = LAMBDA_REL_GAP
 
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
@@ -773,7 +784,7 @@ def solve_lambda_cvxpy(
 
         cprob = cp.Problem(objective, constraints)
         try:
-            cprob.solve(solver="MOSEK", **options_cvxpy)
+            cprob.solve(solver="MOSEK", **options)
         except Exception:
             X = None
             lamda = None
