@@ -39,7 +39,7 @@ def rank_project(X, p=1, tolerance=1e-10):
     return x, info
 
 
-def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False):
+def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False, debug=False):
     """
     Returns a list of indices corresponding to the columns of A_sparse that are linearly dependent.
     """
@@ -69,15 +69,16 @@ def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False):
         del bad_idx[good_idx]
 
     # Sanity check
-    Z, R, E, rank_full = sqr.rz(
-        A_sparse.tocsc()[:, good_idx_list],
-        np.zeros((A_sparse.shape[0], 1)),
-        tolerance=tolerance,
-    )
-    if rank_full != rank:
-        print(
-            f"Warning: selected constraints did not pass lin. independence check. Rank is {rank_full}, should be {rank}."
+    if debug:
+        Z, R, E, rank_full = sqr.rz(
+            A_sparse.tocsc()[:, good_idx_list],
+            np.zeros((A_sparse.shape[0], 1)),
+            tolerance=tolerance,
         )
+        if rank_full != rank:
+            print(
+                f"Warning: selected constraints did not pass lin. independence check. Rank is {rank_full}, should be {rank}."
+            )
     return bad_idx
 
 

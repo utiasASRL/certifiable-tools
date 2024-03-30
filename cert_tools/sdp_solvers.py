@@ -576,7 +576,7 @@ def solve_feasibility_sdp(
         adjust_tol(options, tol)
     options["verbose"] = verbose
 
-    H = cp.sum([Q] + [y[i] * Ai for (i, Ai) in enumerate(As)])
+    H = cp.sum([Q_here] + [y[i] * Ai for (i, Ai) in enumerate(As)])
     constraints = [H >> 0]
     if soft_epsilon:
         eps = cp.Variable()
@@ -591,11 +591,7 @@ def solve_feasibility_sdp(
 
     cprob = cp.Problem(objective, constraints)
     try:
-        try:
-            cprob.solve(solver="MOSEK", **options)
-        except mosek.Error:
-            print("Did not find MOSEK, using different solver.")
-            cprob.solve(verbose=verbose, solver="CVXOPT")
+        cprob.solve(solver="MOSEK", **options)
     except Exception as e:
         eps = None
         cost = None
