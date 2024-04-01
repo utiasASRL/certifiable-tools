@@ -74,9 +74,8 @@ def adjust_tol_fusion(options, tol):
 def adjust_Q(Q, offset=True, scale=True):
     ii, jj = (Q == Q.max()).nonzero()
     if (ii[0], jj[0]) != (0, 0) or (len(ii) > 1):
-        print(
-            "Warning: largest element of Q is not unique or not in top-left. Check ordering?"
-        )
+        # print("Warning: largest element of Q is not unique or not in top-left. Check ordering?")
+        pass
 
     Q_mat = deepcopy(Q)
     if offset:
