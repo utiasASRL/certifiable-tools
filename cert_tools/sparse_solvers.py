@@ -260,6 +260,7 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
     )
 
     options_cvxpy["verbose"] = verbose
+    options_cvxpy["accept_unknown"] = True
     cprob.solve(solver="MOSEK", **options_cvxpy)
 
     X_k_list = [clique.X_var.value for clique in clique_list]
