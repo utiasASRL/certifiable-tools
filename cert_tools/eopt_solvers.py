@@ -8,6 +8,7 @@ import mosek
 import numpy as np
 import numpy.linalg as la
 import scipy.sparse as sp
+import scipy.linalg as spla
 from cert_tools.eig_tools import get_min_eigpairs
 from cert_tools.linalg_tools import get_nullspace
 
@@ -49,8 +50,8 @@ backtrack_start = 10.0
 
 # Options for Spectral Bundle Method
 opts_sbm_dflt = dict(
-    tol_eig=1e-6,  # Eigenvalue tolerance
-    tol_gap=1e-7,  # term tolerance on relative gap btwn model eig and best eig
+    tol_eig=0.0,  # Eigenvalue tolerance
+    tol_gap=1e-5,  # term tolerance on relative gap btwn model eig and best eig
     max_iter=1000,  # Maximum iterations
     tol_null=1e-5,  # null space tolerance for first order KKT constraints
     tol_grad=1e-12,  # tolerance to decide when the gradient is zero.
@@ -252,6 +253,31 @@ def get_grad_info(H, A_vec, U=None, tol_mult=1e-8, get_hessian=False, **kwargs_e
     return grad_info
 
 
+def extract_block_diagonal_blocks(A):
+    assert A.shape[0] == A.shape[1], "matrix A should be square"
+
+    N = A.shape[0]
+
+    A_mirrored = (
+        A + A.T
+    )  # make the matrix symmetric so we only have to check one triangle
+
+    blocks = []
+    start = 0
+    blocksize = 0
+
+    while start < N:
+        blocksize += 1
+
+        if np.all(A_mirrored[start : start + blocksize, start + blocksize : N] == 0):
+            block = A[start : start + blocksize, start : start + blocksize]
+            blocks.append(block)
+            start += blocksize
+            blocksize = 0
+
+    return blocks
+
+
 def preprocess_constraints(C, Constraints, x_cand, use_null=False, opts=opts_cut_dflt):
     """Pre-processing steps for certificate optimization.
     Uses cost, constraints, and candidate solution to build the affine, first-order
@@ -289,6 +315,33 @@ def preprocess_constraints(C, Constraints, x_cand, use_null=False, opts=opts_cut
     b_eq = info["Q1"].T @ b_bar
     # Output
     return A_vec, A_eq, b_eq, basis.T, A_bar
+
+
+def build_precond(Q, make_sparse=False):
+    """Build preconditioner of a matrix using LDL decomposition
+
+    Args:
+        Q (_type_): _description_
+    """
+    L, D, perm = spla.ldl(Q)
+    # Find diagonal blocks (max size 2)
+    d_blocks = extract_block_diagonal_blocks(D)
+    d_halfinv = []
+    for d in d_blocks:
+        # decompose each block
+        eigvals, eigvecs = np.linalg.eigh(d)
+        # Invert abs value and split
+        halfinv_eigs = np.sqrt(1 / np.abs(eigvals))
+        d_halfinv += [eigvecs @ np.diag(halfinv_eigs)]
+    # reconstruct diagonal
+    D_halfinv = spla.block_diag(*d_halfinv)
+    # construct preconditioner
+    P = spla.solve(L.T, D_halfinv)
+    # Convert to spares
+    if make_sparse:
+        P = sp.csr_array(P.round(12))
+        P.eliminate_zeros()
+    return P
 
 
 def solve_eopt(
@@ -337,18 +390,27 @@ def solve_eopt(
         # Update Q matrix to include the fixed lagrange multipliers
         # TODO: might be clearer if we rename Q here to H_bar or something.
         Q = Q + (A_vec @ x_bar).reshape(Q.shape, order="F")
-        A_vec = A_vec @ sp.coo_array(basis)
+        A_vec = A_vec @ sp.csr_array(basis)
         x = np.zeros((A_vec.shape[1], 1))
 
     else:
         x = kwargs.get("x_init", x_bar)
 
     if exploit_centered:
-        A_vec = np.hstack(
-            [A.reshape(Q.shape, order="F")[1:, 1:].reshape(-1, 1) for A in A_vec.T]
-        )
+        print("Starting preconditioning...")
+        # Remove zero eigenvalue (assumes homogenized var is in first position)
         Q = Q[1:, 1:]
+
+        alpha = 10
+        P = build_precond(Q, make_sparse=True)
+        Q = alpha * P.T @ Q @ P
+        # Apply to constraints
+        S = sp.vstack([sp.csr_array((1, Q.shape[0])), P])
+        # S = sp.diags(np.ones(Q.shape[0]), -1, (Q.shape[0], Q.shape[0] - 1))
+        S_kron = sp.kron(S.T, S.T)
+        A_vec = alpha * S_kron @ A_vec
         x_cand = x_cand[1:]
+        print("Done Preconditioning")
 
     if plot:
         eigs = np.linalg.eigvalsh(Q)[:3]
