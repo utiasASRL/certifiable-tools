@@ -5,7 +5,7 @@ import cvxpy as cp
 import mosek.fusion as fu
 import numpy as np
 from cert_tools.base_clique import BaseClique
-from cert_tools.fusion_tools import get_slice, mat_fusion, read_costs_from_mosek
+from cert_tools.fusion_tools import get_slice, mat_fusion
 from cert_tools.sdp_solvers import (
     adjust_tol,
     adjust_tol_fusion,
@@ -39,7 +39,6 @@ def solve_oneshot_dual_slow(clique_list, tol=TOL):
         == Q_here + cp.sum([sigmas[k] * A_list[k] for k in range(len(A_list))])
     ]
     cprob = cp.Problem(cp.Maximize(-sigmas[0]), constraints)
-
     options_cvxpy["verbose"] = True
     adjust_tol(options_cvxpy, tol)
     options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol
