@@ -1,7 +1,6 @@
 import itertools
 
 import cvxpy as cp
-import matplotlib.pylab as plt
 import numpy as np
 import scipy.sparse as sp
 from cert_tools.base_clique import BaseClique
