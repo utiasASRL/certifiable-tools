@@ -232,17 +232,6 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                 for i in range(N)
             )
             info = {"success": True, "cost": cost, "msg": M.getProblemStatus()}
-        # TODO(FD) below is not used anymore. Delete eventually.
-        elif M.getProblemStatus() is fu.ProblemStatus.Unknown:
-            X_list_k = []
-            cost = np.inf
-            if not verbose:
-                f.close()
-                primal_value, dual_value = read_costs_from_mosek("mosek_output.tmp")
-                if (abs(primal_value) - abs(dual_value)) / abs(primal_value) > 1e-2:
-                    print("Warning: solution not good")
-                cost = abs(primal_value)
-            info = {"success": False, "cost": cost, "msg": "UNKNOWN"}
         elif M.getProblemStatus() is fu.ProblemStatus.DualInfeasible:
             X_list_k = []
             info = {"success": False, "cost": -np.inf, "msg": "dual infeasible"}

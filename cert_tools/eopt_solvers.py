@@ -1,22 +1,13 @@
-# Optimization
 import cvxpy as cp
-from scipy.optimize import linprog
-
+import matplotlib.pyplot as plt
 import mosek
-
-# Maths
 import numpy as np
 import numpy.linalg as la
+import pandas as pd
 import scipy.sparse as sp
 from cert_tools.eig_tools import get_min_eigpairs
 from cert_tools.linalg_tools import get_nullspace
-
-# Plotting
-import matplotlib.pyplot as plt
-
-
-# Data storage
-import pandas as pd
+from scipy.optimize import linprog
 
 # Number of eigenvalues to compute
 EIG_METHOD = "direct"  # "lobpcg"
