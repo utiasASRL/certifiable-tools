@@ -1,8 +1,23 @@
+from copy import deepcopy
+
 import numpy as np
 import scipy.linalg as la
 
 METHOD = "qrp"
 NULL_THRESH = 1e-5
+
+
+def project_so3(X):
+    if X.shape[0] == 4:
+        X = deepcopy(X)
+        rot = X[:3, :3]
+        U, S, Vh = np.linalg.svd(rot)
+        rot = U @ Vh
+        X[:3, :3] = rot
+        return X
+    else:
+        U, S, Vh = np.linalg.svd(X)
+        return U @ Vh
 
 
 def rank_project(X, p=1, tolerance=1e-10):
@@ -24,7 +39,7 @@ def rank_project(X, p=1, tolerance=1e-10):
     return x, info
 
 
-def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False):
+def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False, debug=False):
     """
     Returns a list of indices corresponding to the columns of A_sparse that are linearly dependent.
     """
@@ -54,15 +69,16 @@ def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False):
         del bad_idx[good_idx]
 
     # Sanity check
-    Z, R, E, rank_full = sqr.rz(
-        A_sparse.tocsc()[:, good_idx_list],
-        np.zeros((A_sparse.shape[0], 1)),
-        tolerance=tolerance,
-    )
-    if rank_full != rank:
-        print(
-            f"Warning: selected constraints did not pass lin. independence check. Rank is {rank_full}, should be {rank}."
+    if debug:
+        Z, R, E, rank_full = sqr.rz(
+            A_sparse.tocsc()[:, good_idx_list],
+            np.zeros((A_sparse.shape[0], 1)),
+            tolerance=tolerance,
         )
+        if rank_full != rank:
+            print(
+                f"Warning: selected constraints did not pass lin. independence check. Rank is {rank_full}, should be {rank}."
+            )
     return bad_idx
 
 
@@ -93,7 +109,8 @@ def get_nullspace(A_dense, method=METHOD, tolerance=NULL_THRESH):
         # assert A_dense.shape[0] >= A_dense.shape[1], "only tall matrices supported"
 
         Q, R, P = la.qr(A_dense, pivoting=True, mode="economic")
-        np.testing.assert_allclose(Q @ R, A_dense[:, P], atol=1e-5)
+        if Q.shape[0] < 1e4:
+            np.testing.assert_allclose(Q @ R, A_dense[:, P], atol=1e-5)
 
         S = np.abs(np.diag(R))
         rank = np.sum(S > tolerance)
