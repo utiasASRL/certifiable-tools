@@ -246,15 +246,15 @@ class ADMMClique(BaseClique):
     def get_constraints_cvxpy(self, X):
         return [cp.trace(A_k @ X) == b_k for A_k, b_k in zip(self.A_list, self.b_list)]
 
-    def get_objective_cvxpy(self, X, rho_k, adjust=False):
+    def get_objective_cvxpy(self, X, rho_k, adjust=False, scale_method="fro"):
         if adjust:
-            Q_here, scale, offset = adjust_Q(self.Q, scale_method="fro")
+            Q_here, scale, offset = adjust_Q(self.Q, scale_method=scale_method)
         else:
             Q_here = self.Q
             scale = 1.0
             offset = 0.0
         if np.ndim(rho_k) > 0:
-            objetive = cp.Minimize(
+            objective = cp.Minimize(
                 cp.trace(Q_here @ X)
                 + self.sigmas.T @ (self.F @ X.flatten() - self.g)
                 + 0.5

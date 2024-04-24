@@ -39,6 +39,8 @@ N_ADMM = 3
 TOL_INNER = 1e-3
 # Whether or not to adjust cost matrix.
 ADJUST = False
+# How to adjust the cost matrix (max for fro)
+SCALE_METHOD = "max"
 
 # Number of pipes to create for parallel ADMM implementation.
 # Set to inf to create as many as cliques.
@@ -167,7 +169,7 @@ def solve_inner_sdp_fusion(
 
         # interlocking equality constraints
         if adjust:
-            Q_here, scale, offset = adjust_Q(Q, scale_method="fro")
+            Q_here, scale, offset = adjust_Q(Q, scale_method=SCALE_METHOD)
         else:
             Q_here = Q
             offset = 0
@@ -253,6 +255,9 @@ def solve_inner_sdp(
 
     where e(X) = F @ vec(X) - b
     """
+    if adjust:
+        print("Warning: adjusting Q is currently not fully working for inner sdp")
+
     if use_fusion:
         Constraints = list(zip(clique.A_list, clique.b_list))
         return solve_inner_sdp_fusion(
@@ -268,7 +273,7 @@ def solve_inner_sdp(
         )
     else:
         objective, scale, offset = clique.get_objective_cvxpy(
-            clique.X_var, rho, adjust=adjust
+            clique.X_var, rho, adjust=adjust, scale_method=SCALE_METHOD
         )
         constraints = clique.get_constraints_cvxpy(clique.X_var)
         cprob = cp.Problem(objective, constraints)
