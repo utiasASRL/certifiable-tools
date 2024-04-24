@@ -37,6 +37,8 @@ N_ADMM = 3
 
 # Tolerance of inner SDP for ADMM
 TOL_INNER = 1e-3
+# Whether or not to adjust cost matrix.
+ADJUST = False
 
 # Number of pipes to create for parallel ADMM implementation.
 # Set to inf to create as many as cliques.
@@ -148,7 +150,9 @@ def wrap_up(
     return info
 
 
-def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol=1e-8):
+def solve_inner_sdp_fusion(
+    Q, Constraints, F, g, sigmas, rho, verbose=False, tol=1e-8, adjust=False
+):
     """Solve X update of ADMM using fusion."""
     with fu.Model("primal") as M:
         # creates (N x X_dim x X_dim) variable
@@ -162,7 +166,12 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol
             M.constraint(fu.Expr.dot(mat_fusion(A), X), fu.Domain.equalsTo(b))
 
         # interlocking equality constraints
-        Q_here, offset, scale = adjust_Q(Q, scale_method="fro")
+        if adjust:
+            Q_here, scale, offset = adjust_Q(Q, scale_method="fro")
+        else:
+            Q_here = Q
+            offset = 0
+            scale = 1.0
         if F is not None:
             assert g is not None
             if F.shape[1] == Q.shape[0]:
@@ -180,7 +189,7 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol
                 fu.ObjectiveSense.Minimize,
                 fu.Expr.add(
                     [
-                        fu.Expr.dot(mat_fusion(Q), X),
+                        fu.Expr.dot(mat_fusion(Q_here), X),
                         fu.Expr.sum(
                             fu.Expr.mul(fu.Matrix.dense(sigmas[None, :]), err)
                         ),  # sum is to go from [1,1] to scalar
@@ -215,9 +224,6 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol
             M.setSolverParam(key, val)
         if verbose:
             M.setLogHandler(sys.stdout)
-        else:
-            f = open("mosek_output.tmp", "a+")
-            M.setLogHandler(f)
 
         M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
         M.solve()
@@ -233,23 +239,11 @@ def solve_inner_sdp_fusion(Q, Constraints, F, g, sigmas, rho, verbose=False, tol
                 "cost": cost,
                 "msg": f"solved with status {M.getProblemStatus()}",
             }
-        # TODO(FD) below is not used anymore. Delete eventually.
-        elif M.getProblemStatus() is fu.ProblemStatus.Unknown:
-            cost = np.inf
-            if not verbose:
-                f.close()
-                primal_value, dual_value = read_costs_from_mosek("mosek_output.tmp")
-                if (abs(primal_value) - abs(dual_value)) / abs(primal_value) > 1e-2:
-                    print("Warning: solution not good")
-                cost = abs(primal_value)
-            cost = cost * scale + offset
-            info = {"success": False, "cost": cost, "msg": "UNKNOWN"}
-            X = None
     return X, info
 
 
 def solve_inner_sdp(
-    clique: ADMMClique, rho=None, verbose=False, use_fusion=True, tol=1e-8
+    clique: ADMMClique, rho=None, verbose=False, use_fusion=True, tol=1e-8, adjust=False
 ):
     """Solve the inner SDP of the ADMM algorithm, similar to [Dall'Anese 2013]
 
@@ -270,9 +264,12 @@ def solve_inner_sdp(
             rho,
             verbose,
             tol=tol,
+            adjust=adjust,
         )
     else:
-        objective = clique.get_objective_cvxpy(clique.X_var, rho)
+        objective, scale, offset = clique.get_objective_cvxpy(
+            clique.X_var, rho, adjust=adjust
+        )
         constraints = clique.get_constraints_cvxpy(clique.X_var)
         cprob = cp.Problem(objective, constraints)
         options_cvxpy["verbose"] = verbose
@@ -280,8 +277,9 @@ def solve_inner_sdp(
         options_cvxpy["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = tol * 10
         try:
             cprob.solve(solver="MOSEK", accept_unknown=True, **options_cvxpy)
+            cost = float(cprob.value) * scale + offset
             info = {
-                "cost": float(cprob.value),
+                "cost": cost,
                 "success": clique.X_var.value is not None,
             }
         except Exception as e:
@@ -297,6 +295,8 @@ def solve_alternating(
     use_fusion: bool = True,
     early_stop: bool = EARLY_STOP,
     verbose: bool = False,
+    adjust: bool = ADJUST,
+    tol_inner=TOL_INNER,
     maxiter=MAXITER,
     mu_rho=MU_RHO,
     tau_rho=TAU_RHO,
@@ -337,7 +337,8 @@ def solve_alternating(
                 clique.rho_k,
                 verbose=False,
                 use_fusion=use_fusion,
-                tol=TOL_INNER,
+                tol=tol_inner,
+                adjust=adjust,
             )
             cost = info["cost"]
 
@@ -396,6 +397,8 @@ def solve_parallel(
     n_threads=N_THREADS,
     rho_start=RHO_START,
     early_stop=False,
+    tol_inner=TOL_INNER,
+    adjust: bool = ADJUST,
     maxiter=MAXITER,
     use_fusion=False,
     verbose=False,
@@ -416,7 +419,8 @@ def solve_parallel(
                     clique.rho_k,
                     verbose=verbose,
                     use_fusion=use_fusion,
-                    tol=TOL_INNER,
+                    tol=tol_inner,
+                    adjust=adjust,
                 )
 
                 if X is not None:
