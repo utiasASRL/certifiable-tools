@@ -4,6 +4,7 @@ import cvxpy as cp
 import numpy as np
 import scipy.sparse as sp
 from cert_tools.base_clique import BaseClique
+from cert_tools.sdp_solvers import adjust_Q
 
 CONSTRAIN_ALL_OVERLAP = False
 
@@ -245,21 +246,28 @@ class ADMMClique(BaseClique):
     def get_constraints_cvxpy(self, X):
         return [cp.trace(A_k @ X) == b_k for A_k, b_k in zip(self.A_list, self.b_list)]
 
-    def get_objective_cvxpy(self, X, rho_k):
+    def get_objective_cvxpy(self, X, rho_k, adjust=False, scale_method="fro"):
+        if adjust:
+            Q_here, scale, offset = adjust_Q(self.Q, scale_method=scale_method)
+        else:
+            Q_here = self.Q
+            scale = 1.0
+            offset = 0.0
         if np.ndim(rho_k) > 0:
-            return cp.Minimize(
-                cp.trace(self.Q @ X)
+            objective = cp.Minimize(
+                cp.trace(Q_here @ X)
                 + self.sigmas.T @ (self.F @ X.flatten() - self.g)
                 + 0.5
                 * cp.norm2(cp.multiply(self.F @ X.flatten() - self.g, np.sqrt(rho_k)))
                 ** 2
             )
         else:
-            return cp.Minimize(
-                cp.trace(self.Q @ X)
+            objective = cp.Minimize(
+                cp.trace(Q_here @ X)
                 + self.sigmas.T @ (self.F @ X.flatten() - self.g)
                 + 0.5 * rho_k * cp.norm2(self.F @ X.flatten() - self.g) ** 2
             )
+        return objective, scale, offset
 
     def update_rho(c, mu_rho, tau_rho, individual_rho):
         if np.ndim(c.rho_k) > 0:
