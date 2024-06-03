@@ -33,6 +33,7 @@ def rank_project(X, p=1, tolerance=1e-10):
         info = {
             "error X": np.linalg.norm(X_hat - X),
             "error eigs": np.sum(np.abs(E[:-p])),
+            "EVR": abs(E[-p] / E[-p - 1]),  # largest over second-largest
         }
     except (ValueError, AssertionError):
         U, E, Vh = np.linalg.svd(X)
@@ -43,6 +44,7 @@ def rank_project(X, p=1, tolerance=1e-10):
         info = {
             "error X": np.linalg.norm(X_hat - X),
             "error eigs": np.sum(np.abs(E[p:])),
+            "EVR": abs(E[p - 1] / E[p]),  # largest over second-largest
         }
     return x, info
 
