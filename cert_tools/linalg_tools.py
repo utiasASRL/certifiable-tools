@@ -32,7 +32,7 @@ def rank_project(X, p=1, tolerance=1e-10):
         X_hat = np.outer(x, x)
         info = {
             "error X": np.linalg.norm(X_hat - X),
-            "error eigs": np.sum(np.abs(E[:p])),
+            "error eigs": np.sum(np.abs(E[:-p])),
         }
     except (ValueError, AssertionError):
         U, E, Vh = np.linalg.svd(X)
