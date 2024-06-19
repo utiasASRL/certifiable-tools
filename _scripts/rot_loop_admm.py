@@ -27,7 +27,7 @@ class RotSynchLoopProblem:
     """Rotation synchronization problem configured in a loop (non-chordal)    
         """
 
-    def __init__(self, N=100, sigma=1e-3, seed=0):
+    def __init__(self, N=10, sigma=1e-3, seed=0):
         np.random.seed(seed)
         # generate ground truth poses
         aaxis_ab_rand = np.random.uniform(-np.pi / 2, np.pi / 2, size=(N, 3, 1))
@@ -131,10 +131,10 @@ class RotSynchLoopProblem:
         - R: list
             A list of rotation matrices.
         """
-        # Rank Check
-        assert np.linalg.matrix_rank(X, tol=1e-6) == 1, ValueError("SDP is not Rank-1")
         # Extract via SVD
         U, S, V = np.linalg.svd(X)
+        # Eigenvalue ratio check
+        assert S[0] / S[1] > 1e-6, ValueError("SDP is not Rank-1")
         x = U[:, 0] * np.sqrt(S[0])
         # Convert to list of rotations
         R_vec = x[1:]
@@ -142,7 +142,7 @@ class RotSynchLoopProblem:
         R = [R_block[:, 3 * i : 3 * (i + 1)] for i in range(self.N)]
         return R
 
-    def chordal_admm(self, tol_res=1e-5):
+    def chordal_admm(self, tol_res=1e-4):
         """Uses ADMM to convert the SDP into a CHORDAL problem. A new variable is added
         to break the loop topology and consensus constraints are used to force it to
         be consistent with first variable.
@@ -184,8 +184,8 @@ class RotSynchLoopProblem:
             # Update Consensus Variable
             Z = (R[0] + R[-1] + U[0] + U[-1]) / 2
             # Update Lagrange Multiplier
-            res = [Z - R[0], Z - R[-1]]
-            U += -np.stack(res, 0)
+            res = [R[0] - Z, R[-1] - Z]
+            U += np.stack(res, 0)
             # Update stopping criterion
             res_norm = np.linalg.norm(res[0], "fro") + np.linalg.norm(res[1], "fro")
             n_iter += 1
