@@ -35,7 +35,7 @@ class RotSynchLoopProblem:
     """Rotation synchronization problem configured in a loop (non-chordal)    
         """
 
-    def __init__(self, N=10, sigma=1e-3, seed=0):
+    def __init__(self, N=10, sigma=1e-4, seed=0):
         np.random.seed(seed)
         # generate ground truth poses
         aaxis_ab_rand = np.random.uniform(-np.pi / 2, np.pi / 2, size=(N, 3, 1))
@@ -54,6 +54,8 @@ class RotSynchLoopProblem:
         self.R_gt = R_gt
         self.N = N
         self.sigma = sigma
+        # Locked Pose
+        self.locked_pose = 1
         # Generate cost matrix
         self.cost = self.get_cost_matrix()
         # Generate Constraints
@@ -67,8 +69,9 @@ class RotSynchLoopProblem:
         # Construct matrix from measurements
         for i, j in self.R_meas.keys():
             Q += self.get_rel_cost_mat(i, j)
-        # Add prior measurement on first pose (tightens the relaxation)
-        Q += self.get_prior_cost_mat(self, 1)
+
+        # # Add prior measurement on first pose (tightens the relaxation)
+        # Q += self.get_prior_cost_mat(self, 1)
 
         return Q
 
@@ -94,11 +97,28 @@ class RotSynchLoopProblem:
         constraints = []
         for i in range(self.N):
             constraints += self.get_O3_constraints(i)
-            constraints += self.get_handedness_constraints(i)
-            constraints += self.get_row_col_constraints(i)
+            # constraints += self.get_handedness_constraints(i)
+            # constraints += self.get_row_col_constraints(i)
+            if i == self.locked_pose:
+                constraints += self.get_locking_constraint(i)
         # Homogenizing Constraint
         constraints += self.get_homog_constraint()
 
+        return constraints
+
+    def get_locking_constraint(self, index):
+        """Get constraint that locks a particular pose to its ground truth value
+        rather than adding a prior cost term. This should remove the gauge freedom
+        from the problem, giving a rank-1 solution"""
+        r_gt = self.R_gt[index].reshape((9, 1), order="F")
+        constraints = []
+        for k in range(9):
+            A = PolyMatrix()
+            e_k = np.zeros((1, 9))
+            e_k[0, k] = 1
+            A["h", index] = e_k / 2
+            A["h", "h"] = -r_gt[k]
+            constraints += [(A, 0.0)]
         return constraints
 
     @staticmethod
@@ -224,12 +244,13 @@ class RotSynchLoopProblem:
         # Initialize variables
         U = np.zeros((2, 3, 3))  # Lagrange Multiplier
         Z = np.zeros((3, 3))  # Concensus Variable
-        rho = 0.1
+        rho = 500
         res_norm = np.inf
         max_iter = 100
         n_iter = 1
         R = None
         # ADMM Loop
+        print("Starting ADMM Loop:")
         while res_norm > tol_res and n_iter < max_iter:
             # Compute the augmented Lagrangian cost terms
             s1 = (U[0] - Z).reshape((9, 1), order="F")
@@ -252,7 +273,7 @@ class RotSynchLoopProblem:
                 X_list_k, info = solve_oneshot(cliques, use_fusion=True, verbose=False)
                 # Retreive Solution
                 R = self.convert_cliques_to_rot(
-                    X_list=X_list_k, cliques=cliques, er_min=1e5
+                    X_list=X_list_k, cliques=cliques, er_min=1e4
                 )
             else:
                 # Solve the SDP and convert to rotation matrices
@@ -264,7 +285,7 @@ class RotSynchLoopProblem:
             # Update Consensus Variable
             Z = (R[0] + R[-1] + U[0] + U[-1]) / 2
             # Update Lagrange Multipliers
-            res = [Z - R[0], Z - R[-1]]
+            res = [R[0] - Z, R[-1] - Z]
             U += np.stack(res, 0)
             # Update stopping criterion
             res_norm = np.linalg.norm(res[0], "fro") + np.linalg.norm(res[1], "fro")
@@ -284,18 +305,19 @@ class RotSynchLoopProblem:
             # Constraints
             constraints = self.get_O3_constraints(i)
             constraints += self.get_O3_constraints(i + 1)
-            constraints += self.get_handedness_constraints(i)
-            constraints += self.get_handedness_constraints(i + 1)
-            constraints += self.get_row_col_constraints(i)
-            constraints += self.get_row_col_constraints(i + 1)
             constraints += self.get_homog_constraint()
+            if i == self.locked_pose:
+                constraints += self.get_locking_constraint(i)
+            elif i + 1 == self.locked_pose:
+                constraints += self.get_locking_constraint(i + 1)
+
             A_list, b_list = zip(*constraints)
             A_list = [A.get_matrix(var_dict) for A in A_list]
             # Cost Functions
             cost = self.get_rel_cost_mat(i, i + 1)
-            if i == 1:
-                cost += self.get_prior_cost_mat(i)
+            # Debug - sum the cost
             cost_sum += cost
+            # Get matrix version of cost
             cost = cost.get_matrix(var_dict)
 
             # Build clique
@@ -397,8 +419,8 @@ class RotSynchLoopProblem:
         plt.show()
 
 
-def test_chord_admm(decompose=False):
-    prob = RotSynchLoopProblem(N=20)
+def test_chord_admm(decompose=False, N=10):
+    prob = RotSynchLoopProblem(N=N)
     # Solve SDP
     R = prob.chordal_admm(decompose=decompose)
     # Check solution
@@ -406,8 +428,8 @@ def test_chord_admm(decompose=False):
     prob.check_solution(R)
 
 
-def test_nonchord_sdp():
-    prob = RotSynchLoopProblem()
+def test_nonchord_sdp(N=10):
+    prob = RotSynchLoopProblem(N=N)
     # Solve SDP
     R = prob.solve_sdp()
     # Check solution
@@ -416,7 +438,7 @@ def test_nonchord_sdp():
 
 if __name__ == "__main__":
 
-    # test_nonchord_sdp()
+    # test_nonchord_sdp(N=100)
     # prob = RotSynchLoopProblem()
     # prob.plot_matrices()
     # prob.convert_to_chordal()
@@ -431,6 +453,6 @@ if __name__ == "__main__":
     # cliques = prob.get_cliques()
 
     # ADMM with decomposition
-    test_chord_admm(decompose=True)
+    test_chord_admm(decompose=True, N=100)
 
     # print("done")
