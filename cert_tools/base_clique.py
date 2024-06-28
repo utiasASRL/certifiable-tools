@@ -40,7 +40,12 @@ class BaseClique(object):
         self.X = X
 
         # dimension of full clique
-        self.X_dim = Q.shape[0] if Q is not None else X.shape[0]
+        if Q is not None:
+            self.X_dim = Q.shape[0]
+        elif X is not None:
+            X.shape[0]
+        else:
+            raise ValueError("One of X or Q must not be None")
 
         # dimension of each node inside clique
         self.x_dim = x_dim

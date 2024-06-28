@@ -1,8 +1,10 @@
 from copy import deepcopy
+from time import time
 
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.sparse as sp
+from pandas import DataFrame, read_pickle
 from poly_matrix import PolyMatrix
 from pylgmath import so3op
 
@@ -401,15 +403,24 @@ class RotSynchLoopProblem:
         R += [R_block[:, 3:]]
         return R
 
-    def check_solution(self, R, atol=5e-3, rtol=0.0):
+    def check_solution(self, R, get_rmse=False, atol=5e-3, rtol=0.0):
+
+        rmse = 0.0
         for i in range(self.N):
-            np.testing.assert_allclose(
-                R[i],
-                self.R_gt[i],
-                atol=atol,
-                rtol=rtol,
-                err_msg=f"Solution not close to ground truth for Rotation {i}",
-            )
+            if not get_rmse:
+                np.testing.assert_allclose(
+                    R[i],
+                    self.R_gt[i],
+                    atol=atol,
+                    rtol=rtol,
+                    err_msg=f"Solution not close to ground truth for Rotation {i}",
+                )
+            else:
+                diff = so3op.rot2vec(np.linalg.inv(R[i]) @ self.R_gt[i])
+                rmse += np.linalg.norm(diff) ** 2
+        if get_rmse:
+            rmse = np.sqrt(rmse / len(R))
+            return rmse
 
     def plot_matrices(self):
         Cost = self.cost.get_matrix(self.var_list)
@@ -436,6 +447,59 @@ def test_nonchord_sdp(N=10):
     prob.check_solution(R)
 
 
+def compare_solvers():
+    prob_sizes = [10, 20, 50, 100, 200, 500]
+    # prob_sizes = [10, 20]
+    data = []
+    for N in prob_sizes:
+        prob = RotSynchLoopProblem(N=N)
+        # Solve via SDP
+        time_start = time()
+        R_sdp = prob.solve_sdp()
+        time_end = time()
+        rmse_sdp = prob.check_solution(R_sdp, get_rmse=True)
+        time_sdp = time_end - time_start
+        # Solve via ADMM
+        time_start = time()
+        R_admm = prob.chordal_admm(decompose=True)
+        time_end = time()
+        prob.N = prob.N - 1  # Hack
+        rmse_admm = prob.check_solution(R_admm, get_rmse=True)
+        time_admm = time_end - time_start
+        # store values
+        data += [
+            {
+                "prob_size": N,
+                "time_sdp": time_sdp,
+                "rmse_sdp": rmse_sdp,
+                "time_admm": time_admm,
+                "rmse_admm": rmse_admm,
+            }
+        ]
+    df = DataFrame(data)
+    df.to_pickle("stored_result.pkl")
+
+
+def compare_solvers_plot():
+    df = read_pickle("stored_result.pkl")
+    plt.figure()
+    plt.loglog(df.prob_size, df.time_sdp, ".-", label="SDP ")
+    plt.loglog(df.prob_size, df.time_admm, ".-", label="ADMM dSDP ")
+    plt.ylabel("Run Time [s]")
+    plt.xlabel("Number of Poses")
+    plt.title("Runtime Comparison")
+    plt.legend()
+
+    plt.figure()
+    plt.loglog(df.prob_size, df.rmse_sdp, ".-", label="SDP ")
+    plt.loglog(df.prob_size, df.rmse_admm, ".-", label="ADMM dSDP ")
+    plt.ylabel("RMSE [rad]")
+    plt.xlabel("Number of Poses")
+    plt.title("Accuracy Comparison")
+    plt.legend()
+    plt.show()
+
+
 if __name__ == "__main__":
 
     # test_nonchord_sdp(N=100)
@@ -453,6 +517,10 @@ if __name__ == "__main__":
     # cliques = prob.get_cliques()
 
     # ADMM with decomposition
-    test_chord_admm(decompose=True, N=100)
+    # test_chord_admm(decompose=True, N=100)
+
+    # Compare solvers
+    # compare_solvers()
+    compare_solvers_plot()
 
     # print("done")
