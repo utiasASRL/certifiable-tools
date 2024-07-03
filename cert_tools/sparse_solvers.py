@@ -4,6 +4,7 @@ import sys
 import cvxpy as cp
 import mosek.fusion as fu
 import numpy as np
+
 from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
 from cert_tools.sdp_solvers import (
@@ -123,9 +124,12 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL, verbose=False, adjust=False):
     return X_k_list, info
 
 
-def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=False):
+def solve_oneshot_primal_fusion(
+    clique_list, clique_tree=None, verbose=False, tol=TOL, adjust=False
+):
     """
     clique_list is a list of objects inheriting from BaseClique.
+    clique_tree is a list of pairs of cliques that constitute edges of the clique tree
     """
     if adjust:
         from cert_tools.sdp_solvers import adjust_Q
@@ -167,9 +171,13 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                 if b == 1:
                     A_0_constraints.append(con)
 
-        # for cl, ck in itertools.permutations(clique_list, 2):
-        # for cl, ck in itertools.combinations(clique_list, 2):
-        for cl, ck in zip(clique_list[:-1], clique_list[1:]):
+        # If no clique tree is defined, just use all possible combinations
+        # TODO this should be replaced with a junction tree algorithm.
+        if clique_tree is None:
+            # clique_tree = zip(clique_list[:-1], clique_list[1:])
+            clique_tree = itertools.combinations(clique_list, 2)
+
+        for cl, ck in clique_tree:
             overlap = BaseClique.get_overlap(cl, ck, h=cl.hom)
             for l in overlap:
                 for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
@@ -286,12 +294,19 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
 
 
 def solve_oneshot(
-    clique_list, use_primal=True, use_fusion=False, verbose=False, tol=TOL
+    clique_list,
+    clique_tree=None,
+    use_primal=True,
+    use_fusion=False,
+    verbose=False,
+    tol=TOL,
 ):
     if not use_primal:
         print("Defaulting to primal because dual cliques not implemented yet.")
     if use_fusion:
-        return solve_oneshot_primal_fusion(clique_list, verbose=verbose, tol=tol)
+        return solve_oneshot_primal_fusion(
+            clique_list, clique_tree=clique_tree, verbose=verbose, tol=tol
+        )
     else:
         return solve_oneshot_primal_cvxpy(clique_list, verbose=verbose, tol=tol)
     # return solve_oneshot_dual_cvxpy(

@@ -37,7 +37,7 @@ class RotSynchLoopProblem:
     """Rotation synchronization problem configured in a loop (non-chordal)    
         """
 
-    def __init__(self, N=10, sigma=1e-4, seed=0):
+    def __init__(self, N=10, sigma=1e-3, seed=0):
         np.random.seed(seed)
         # generate ground truth poses
         aaxis_ab_rand = np.random.uniform(-np.pi / 2, np.pi / 2, size=(N, 3, 1))
@@ -52,7 +52,7 @@ class RotSynchLoopProblem:
         for i in range(0, N):
             R_pert = so3op.vec2rot(sigma * np.random.randn(3, 1))
             if i == N - 1:
-                j = 1
+                j = 3
             else:
                 j = i + 1
             self.R_meas[(i, j)] = R_pert @ R_gt[i] @ R_gt[j].T
@@ -101,14 +101,18 @@ class RotSynchLoopProblem:
     def get_constraint_matrices(self):
         """Generate all constraints for the problem"""
         constraints = []
-        for i in range(self.N):
-            constraints += self.get_O3_constraints(i)
-            # constraints += self.get_handedness_constraints(i)
-            # constraints += self.get_row_col_constraints(i)
-            if i == self.locked_pose:
-                constraints += self.get_locking_constraint(i)
-        # Homogenizing Constraint
-        constraints += self.get_homog_constraint()
+        for key in self.var_list.keys():
+            if key == "h":
+                # if homogenizing variable, add homogenizing constraint
+                constraints += self.get_homog_constraint()
+            else:
+                # Otherwise add rotation constriants
+                constraints += self.get_O3_constraints(key)
+                constraints += self.get_handedness_constraints(key)
+                constraints += self.get_row_col_constraints(key)
+                # lock the appropriate pose
+                if key == self.locked_pose:
+                    constraints += self.get_locking_constraint(key)
 
         return constraints
 
@@ -250,7 +254,7 @@ class RotSynchLoopProblem:
             for clique in cliques:
                 if var1 in clique.var_dict.keys():
                     admm_cliques[0] = clique
-                if var1 in clique.var_dict.keys():
+                if var2 in clique.var_dict.keys():
                     admm_cliques[1] = clique
             admm_cliques_stored = deepcopy(admm_cliques)
         else:
@@ -264,14 +268,14 @@ class RotSynchLoopProblem:
             self.admm_edge[1]: np.zeros((3, 3)),
         }  # Lagrange Multipliers
         Z = np.zeros((3, 3))  # Concensus Variable
-        rho = 0.1
-        res_norm = np.inf
+        rho = 10
+        converged = False
         max_iter = 100
         n_iter = 1
         R = None
         # ADMM Loop
         print("Starting ADMM Loop:")
-        while res_norm > tol_res and n_iter < max_iter:
+        while (not converged) and (n_iter < max_iter):
             # Compute the augmented Lagrangian cost terms
             F = self.get_aug_lagr_factors(U, Z, rho)
             if decompose:
@@ -297,33 +301,61 @@ class RotSynchLoopProblem:
                 R = self.convert_sdp_to_rot(X)
             # Update Consensus Variable
             ind1, ind2 = self.admm_edge
-            Z = (R[ind1] + R[ind2] + U[ind1] + U[ind2]) / 2
+            Z_prev = Z.copy()
+            Z = (R[ind1] + R[ind2]) / 2
+            # Check Convergence Criteria
+            converged, residuals = self.check_admm_convergence(R, Z, Z_prev, rho)
+            res_prim, res_dual, res_pri_mag, res_dual_mag = residuals
             # Update Lagrange Multipliers
-            res = [R[ind1] - Z, R[ind2] - Z]
-            U[ind1] += res[0]
-            U[ind2] += res[1]
+            U[ind1] += res_prim[0]
+            U[ind2] += res_prim[1]
+            # # Update penalty
+            # if self.adapt_rho:
+            #     self.update_penalty(rho, residuals, U)
 
-            # Update stopping criterion
-            res_norm = np.linalg.norm(res[0], "fro") + np.linalg.norm(res[1], "fro")
-            # Print stuff
-            print(f"{n_iter}:\t{res_norm}")
+            # Print and record
+            print(f"{n_iter}:\tprimal: {res_pri_mag}\tdual: {res_dual_mag}\trho: {rho}")
+            R_diff = np.linalg.norm(so3op.rot2vec(R[ind1].T @ R[ind2]))
+            print(f"Rot Diff: {R_diff}")
             n_iter += 1
 
         # Return solution as list
         R_list = [R[i] for i in range(self.N)]
         return R_list
 
+    def check_admm_convergence(self, R, Z, Z_prev, rho, tol_abs=1e-4):
+        """Computes the residuals for ADMM.
+        Based on Boyd (2010)"""
+
+        # get indices
+        ind1, ind2 = self.admm_edge
+        # Compute primal residuals
+        res_pri = np.zeros((2, 3, 3))
+        res_pri[0] = R[ind1] - Z
+        res_pri[1] = R[ind2] - Z
+        # Compute dual residuals
+        res_dual = -rho * (Z - Z_prev)
+        # Check convergence criteria
+        res_pri_mag = np.linalg.norm(res_pri.reshape(-1, 1))
+        res_dual_mag = np.linalg.norm(res_dual, "fro")
+        n = np.prod(res_pri.shape)
+        p = np.prod(res_dual.shape)
+        converged = (
+            res_pri_mag / np.sqrt(n) < tol_abs and res_dual_mag / np.sqrt(p) < tol_abs
+        )
+        return converged, (res_pri, res_dual, res_pri_mag, res_dual_mag)
+
     def get_aug_lagr_factors(self, U, Z, rho):
         """Retrieve augmented lagrangian penalty terms"""
-        i, j = self.admm_edge
+        ind1, ind2 = self.admm_edge
         F1 = PolyMatrix()
-        s1 = (U[i] - Z).reshape((9, 1), order="F")
-        F1["h", i] = s1.T
+        s1 = (U[ind1] - Z).reshape((9, 1), order="F")
+        F1["h", ind1] = s1.T
         F1["h", "h"] += 3 + s1.T @ s1
         F1 *= rho / 2
         F2 = PolyMatrix()
-        s2 = (U[j] - Z).reshape((9, 1), order="F")
-        F2["h", j] = s2.T
+        s2 = (U[ind2] - Z).reshape((9, 1), order="F")
+        F2["h", ind2] = s2.T
         F2["h", "h"] += 3 + s2.T @ s2
         F2 *= rho / 2
 
@@ -337,6 +369,7 @@ class RotSynchLoopProblem:
         cliques = []
 
         cost_sum = PolyMatrix()
+        cnt = 0
         for edge in self.R_meas.keys():
             i, j = edge
             # Variables
@@ -358,8 +391,7 @@ class RotSynchLoopProblem:
             cost_sum += cost
             # Get matrix version of cost
             cost = cost.get_matrix(var_dict)
-
-            # Build clique
+            # create clique
             cliques += [
                 ADMMClique(
                     cost,
@@ -367,10 +399,11 @@ class RotSynchLoopProblem:
                     b_list=b_list,
                     var_dict=var_dict,
                     hom="h",
-                    index=i,
+                    index=cnt,
                     N=2,
                 )
             ]
+            cnt += 1
 
         if check_valid:
             Q1 = cost_sum.get_matrix(self.var_list)
@@ -444,7 +477,7 @@ class RotSynchLoopProblem:
                 R_block = -R_block
             # Use clique variables to assign rotations.
             cnt = 0
-            for key in self.var_list.keys():
+            for key in cliques[iClq].var_dict.keys():
                 if "h" == key:
                     continue
                 R[key] = R_block[:, 3 * cnt : 3 * (cnt + 1)]
