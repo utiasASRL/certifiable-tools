@@ -47,17 +47,21 @@ class RotSynchLoopProblem:
         for i in range(N):
             self.var_list[i] = 9
         # Generate Measurements as a dictionary on tuples
+        # First pose is locked, loop starts at second variable
         self.R_meas = {}
-        for i in range(N):
+        for i in range(0, N):
             R_pert = so3op.vec2rot(sigma * np.random.randn(3, 1))
-            j = (i + 1) % N
+            if i == N - 1:
+                j = 1
+            else:
+                j = i + 1
             self.R_meas[(i, j)] = R_pert @ R_gt[i] @ R_gt[j].T
         # Store data
         self.R_gt = R_gt
         self.N = N
         self.sigma = sigma
         # Locked Pose
-        self.locked_pose = 1
+        self.locked_pose = 0
         # Generate cost matrix
         self.cost = self.get_cost_matrix()
         # Generate Constraints
@@ -195,13 +199,16 @@ class RotSynchLoopProblem:
         A["h", "h"] = 1
         return [(A, 1.0)]
 
-    def convert_to_chordal(self):
+    def split_graph(self, edge=(4, 5)):
         """Introduce a new variable to make the problem chordal"""
-        # Replace loop measurement with meas to new var
-        self.R_meas[(self.N - 1, self.N)] = self.R_meas.pop((self.N - 1, 0))
+        # Replace loop measurement with meas to new var.
+        # New variables identified by the fact that they are strings with "s"
+        split_var = str(edge[1]) + "s"
+        self.R_meas[(edge[0], split_var)] = self.R_meas.pop(edge)
         # Add new variable
-        self.var_list[self.N] = 9
-        self.N += 1
+        self.var_list[split_var] = 9
+        # Store edge that is associated with ADMM
+        self.admm_edge = (split_var, edge[1])
         # Regenerate Cost and Constraints
         self.cost = self.get_cost_matrix()
         self.constraints = self.get_constraint_matrices()
@@ -230,23 +237,34 @@ class RotSynchLoopProblem:
         Returns:
             R : List of rotations
         """
-        # Retrieve the chordal version of the problem with the additional variable.
-        self.convert_to_chordal()
+        # SPLIT NON-CHORDAL GRAPH
+        edge = (4, 5)
+        self.split_graph(edge=edge)
         if decompose:
             # Generate clique matrices
             cliques = self.get_cliques(check_valid=True)
-            # Store first and last cliques since they will be modified at every
-            # iteration
-            stored_cliques = deepcopy([cliques[0], cliques[-1]])
+            # find cliques that contain the ADMM variables
+            # TODO Need to find a more elegant way to do this
+            var1, var2 = self.admm_edge
+            admm_cliques = [None] * 2
+            for clique in cliques:
+                if var1 in clique.var_dict.keys():
+                    admm_cliques[0] = clique
+                if var1 in clique.var_dict.keys():
+                    admm_cliques[1] = clique
+            admm_cliques_stored = deepcopy(admm_cliques)
         else:
             Cost = self.cost.get_matrix(self.var_list)
             Constraints = [
                 (A.get_matrix(self.var_list), b) for A, b in self.constraints
             ]
-        # Initialize variables
-        U = np.zeros((2, 3, 3))  # Lagrange Multiplier
+        # INIITIALIZE
+        U = {
+            self.admm_edge[0]: np.zeros((3, 3)),
+            self.admm_edge[1]: np.zeros((3, 3)),
+        }  # Lagrange Multipliers
         Z = np.zeros((3, 3))  # Concensus Variable
-        rho = 500
+        rho = 0.1
         res_norm = np.inf
         max_iter = 100
         n_iter = 1
@@ -255,21 +273,14 @@ class RotSynchLoopProblem:
         print("Starting ADMM Loop:")
         while res_norm > tol_res and n_iter < max_iter:
             # Compute the augmented Lagrangian cost terms
-            s1 = (U[0] - Z).reshape((9, 1), order="F")
-            s2 = (U[1] - Z).reshape((9, 1), order="F")
-            F1 = PolyMatrix()
-            F2 = PolyMatrix()
-            F1["h", 0] = s1.T
-            F1["h", "h"] += 3 + s1.T @ s1
-            F2["h", self.N - 1] = s2.T
-            F2["h", "h"] += 3 + s2.T @ s2
-            F1 *= rho / 2
-            F2 *= rho / 2
+            F = self.get_aug_lagr_factors(U, Z, rho)
             if decompose:
-                # Update clique cost values for first and last cliques
-                cliques[0].Q = stored_cliques[0].Q + F1.get_matrix(cliques[0].var_dict)
-                cliques[-1].Q = stored_cliques[-1].Q + F2.get_matrix(
-                    cliques[-1].var_dict
+                # Update costs for cliques that contain split vars
+                admm_cliques[0].Q = admm_cliques_stored[0].Q + F[0].get_matrix(
+                    admm_cliques[0].var_dict
+                )
+                admm_cliques[1].Q = admm_cliques_stored[1].Q + F[1].get_matrix(
+                    admm_cliques[1].var_dict
                 )
                 # Solve Decomposed SDP
                 X_list_k, info = solve_oneshot(cliques, use_fusion=True, verbose=False)
@@ -279,44 +290,70 @@ class RotSynchLoopProblem:
                 )
             else:
                 # Solve the SDP and convert to rotation matrices
-                F_mat = (F1 + F2).get_matrix(self.var_list)
+                F_mat = (F[0] + F[1]).get_matrix(self.var_list)
                 X, info = solve_sdp_mosek(
                     Q=Cost + F_mat, Constraints=Constraints, adjust=False, verbose=False
                 )
                 R = self.convert_sdp_to_rot(X)
             # Update Consensus Variable
-            Z = (R[0] + R[-1] + U[0] + U[-1]) / 2
+            ind1, ind2 = self.admm_edge
+            Z = (R[ind1] + R[ind2] + U[ind1] + U[ind2]) / 2
             # Update Lagrange Multipliers
-            res = [R[0] - Z, R[-1] - Z]
-            U += np.stack(res, 0)
+            res = [R[ind1] - Z, R[ind2] - Z]
+            U[ind1] += res[0]
+            U[ind2] += res[1]
+
             # Update stopping criterion
             res_norm = np.linalg.norm(res[0], "fro") + np.linalg.norm(res[1], "fro")
             # Print stuff
             print(f"{n_iter}:\t{res_norm}")
             n_iter += 1
 
-        # Return solution
-        return R[:-1]
+        # Return solution as list
+        R_list = [R[i] for i in range(self.N)]
+        return R_list
+
+    def get_aug_lagr_factors(self, U, Z, rho):
+        """Retrieve augmented lagrangian penalty terms"""
+        i, j = self.admm_edge
+        F1 = PolyMatrix()
+        s1 = (U[i] - Z).reshape((9, 1), order="F")
+        F1["h", i] = s1.T
+        F1["h", "h"] += 3 + s1.T @ s1
+        F1 *= rho / 2
+        F2 = PolyMatrix()
+        s2 = (U[j] - Z).reshape((9, 1), order="F")
+        F2["h", j] = s2.T
+        F2["h", "h"] += 3 + s2.T @ s2
+        F2 *= rho / 2
+
+        return [F1, F2]
 
     def get_cliques(self, check_valid=False):
+        """Generate the list of cliques associated with the rotation synch problem
+        In general, there will be a clique for each edge in the measurement
+        graph.
+        NOTE: Eventually this will depend on the aggregate sparsity graph."""
         cliques = []
+
         cost_sum = PolyMatrix()
-        for i in range(self.N - 1):
+        for edge in self.R_meas.keys():
+            i, j = edge
             # Variables
-            var_dict = {i: 9, i + 1: 9, "h": 1}
+            var_dict = {i: 9, j: 9, "h": 1}
             # Constraints
             constraints = self.get_O3_constraints(i)
-            constraints += self.get_O3_constraints(i + 1)
+            constraints += self.get_O3_constraints(j)
             constraints += self.get_homog_constraint()
             if i == self.locked_pose:
                 constraints += self.get_locking_constraint(i)
-            elif i + 1 == self.locked_pose:
-                constraints += self.get_locking_constraint(i + 1)
+            elif j == self.locked_pose:
+                constraints += self.get_locking_constraint(j)
 
             A_list, b_list = zip(*constraints)
             A_list = [A.get_matrix(var_dict) for A in A_list]
             # Cost Functions
-            cost = self.get_rel_cost_mat(i, i + 1)
+            cost = self.get_rel_cost_mat(i, j)
             # Debug - sum the cost
             cost_sum += cost
             # Get matrix version of cost
@@ -369,14 +406,20 @@ class RotSynchLoopProblem:
             sign = -1
         else:
             sign = 1
-        R = [sign * R_block[:, 3 * i : 3 * (i + 1)] for i in range(self.N)]
 
+        R = {}
+        cnt = 0
+        for key in self.var_list.keys():
+            if "h" == key:
+                continue
+            R[key] = sign * R_block[:, 3 * cnt : 3 * (cnt + 1)]
+            cnt += 1
         return R
 
     def convert_cliques_to_rot(self, X_list, cliques, er_min=ER_MIN):
         """Function for converting clique SDP Solutions back to a solution to
         the original problem"""
-        R = []
+        R = {}
         for iClq, X in enumerate(X_list):
             # Check Tightness
             if er_min > 0:
@@ -390,6 +433,7 @@ class RotSynchLoopProblem:
                     ind += val
                 else:
                     break
+
             # Get homogenious column from SDP matrix
             R_vec = X[:, ind]
             R_vec = np.delete(R_vec, ind)
@@ -398,9 +442,13 @@ class RotSynchLoopProblem:
             # the entire solution to be flipped
             if np.linalg.det(R_block[:, :3]) < 0:
                 R_block = -R_block
-            # TODO this is problem specific and should probably be done differently
-            R += [R_block[:, :3]]
-        R += [R_block[:, 3:]]
+            # Use clique variables to assign rotations.
+            cnt = 0
+            for key in self.var_list.keys():
+                if "h" == key:
+                    continue
+                R[key] = R_block[:, 3 * cnt : 3 * (cnt + 1)]
+                cnt += 1
         return R
 
     def check_solution(self, R, get_rmse=False, atol=5e-3, rtol=0.0):
@@ -502,25 +550,25 @@ def compare_solvers_plot():
 
 if __name__ == "__main__":
 
-    # test_nonchord_sdp(N=100)
+    # test_nonchord_sdp(N=10)
     # prob = RotSynchLoopProblem()
     # prob.plot_matrices()
-    # prob.convert_to_chordal()
+    # prob.split_graph()
     # prob.plot_matrices()
     # test_chord_sdp()
 
     # ADMM without decomposition
-    # test_chord_admm()
+    # test_chord_admm(decompose=False, N=10)
 
     # Test clique generation
     # prob = RotSynchLoopProblem()
     # cliques = prob.get_cliques()
 
     # ADMM with decomposition
-    # test_chord_admm(decompose=True, N=100)
+    test_chord_admm(decompose=True, N=10)
 
     # Compare solvers
     # compare_solvers()
-    compare_solvers_plot()
+    # compare_solvers_plot()
 
     # print("done")
