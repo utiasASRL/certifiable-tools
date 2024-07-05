@@ -274,7 +274,7 @@ class RotSynchLoopProblem:
             self.split_edge[1]: np.zeros((3, 3)),
         }  # Lagrange Multipliers
         Z = np.zeros((3, 3))  # Concensus Variable
-        rho = 10
+        rho = 0.1
         converged = False
         max_iter = 100
         n_iter = 1
@@ -331,7 +331,7 @@ class RotSynchLoopProblem:
         R_list = [R[i] for i in range(self.N)]
         return R_list
 
-    def check_admm_convergence(self, R, U, Z, Z_prev, rho, tol_abs=1e-4, tol_rel=1e-3):
+    def check_admm_convergence(self, R, U, Z, Z_prev, rho, tol_abs=1e-4, tol_rel=1e-4):
         """Computes the residuals for ADMM. Based on Boyd (2010)"""
 
         # get indices
@@ -454,6 +454,9 @@ class RotSynchLoopProblem:
         """Get ADMMClique object associated with a clique.
         NOTE: For now we just assume two variables because thats the way
         the cliques are structured for this problem."""
+        # Correct variable ordering if necessary
+        if (var1, var2) not in self.meas_dict:
+            var1, var2 = var2, var1
         # Define variable dictionary
         var_dict = {var1: 9, var2: 9, "h": 1}
         # Constraints
@@ -470,6 +473,7 @@ class RotSynchLoopProblem:
         # Cost Functions
         cost = self.get_rel_cost_mat(var1, var2)
         # Get matrix version of cost
+        # TODO: We probably should not be storing the fixed version of this matrix
         cost = cost.get_matrix(var_dict)
         # create clique
         clique_obj = ADMMClique(
@@ -718,13 +722,13 @@ if __name__ == "__main__":
     # junction_tree = prob.get_junction_tree(plot=True)
 
     # ADMM without decomposition
-    test_chord_admm(decompose=False, N=10)
+    # test_chord_admm(decompose=False, N=10)
 
     # ADMM with decomposition
     # test_chord_admm(decompose=True, N=10)
 
     # ADMM with decomposition and adaptive penalty
-    # test_chord_admm(decompose=True, split_edge=(4, 5), adapt_rho=True, N=10)
+    test_chord_admm(decompose=True, split_edge=(4, 5), adapt_rho=True, N=100)
 
     # Compare solvers
     # compare_solvers()
