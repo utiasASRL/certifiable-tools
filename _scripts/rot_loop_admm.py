@@ -2,11 +2,11 @@ from copy import deepcopy
 from itertools import combinations
 from time import time
 
+import igraph as ig
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import scipy.sparse as sp
-from networkx.algorithms import chordal_graph_cliques, complete_to_chordal_graph, moral
 from pandas import DataFrame, read_pickle
 from poly_matrix import PolyMatrix
 from pylgmath import so3op
@@ -32,7 +32,7 @@ class RotSynchLoopProblem:
         N (int): Number of poses in the problem
         sigma (float): Standard deviation of noise in measurements
         R_gt (np.array): Ground truth rotations
-        R_meas (dict): Dictionary of noisy measurements
+        meas_dict (dict): Dictionary of noisy measurements
         cost (PolyMatrix): Cost matrix for the SDP
         constraints (list): List of O(3) constraints for the SDP
     """
@@ -52,14 +52,14 @@ class RotSynchLoopProblem:
         # Generate Measurements as a dictionary on tuples
         self.loop_pose = 3  # Loop relinks to chain at this pose
         self.locked_pose = 0  # Pose locked at this pose
-        self.R_meas = {}
+        self.meas_dict = {}
         for i in range(0, N):
             R_pert = so3op.vec2rot(sigma * np.random.randn(3, 1))
             if i == N - 1:
                 j = self.loop_pose
             else:
                 j = i + 1
-            self.R_meas[(i, j)] = R_pert @ R_gt[i] @ R_gt[j].T
+            self.meas_dict[(i, j)] = R_pert @ R_gt[i] @ R_gt[j].T
         # Store data
         self.R_gt = R_gt
         self.N = N
@@ -75,7 +75,7 @@ class RotSynchLoopProblem:
         """
         Q = PolyMatrix()
         # Construct matrix from measurements
-        for i, j in self.R_meas.keys():
+        for i, j in self.meas_dict.keys():
             Q += self.get_rel_cost_mat(i, j)
 
         # # Add prior measurement on first pose (tightens the relaxation)
@@ -86,7 +86,11 @@ class RotSynchLoopProblem:
     def get_rel_cost_mat(self, i, j) -> PolyMatrix:
         """Get cost representation for relative rotation measurement"""
         Q = PolyMatrix()
-        Q[i, j] += -np.kron(np.eye(3), self.R_meas[(i, j)])
+        if (i, j) in self.meas_dict.keys():
+            meas = self.meas_dict[(i, j)]
+        else:
+            meas = self.meas_dict[(j, i)]
+        Q[i, j] += -np.kron(np.eye(3), meas)
         Q[i, i] += 2 * sp.eye(9)
         Q[j, j] += 2 * sp.eye(9)
         return Q
@@ -210,7 +214,7 @@ class RotSynchLoopProblem:
         # Replace loop measurement with meas to new var.
         # New variables identified by the fact that they are strings with "s"
         split_var = str(edge[1]) + "s"
-        self.R_meas[(edge[0], split_var)] = self.R_meas.pop(edge)
+        self.meas_dict[(edge[0], split_var)] = self.meas_dict.pop(edge)
         # Add new variable
         self.var_list[split_var] = 9
         # Store edge that is associated with ADMM
@@ -247,7 +251,8 @@ class RotSynchLoopProblem:
         self.split_graph(edge=split_edge)
         if decompose:
             # Generate clique matrices
-            cliques = self.get_cliques(check_valid=True)
+            junction_tree = self.get_junction_tree()
+            cliques = junction_tree.vs["clique_obj"]
             # find cliques that contain the ADMM variables
             # TODO Need to find a more elegant way to do this
             var1, var2 = self.split_edge
@@ -269,7 +274,7 @@ class RotSynchLoopProblem:
             self.split_edge[1]: np.zeros((3, 3)),
         }  # Lagrange Multipliers
         Z = np.zeros((3, 3))  # Concensus Variable
-        rho = 0.1
+        rho = 10
         converged = False
         max_iter = 100
         n_iter = 1
@@ -288,10 +293,12 @@ class RotSynchLoopProblem:
                     admm_cliques[1].var_dict
                 )
                 # Solve Decomposed SDP
-                X_list_k, info = solve_oneshot(cliques, use_fusion=True, verbose=False)
+                X_list_k, info = solve_oneshot(
+                    junction_tree, use_fusion=True, tol=1e-8, verbose=False
+                )
                 # Retreive Solution
                 R = self.convert_cliques_to_rot(
-                    X_list=X_list_k, cliques=cliques, er_min=1e4
+                    X_list=X_list_k, cliques=cliques, er_min=1e6
                 )
             else:
                 # Solve the SDP and convert to rotation matrices
@@ -305,7 +312,7 @@ class RotSynchLoopProblem:
             Z_prev = Z.copy()
             Z = (R[ind1] + R[ind2]) / 2
             # Check Convergence Criteria
-            converged, residuals = self.check_admm_convergence(R, Z, Z_prev, rho)
+            converged, residuals = self.check_admm_convergence(R, U, Z, Z_prev, rho)
             res_prim, res_dual, res_pri_mag, res_dual_mag = residuals
             # Update Lagrange Multipliers
             U[ind1] += res_prim[0]
@@ -324,9 +331,8 @@ class RotSynchLoopProblem:
         R_list = [R[i] for i in range(self.N)]
         return R_list
 
-    def check_admm_convergence(self, R, Z, Z_prev, rho, tol_abs=1e-4):
-        """Computes the residuals for ADMM.
-        Based on Boyd (2010)"""
+    def check_admm_convergence(self, R, U, Z, Z_prev, rho, tol_abs=1e-4, tol_rel=1e-3):
+        """Computes the residuals for ADMM. Based on Boyd (2010)"""
 
         # get indices
         ind1, ind2 = self.split_edge
@@ -335,15 +341,19 @@ class RotSynchLoopProblem:
         res_pri[0] = R[ind1] - Z
         res_pri[1] = R[ind2] - Z
         # Compute dual residuals
-        res_dual = -rho * (Z - Z_prev)
+        res_dual = -rho * 2 * (Z - Z_prev)
         # Check convergence criteria
         res_pri_mag = np.linalg.norm(res_pri.reshape(-1, 1))
         res_dual_mag = np.linalg.norm(res_dual, "fro")
         n = np.prod(res_pri.shape)
         p = np.prod(res_dual.shape)
-        converged = (
-            res_pri_mag / np.sqrt(n) < tol_abs and res_dual_mag / np.sqrt(p) < tol_abs
-        )
+        x_norm = np.linalg.norm(R[ind1], "fro") + np.linalg.norm(R[ind2], "fro")
+        z_norm = np.linalg.norm(Z, "fro")
+        y_norm = (np.linalg.norm(U[ind1], "fro") + np.linalg.norm(U[ind2], "fro")) * rho
+        eps_pri = tol_abs * np.sqrt(n) + tol_rel * np.max([x_norm, z_norm])
+        eps_dual = tol_abs * np.sqrt(p) + tol_rel * y_norm
+        converged = res_pri_mag < eps_pri and res_dual_mag < eps_dual
+
         return converged, (res_pri, res_dual, res_pri_mag, res_dual_mag)
 
     def update_penalty(self, rho, residuals, U):
@@ -384,94 +394,95 @@ class RotSynchLoopProblem:
 
         return [F1, F2]
 
-    def get_cliques(self, check_valid=False):
-        """Generate the list of cliques associated with the rotation synch problem
-        In general, there will be a clique for each edge in the measurement
-        graph.
+    def get_junction_tree(self, plot=False):
+        """Generate the list of cliques and junction tree for the rotational
+        averaging problem
         NOTE: Eventually this will depend on the aggregate sparsity graph."""
-        cliques = []
 
-        cost_sum = PolyMatrix()
-        cnt = 0
-        # Cliques are defined in the same order that the edges are defined.
-        for edge in self.R_meas.keys():
-            i, j = edge
-            # Variables
-            var_dict = {i: 9, j: 9, "h": 1}
-            # Constraints
-            constraints = self.get_O3_constraints(i)
-            # constraints += self.get_handedness_constraints(i)
-            # constraints += self.get_row_col_constraints(i)
-            constraints += self.get_O3_constraints(j)
-            # constraints += self.get_handedness_constraints(j)
-            # constraints += self.get_row_col_constraints(j)
-            constraints += self.get_homog_constraint()
-            if i == self.locked_pose:
-                constraints += self.get_locking_constraint(i)
-            elif j == self.locked_pose:
-                constraints += self.get_locking_constraint(j)
+        # Construct a networkx representation of the factor graph
+        nodes = [key for key in self.var_list.keys()]
+        nodes.remove("h")
+        edges = [(a, b) for a, b in self.meas_dict.keys()]
+        G = ig.Graph()
+        G.add_vertices(nodes)
+        G.add_edges(edges)
 
-            A_list, b_list = zip(*constraints)
-            A_list = [A.get_matrix(var_dict) for A in A_list]
-            # Cost Functions
-            cost = self.get_rel_cost_mat(i, j)
-            # Debug - sum the cost
-            cost_sum += cost
-            # Get matrix version of cost
-            cost = cost.get_matrix(var_dict)
-            # create clique
-            cliques += [
-                ADMMClique(
-                    cost,
-                    A_list=A_list,
-                    b_list=b_list,
-                    var_dict=var_dict,
-                    hom="h",
-                    index=cnt,
-                    N=2,
-                )
-            ]
-            cnt += 1
+        # Find maximal cliques
+        cliques = G.maximal_cliques()
+        # Define the junction graph
+        junction = ig.Graph()
+        junction.add_vertices(len(cliques))
+        junction.vs["name"] = [
+            [G.vs["name"][node] for node in clique] for clique in cliques
+        ]
+        clique_obj = []
+        for i in range(len(cliques)):
+            # Add clique data
+            var1 = G.vs["name"][cliques[i][0]]
+            var2 = G.vs["name"][cliques[i][1]]
+            clique_obj += [self.get_clique_obj(var1, var2, i)]
+            for j in range(i + 1, len(cliques)):
+                # Get seperator set for list
+                sepset = set(cliques[i]) & set(cliques[j])
+                if len(sepset) > 0:
+                    junction.add_edge(i, j, weight=-len(sepset), sepset=sepset)
+        # Get Junction tree
+        junction_tree = junction.spanning_tree(
+            weights=junction.es["weight"], return_tree=True
+        )
+        # Add clique objects to junction tree.
+        junction_tree.vs["clique_obj"] = clique_obj
 
-        if check_valid:
-            Q1 = cost_sum.get_matrix(self.var_list)
-            Q2 = self.cost.get_matrix(self.var_list)
-            np.testing.assert_allclose(Q1.todense(), Q2.todense())
-
-        return cliques
-
-    def get_tree(self, cliques):
-        """Get clique tree for this specific problem
-
-        Args:
-            cliques (_type_): _description_
-        """
-
-        keys = list(self.var_list.keys())
-        keys.remove("h")
-        nodes = [str(key) for key in keys]
-        edges = [(str(a), str(b)) for a, b in self.R_meas.keys()]
-        G = nx.Graph()
-        G.add_nodes_from(nodes)
-        G.add_edges_from(edges)
-
-        # Create Junction tree
-        clique_graph = nx.Graph()
-        cliques = [tuple(sorted(i)) for i in chordal_graph_cliques(G)]
-        clique_graph.add_nodes_from(cliques, type="clique")
-
-        for edge in combinations(cliques, 2):
-            set_edge_0 = set(edge[0])
-            set_edge_1 = set(edge[1])
-            if not set_edge_0.isdisjoint(set_edge_1):
-                sepset = tuple(sorted(set_edge_0.intersection(set_edge_1)))
-                clique_graph.add_edge(
-                    edge[0], edge[1], weight=len(sepset), sepset=sepset
-                )
-        # Get Junction tree without seperators added
-        junction_tree = nx.maximum_spanning_tree(clique_graph)
-
+        if plot:
+            fig, ax = plt.subplots()
+            plot_options = {"vertex_label": G.vs["name"], "target": ax}
+            ig.plot(G, **plot_options)
+            plt.title("Factor Graph")
+            fig, ax = plt.subplots()
+            # relabel cliques
+            plot_options = {
+                "vertex_label": junction_tree.vs["name"],
+                "edge_label": junction_tree.es["sepset"],
+                "target": ax,
+            }
+            ig.plot(junction_tree, **plot_options)
+            plt.title("Junction Tree")
+            plt.show()
         return junction_tree
+
+    def get_clique_obj(self, var1, var2, clique_num):
+        """Get ADMMClique object associated with a clique.
+        NOTE: For now we just assume two variables because thats the way
+        the cliques are structured for this problem."""
+        # Define variable dictionary
+        var_dict = {var1: 9, var2: 9, "h": 1}
+        # Constraints
+        constraints = self.get_O3_constraints(var1)
+        constraints += self.get_O3_constraints(var2)
+        constraints += self.get_homog_constraint()
+        if var1 == self.locked_pose:
+            constraints += self.get_locking_constraint(var1)
+        elif var2 == self.locked_pose:
+            constraints += self.get_locking_constraint(var2)
+
+        A_list, b_list = zip(*constraints)
+        A_list = [A.get_matrix(var_dict) for A in A_list]
+        # Cost Functions
+        cost = self.get_rel_cost_mat(var1, var2)
+        # Get matrix version of cost
+        cost = cost.get_matrix(var_dict)
+        # create clique
+        clique_obj = ADMMClique(
+            cost,
+            A_list=A_list,
+            b_list=b_list,
+            var_dict=var_dict,
+            hom="h",
+            index=clique_num,
+            N=2,
+        )
+
+        return clique_obj
 
     def convert_sdp_to_rot(self, X, er_min=ER_MIN):
         """
@@ -546,7 +557,7 @@ class RotSynchLoopProblem:
                 cnt += 1
         # Assert that all cliques are tight
         tight = [er > er_min for er in er_values]
-        # assert all(tight), ValueError("At least one clique is not Rank-1")
+        assert all(tight), ValueError("At least one clique is not Rank-1")
 
         return R
 
@@ -701,20 +712,19 @@ if __name__ == "__main__":
     # prob.plot_matrices()
     # test_chord_sdp()
 
-    # ADMM without decomposition
-    # test_chord_admm(decompose=False, N=10)
-
     # Test clique generation
     # prob = RotSynchLoopProblem()
     # prob.split_graph()
-    # cliques = prob.get_cliques()
-    # clique_tree = prob.get_clique_tree(cliques)
+    # junction_tree = prob.get_junction_tree(plot=True)
+
+    # ADMM without decomposition
+    test_chord_admm(decompose=False, N=10)
 
     # ADMM with decomposition
     # test_chord_admm(decompose=True, N=10)
 
     # ADMM with decomposition and adaptive penalty
-    test_chord_admm(decompose=True, split_edge=(50, 51), adapt_rho=True, N=100)
+    # test_chord_admm(decompose=True, split_edge=(4, 5), adapt_rho=True, N=10)
 
     # Compare solvers
     # compare_solvers()
