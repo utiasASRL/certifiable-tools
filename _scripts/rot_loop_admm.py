@@ -40,7 +40,7 @@ class RotSynchLoopProblem:
     """Rotation synchronization problem configured in a loop (non-chordal)    
         """
 
-    def __init__(self, N=10, sigma=1e-4, seed=0):
+    def __init__(self, N=10, sigma=1e-3, seed=0):
         np.random.seed(seed)
         # generate ground truth poses
         aaxis_ab_rand = np.random.uniform(-np.pi / 2, np.pi / 2, size=(N, 3, 1))
@@ -229,13 +229,14 @@ class RotSynchLoopProblem:
         Cost = self.cost.get_matrix(self.var_list)
         Constraints = [(A.get_matrix(self.var_list), b) for A, b in self.constraints]
         # Solve non-Homogenized SDP
+        start_time = time()
         X, info = solve_sdp_mosek(
             Q=Cost, Constraints=Constraints, adjust=False, verbose=True
         )
         # Extract solution
-        return self.convert_sdp_to_rot(X)
+        return self.convert_sdp_to_rot(X), time() - start_time
 
-    def chordal_admm(self, split_edge=(4, 5), decompose=False, adapt_rho=False):
+    def chordal_admm(self, split_edge=(4, 5), decompose=False, rho=1, adapt_rho=False):
         """Uses ADMM to convert the SDP into a CHORDAL problem. A new variable is added
         to break the loop topology and consensus constraints are used to force it to
         be consistent with first variable.
@@ -274,13 +275,14 @@ class RotSynchLoopProblem:
             self.split_edge[1]: np.zeros((3, 3)),
         }  # Lagrange Multipliers
         Z = np.zeros((3, 3))  # Concensus Variable
-        rho = 0.1
         converged = False
         max_iter = 100
         n_iter = 1
         R = None
         # ADMM Loop
         print("Starting ADMM Loop:")
+        start_time = time()
+        iter_info = []
         while (not converged) and (n_iter < max_iter):
             # Compute the augmented Lagrangian cost terms
             F = self.get_aug_lagr_factors(U, Z, rho)
@@ -298,7 +300,7 @@ class RotSynchLoopProblem:
                 )
                 # Retreive Solution
                 R = self.convert_cliques_to_rot(
-                    X_list=X_list_k, cliques=cliques, er_min=1e6
+                    X_list=X_list_k, cliques=cliques, er_min=1e3
                 )
             else:
                 # Solve the SDP and convert to rotation matrices
@@ -318,18 +320,28 @@ class RotSynchLoopProblem:
             U[ind1] += res_prim[0]
             U[ind2] += res_prim[1]
             # Print and record
-            print(f"{n_iter}:\tprimal: {res_pri_mag}\tdual: {res_dual_mag}\trho: {rho}")
-            R_diff = np.linalg.norm(so3op.rot2vec(R[ind1].T @ R[ind2]))
-            print(f"Rot Diff: {R_diff}")
+            print(
+                f"{n_iter}:\tprimal: {res_pri_mag:.4e}\tdual: {res_dual_mag:.4e}\trho: {rho}"
+            )
+            iter_info += [
+                {
+                    "res_pri": res_pri_mag,
+                    "res_dual": res_dual_mag,
+                    "time": time() - start_time,
+                    "n_iter": n_iter,
+                    "penalty": rho,
+                }
+            ]
             # Update penalty
             if adapt_rho:
                 rho = self.update_penalty(rho, residuals, U)
 
             n_iter += 1
-
+        # Data
+        info = {"iter_info": DataFrame(iter_info), "time": time() - start_time}
         # Return solution as list
         R_list = [R[i] for i in range(self.N)]
-        return R_list
+        return R_list, info
 
     def check_admm_convergence(self, R, U, Z, Z_prev, rho, tol_abs=1e-4, tol_rel=1e-4):
         """Computes the residuals for ADMM. Based on Boyd (2010)"""
@@ -595,7 +607,7 @@ class RotSynchLoopProblem:
 def test_chord_admm(N=10, **kwargs):
     prob = RotSynchLoopProblem(N=N)
     # Solve SDP
-    R = prob.chordal_admm(**kwargs)
+    R, info = prob.chordal_admm(**kwargs)
     # Check solution
     prob.N -= 1
     prob.check_solution(R)
@@ -610,24 +622,22 @@ def test_nonchord_sdp(N=10):
 
 
 def compare_solvers():
-    prob_sizes = [10, 20, 30, 50, 70, 100, 200]
-    # prob_sizes = [10, 20]
+    prob_sizes = [10, 20, 30, 50, 70, 100, 200, 500, 1000]
     data = []
     for N in prob_sizes:
         prob = RotSynchLoopProblem(N=N)
         # Solve via SDP
-        time_start = time()
-        R_sdp = prob.solve_sdp()
-        time_end = time()
-        rmse_sdp = prob.check_solution(R_sdp, get_rmse=True)
-        time_sdp = time_end - time_start
+        if N <= 500:
+            R_sdp, time_sdp = prob.solve_sdp()
+            rmse_sdp = prob.check_solution(R_sdp, get_rmse=True)
+        else:
+            rmse_sdp = np.nan
+            time_sdp = np.nan
         # Solve via ADMM
-        time_start = time()
-        R_admm = prob.chordal_admm(decompose=True, adapt_rho=True)
-        time_end = time()
+        R_admm, info = prob.chordal_admm(decompose=True, adapt_rho=True)
         prob.N = prob.N - 1  # Hack
         rmse_admm = prob.check_solution(R_admm, get_rmse=True)
-        time_admm = time_end - time_start
+        time_admm = info["time"]
         # store values
         data += [
             {
@@ -642,31 +652,6 @@ def compare_solvers():
     df.to_pickle("stored_result.pkl")
 
 
-def run_admm_speed_tests():
-    prob_sizes = [10, 20, 30, 50, 70, 100, 200, 500, 1000]
-    # prob_sizes = [10, 20]
-    data = []
-    for N in prob_sizes:
-        prob = RotSynchLoopProblem(N=N)
-        # Solve via ADMM
-        time_start = time()
-        R_admm = prob.chordal_admm(decompose=True, adapt_rho=True)
-        time_end = time()
-        prob.N = prob.N - 1  # Hack
-        rmse_admm = prob.check_solution(R_admm, get_rmse=True)
-        time_admm = time_end - time_start
-        # store values
-        data += [
-            {
-                "prob_size": N,
-                "time_admm": time_admm,
-                "rmse_admm": rmse_admm,
-            }
-        ]
-    df = DataFrame(data)
-    df.to_pickle("stored_result_admm.pkl")
-
-
 def compare_solvers_plot():
     df = read_pickle("stored_result.pkl")
     plt.figure()
@@ -679,26 +664,6 @@ def compare_solvers_plot():
 
     plt.figure()
     plt.loglog(df.prob_size, df.rmse_sdp, ".-", label="SDP ")
-    plt.loglog(df.prob_size, df.rmse_admm, ".-", label="ADMM dSDP ")
-    plt.ylabel("RMSE [rad]")
-    plt.xlabel("Number of Poses")
-    plt.title("Accuracy Comparison")
-    plt.legend()
-    plt.show()
-
-
-def admm_plot():
-    df = read_pickle("stored_result_admm.pkl")
-    plt.figure()
-    # plt.loglog(df.prob_size, df.time_sdp, ".-", label="SDP ")
-    plt.loglog(df.prob_size, df.time_admm, ".-", label="ADMM dSDP ")
-    plt.ylabel("Run Time [s]")
-    plt.xlabel("Number of Poses")
-    plt.title("Runtime Comparison")
-    plt.legend()
-
-    plt.figure()
-    # plt.loglog(df.prob_size, df.rmse_sdp, ".-", label="SDP ")
     plt.loglog(df.prob_size, df.rmse_admm, ".-", label="ADMM dSDP ")
     plt.ylabel("RMSE [rad]")
     plt.xlabel("Number of Poses")
@@ -728,11 +693,8 @@ if __name__ == "__main__":
     # test_chord_admm(decompose=True, N=10)
 
     # ADMM with decomposition and adaptive penalty
-    test_chord_admm(decompose=True, split_edge=(4, 5), adapt_rho=True, N=100)
+    # test_chord_admm(decompose=True, split_edge=(4, 5), adapt_rho=True, N=1000)
 
     # Compare solvers
     # compare_solvers()
-    # compare_solvers_plot()
-    # run_admm_speed_tests()
-    # admm_plot()
-    # print("done")
+    compare_solvers_plot()
