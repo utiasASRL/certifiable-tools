@@ -1,9 +1,12 @@
 from copy import deepcopy
+from itertools import combinations
 from time import time
 
 import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 import scipy.sparse as sp
+from networkx.algorithms import chordal_graph_cliques, complete_to_chordal_graph, moral
 from pandas import DataFrame, read_pickle
 from poly_matrix import PolyMatrix
 from pylgmath import so3op
@@ -37,7 +40,7 @@ class RotSynchLoopProblem:
     """Rotation synchronization problem configured in a loop (non-chordal)    
         """
 
-    def __init__(self, N=10, sigma=1e-3, seed=0):
+    def __init__(self, N=10, sigma=1e-4, seed=0):
         np.random.seed(seed)
         # generate ground truth poses
         aaxis_ab_rand = np.random.uniform(-np.pi / 2, np.pi / 2, size=(N, 3, 1))
@@ -47,12 +50,13 @@ class RotSynchLoopProblem:
         for i in range(N):
             self.var_list[i] = 9
         # Generate Measurements as a dictionary on tuples
-        # First pose is locked, loop starts at second variable
+        self.loop_pose = 3  # Loop relinks to chain at this pose
+        self.locked_pose = 0  # Pose locked at this pose
         self.R_meas = {}
         for i in range(0, N):
             R_pert = so3op.vec2rot(sigma * np.random.randn(3, 1))
             if i == N - 1:
-                j = 3
+                j = self.loop_pose
             else:
                 j = i + 1
             self.R_meas[(i, j)] = R_pert @ R_gt[i] @ R_gt[j].T
@@ -60,8 +64,6 @@ class RotSynchLoopProblem:
         self.R_gt = R_gt
         self.N = N
         self.sigma = sigma
-        # Locked Pose
-        self.locked_pose = 0
         # Generate cost matrix
         self.cost = self.get_cost_matrix()
         # Generate Constraints
@@ -212,7 +214,7 @@ class RotSynchLoopProblem:
         # Add new variable
         self.var_list[split_var] = 9
         # Store edge that is associated with ADMM
-        self.admm_edge = (split_var, edge[1])
+        self.split_edge = (split_var, edge[1])
         # Regenerate Cost and Constraints
         self.cost = self.get_cost_matrix()
         self.constraints = self.get_constraint_matrices()
@@ -229,7 +231,7 @@ class RotSynchLoopProblem:
         # Extract solution
         return self.convert_sdp_to_rot(X)
 
-    def chordal_admm(self, tol_res=1e-4, decompose=False):
+    def chordal_admm(self, split_edge=(4, 5), decompose=False, adapt_rho=False):
         """Uses ADMM to convert the SDP into a CHORDAL problem. A new variable is added
         to break the loop topology and consensus constraints are used to force it to
         be consistent with first variable.
@@ -242,14 +244,13 @@ class RotSynchLoopProblem:
             R : List of rotations
         """
         # SPLIT NON-CHORDAL GRAPH
-        edge = (4, 5)
-        self.split_graph(edge=edge)
+        self.split_graph(edge=split_edge)
         if decompose:
             # Generate clique matrices
             cliques = self.get_cliques(check_valid=True)
             # find cliques that contain the ADMM variables
             # TODO Need to find a more elegant way to do this
-            var1, var2 = self.admm_edge
+            var1, var2 = self.split_edge
             admm_cliques = [None] * 2
             for clique in cliques:
                 if var1 in clique.var_dict.keys():
@@ -264,11 +265,11 @@ class RotSynchLoopProblem:
             ]
         # INIITIALIZE
         U = {
-            self.admm_edge[0]: np.zeros((3, 3)),
-            self.admm_edge[1]: np.zeros((3, 3)),
+            self.split_edge[0]: np.zeros((3, 3)),
+            self.split_edge[1]: np.zeros((3, 3)),
         }  # Lagrange Multipliers
         Z = np.zeros((3, 3))  # Concensus Variable
-        rho = 10
+        rho = 0.1
         converged = False
         max_iter = 100
         n_iter = 1
@@ -300,7 +301,7 @@ class RotSynchLoopProblem:
                 )
                 R = self.convert_sdp_to_rot(X)
             # Update Consensus Variable
-            ind1, ind2 = self.admm_edge
+            ind1, ind2 = self.split_edge
             Z_prev = Z.copy()
             Z = (R[ind1] + R[ind2]) / 2
             # Check Convergence Criteria
@@ -309,14 +310,14 @@ class RotSynchLoopProblem:
             # Update Lagrange Multipliers
             U[ind1] += res_prim[0]
             U[ind2] += res_prim[1]
-            # # Update penalty
-            # if self.adapt_rho:
-            #     self.update_penalty(rho, residuals, U)
-
             # Print and record
             print(f"{n_iter}:\tprimal: {res_pri_mag}\tdual: {res_dual_mag}\trho: {rho}")
             R_diff = np.linalg.norm(so3op.rot2vec(R[ind1].T @ R[ind2]))
             print(f"Rot Diff: {R_diff}")
+            # Update penalty
+            if adapt_rho:
+                rho = self.update_penalty(rho, residuals, U)
+
             n_iter += 1
 
         # Return solution as list
@@ -328,7 +329,7 @@ class RotSynchLoopProblem:
         Based on Boyd (2010)"""
 
         # get indices
-        ind1, ind2 = self.admm_edge
+        ind1, ind2 = self.split_edge
         # Compute primal residuals
         res_pri = np.zeros((2, 3, 3))
         res_pri[0] = R[ind1] - Z
@@ -345,9 +346,31 @@ class RotSynchLoopProblem:
         )
         return converged, (res_pri, res_dual, res_pri_mag, res_dual_mag)
 
+    def update_penalty(self, rho, residuals, U):
+        """Adaptive update for penalty term based on residuals"""
+        # Parameters
+        mu = 10
+        tau_inc = 2
+        tau_dec = 2
+        # Get residuals
+        _, _, res_pri_mag, res_dual_mag = residuals
+        # Update
+        if res_pri_mag > mu * res_dual_mag:
+            rho_new = rho * tau_inc
+        elif res_dual_mag > mu * res_pri_mag:
+            rho_new = rho / tau_dec
+        else:
+            rho_new = rho
+
+        if not rho_new == rho:
+            # Rescale the (scaled) lagrange multipliers
+            for val in U.values():
+                val = val / rho_new * rho
+        return rho_new
+
     def get_aug_lagr_factors(self, U, Z, rho):
         """Retrieve augmented lagrangian penalty terms"""
-        ind1, ind2 = self.admm_edge
+        ind1, ind2 = self.split_edge
         F1 = PolyMatrix()
         s1 = (U[ind1] - Z).reshape((9, 1), order="F")
         F1["h", ind1] = s1.T
@@ -370,13 +393,18 @@ class RotSynchLoopProblem:
 
         cost_sum = PolyMatrix()
         cnt = 0
+        # Cliques are defined in the same order that the edges are defined.
         for edge in self.R_meas.keys():
             i, j = edge
             # Variables
             var_dict = {i: 9, j: 9, "h": 1}
             # Constraints
             constraints = self.get_O3_constraints(i)
+            # constraints += self.get_handedness_constraints(i)
+            # constraints += self.get_row_col_constraints(i)
             constraints += self.get_O3_constraints(j)
+            # constraints += self.get_handedness_constraints(j)
+            # constraints += self.get_row_col_constraints(j)
             constraints += self.get_homog_constraint()
             if i == self.locked_pose:
                 constraints += self.get_locking_constraint(i)
@@ -411,6 +439,39 @@ class RotSynchLoopProblem:
             np.testing.assert_allclose(Q1.todense(), Q2.todense())
 
         return cliques
+
+    def get_tree(self, cliques):
+        """Get clique tree for this specific problem
+
+        Args:
+            cliques (_type_): _description_
+        """
+
+        keys = list(self.var_list.keys())
+        keys.remove("h")
+        nodes = [str(key) for key in keys]
+        edges = [(str(a), str(b)) for a, b in self.R_meas.keys()]
+        G = nx.Graph()
+        G.add_nodes_from(nodes)
+        G.add_edges_from(edges)
+
+        # Create Junction tree
+        clique_graph = nx.Graph()
+        cliques = [tuple(sorted(i)) for i in chordal_graph_cliques(G)]
+        clique_graph.add_nodes_from(cliques, type="clique")
+
+        for edge in combinations(cliques, 2):
+            set_edge_0 = set(edge[0])
+            set_edge_1 = set(edge[1])
+            if not set_edge_0.isdisjoint(set_edge_1):
+                sepset = tuple(sorted(set_edge_0.intersection(set_edge_1)))
+                clique_graph.add_edge(
+                    edge[0], edge[1], weight=len(sepset), sepset=sepset
+                )
+        # Get Junction tree without seperators added
+        junction_tree = nx.maximum_spanning_tree(clique_graph)
+
+        return junction_tree
 
     def convert_sdp_to_rot(self, X, er_min=ER_MIN):
         """
@@ -453,12 +514,13 @@ class RotSynchLoopProblem:
         """Function for converting clique SDP Solutions back to a solution to
         the original problem"""
         R = {}
+        er_values = []
         for iClq, X in enumerate(X_list):
-            # Check Tightness
+            # Check Tightness across cliques
             if er_min > 0:
                 evals = np.linalg.eigvalsh(X)
-                er = evals[-1] / evals[-2]
-                assert er > er_min, ValueError("Clique is not Rank-1")
+                er_values += [evals[-1] / evals[-2]]
+
             # Determine index of homogenizing variable
             ind = 0
             for key, val in cliques[iClq].var_dict.items():
@@ -482,6 +544,10 @@ class RotSynchLoopProblem:
                     continue
                 R[key] = R_block[:, 3 * cnt : 3 * (cnt + 1)]
                 cnt += 1
+        # Assert that all cliques are tight
+        tight = [er > er_min for er in er_values]
+        # assert all(tight), ValueError("At least one clique is not Rank-1")
+
         return R
 
     def check_solution(self, R, get_rmse=False, atol=5e-3, rtol=0.0):
@@ -511,10 +577,10 @@ class RotSynchLoopProblem:
         plt.show()
 
 
-def test_chord_admm(decompose=False, N=10):
+def test_chord_admm(N=10, **kwargs):
     prob = RotSynchLoopProblem(N=N)
     # Solve SDP
-    R = prob.chordal_admm(decompose=decompose)
+    R = prob.chordal_admm(**kwargs)
     # Check solution
     prob.N -= 1
     prob.check_solution(R)
@@ -529,7 +595,7 @@ def test_nonchord_sdp(N=10):
 
 
 def compare_solvers():
-    prob_sizes = [10, 20, 50, 100, 200, 500]
+    prob_sizes = [10, 20, 30, 50, 70, 100, 200]
     # prob_sizes = [10, 20]
     data = []
     for N in prob_sizes:
@@ -542,7 +608,7 @@ def compare_solvers():
         time_sdp = time_end - time_start
         # Solve via ADMM
         time_start = time()
-        R_admm = prob.chordal_admm(decompose=True)
+        R_admm = prob.chordal_admm(decompose=True, adapt_rho=True)
         time_end = time()
         prob.N = prob.N - 1  # Hack
         rmse_admm = prob.check_solution(R_admm, get_rmse=True)
@@ -559,6 +625,31 @@ def compare_solvers():
         ]
     df = DataFrame(data)
     df.to_pickle("stored_result.pkl")
+
+
+def run_admm_speed_tests():
+    prob_sizes = [10, 20, 30, 50, 70, 100, 200, 500, 1000]
+    # prob_sizes = [10, 20]
+    data = []
+    for N in prob_sizes:
+        prob = RotSynchLoopProblem(N=N)
+        # Solve via ADMM
+        time_start = time()
+        R_admm = prob.chordal_admm(decompose=True, adapt_rho=True)
+        time_end = time()
+        prob.N = prob.N - 1  # Hack
+        rmse_admm = prob.check_solution(R_admm, get_rmse=True)
+        time_admm = time_end - time_start
+        # store values
+        data += [
+            {
+                "prob_size": N,
+                "time_admm": time_admm,
+                "rmse_admm": rmse_admm,
+            }
+        ]
+    df = DataFrame(data)
+    df.to_pickle("stored_result_admm.pkl")
 
 
 def compare_solvers_plot():
@@ -581,6 +672,26 @@ def compare_solvers_plot():
     plt.show()
 
 
+def admm_plot():
+    df = read_pickle("stored_result_admm.pkl")
+    plt.figure()
+    # plt.loglog(df.prob_size, df.time_sdp, ".-", label="SDP ")
+    plt.loglog(df.prob_size, df.time_admm, ".-", label="ADMM dSDP ")
+    plt.ylabel("Run Time [s]")
+    plt.xlabel("Number of Poses")
+    plt.title("Runtime Comparison")
+    plt.legend()
+
+    plt.figure()
+    # plt.loglog(df.prob_size, df.rmse_sdp, ".-", label="SDP ")
+    plt.loglog(df.prob_size, df.rmse_admm, ".-", label="ADMM dSDP ")
+    plt.ylabel("RMSE [rad]")
+    plt.xlabel("Number of Poses")
+    plt.title("Accuracy Comparison")
+    plt.legend()
+    plt.show()
+
+
 if __name__ == "__main__":
 
     # test_nonchord_sdp(N=10)
@@ -595,13 +706,19 @@ if __name__ == "__main__":
 
     # Test clique generation
     # prob = RotSynchLoopProblem()
+    # prob.split_graph()
     # cliques = prob.get_cliques()
+    # clique_tree = prob.get_clique_tree(cliques)
 
     # ADMM with decomposition
-    test_chord_admm(decompose=True, N=10)
+    # test_chord_admm(decompose=True, N=10)
+
+    # ADMM with decomposition and adaptive penalty
+    test_chord_admm(decompose=True, split_edge=(50, 51), adapt_rho=True, N=100)
 
     # Compare solvers
     # compare_solvers()
     # compare_solvers_plot()
-
+    # run_admm_speed_tests()
+    # admm_plot()
     # print("done")

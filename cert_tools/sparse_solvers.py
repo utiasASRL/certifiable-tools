@@ -177,6 +177,8 @@ def solve_oneshot_primal_fusion(
             # clique_tree = zip(clique_list[:-1], clique_list[1:])
             clique_tree = itertools.combinations(clique_list, 2)
 
+        # TODO Junction tree algorithm should give us the "overlap" below
+        # These are known as separators in graph theory.
         for cl, ck in clique_tree:
             overlap = BaseClique.get_overlap(cl, ck, h=cl.hom)
             for l in overlap:
