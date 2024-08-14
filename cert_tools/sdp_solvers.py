@@ -174,9 +174,9 @@ def solve_sdp_mosek(
         # bound keys
         bkc = mosek.boundkey.fx
         # Cost matrix
-        Q_l = sp.tril(Q_here, format="csr")
-        rows, cols = Q_l.nonzero()
-        vals = Q_l[rows, cols].tolist()[0]
+        Q_l = sp.tril(Q_here)
+        rows, cols = Q_l.coords
+        vals = Q_l.data
         assert not np.any(np.isinf(vals)), ValueError("Cost matrix has inf vals")
         symq = task.appendsparsesymmat(dim, rows.astype(int), cols.astype(int), vals)
         task.putbarcj(0, [symq], [1.0])
@@ -186,9 +186,9 @@ def solve_sdp_mosek(
         cnt = 0
         for A, b in Constraints:
             # Generate matrix
-            A_l = sp.tril(A, format="csr")
-            rows, cols = A_l.nonzero()
-            vals = A_l[rows, cols].tolist()[0]
+            A_l = sp.tril(A)
+            rows, cols = A_l.coords
+            vals = A_l.data
             syma = task.appendsparsesymmat(dim, rows, cols, vals)
             # Add constraint matrix
             task.putbaraij(cnt, 0, [syma], [1.0])
@@ -205,18 +205,28 @@ def solve_sdp_mosek(
         solsta = task.getsolsta(mosek.soltype.itr)
         if solsta == mosek.solsta.optimal:
             msg = "Optimal"
+            # Primal variable
             barx = task.getbarxj(mosek.soltype.itr, 0)
+            # Problem Cost
             cost = task.getprimalobj(mosek.soltype.itr) * scale + offset
-            yvals = np.array(task.getbarsj(mosek.soltype.itr, 0))
+            # Lagrange Multipliers
+            yvals = task.gety(mosek.soltype.itr)
+            # Dual SDP
+            bars = task.getbarsj(mosek.soltype.itr, 0)
+            # Convert back
             X = np.zeros((dim, dim))
+            S = np.zeros((dim, dim))
             cnt = 0
             for i in range(dim):
                 for j in range(i, dim):
                     if j == 0:
                         X[i, i] = barx[cnt]
+                        S[i, i] = bars[cnt]
                     else:
                         X[j, i] = barx[cnt]
                         X[i, j] = barx[cnt]
+                        S[j, i] = bars[cnt]
+                        S[i, j] = bars[cnt]
                     cnt += 1
         elif (
             solsta == mosek.solsta.dual_infeas_cer
@@ -233,12 +243,8 @@ def solve_sdp_mosek(
             msg = f"Other solution status: {solsta}"
             X = np.nan
             cost = np.nan
-
-        # H = Q_here - LHS.value
-        # yvals = [x.value for x in y]
-
-        # TODO(FD) can we read the dual variables from mosek solution?
-        info = {"H": None, "yvals": yvals, "cost": cost, "msg": msg}
+        # Return Additional information
+        info = {"H": S, "yvals": yvals, "cost": cost, "msg": msg}
         # info = {"cost": cost, "msg": msg}
         return X, info
 
