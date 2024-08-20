@@ -793,8 +793,9 @@ def solve_lambda_cvxpy(
 
         cprob = cp.Problem(objective, constraints)
         try:
-            cprob.solve(solver="MOSEK", accept_unknown=True, **options)
-        except Exception:
+            cprob.solve(solver="MOSEK", **options)
+        except Exception as e:
+            print("caught exception:", e)
             X = None
             lamda = None
         else:
