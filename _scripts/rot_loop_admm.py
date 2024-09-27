@@ -11,7 +11,7 @@ from pandas import DataFrame, read_pickle
 from poly_matrix import PolyMatrix
 from pylgmath import so3op
 
-from cert_tools import solve_sdp_mosek
+from cert_tools import solve_sdp_cvxpy, solve_sdp_mosek
 from cert_tools.admm_clique import ADMMClique
 from cert_tools.base_clique import BaseClique
 from cert_tools.sparse_solvers import solve_oneshot
@@ -305,7 +305,7 @@ class RotSynchLoopProblem:
             else:
                 # Solve the SDP and convert to rotation matrices
                 F_mat = (F[0] + F[1]).get_matrix(self.var_list)
-                X, info = solve_sdp_mosek(
+                X, info = solve_sdp_cvxpy(
                     Q=Cost + F_mat, Constraints=Constraints, adjust=False, verbose=False
                 )
                 R = self.convert_sdp_to_rot(X)
@@ -396,12 +396,12 @@ class RotSynchLoopProblem:
         F1 = PolyMatrix()
         s1 = (U[ind1] - Z).reshape((9, 1), order="F")
         F1["h", ind1] = s1.T
-        F1["h", "h"] += 3 + s1.T @ s1
+        F1["h", "h"] = 3 + s1.T @ s1
         F1 *= rho / 2
         F2 = PolyMatrix()
         s2 = (U[ind2] - Z).reshape((9, 1), order="F")
         F2["h", ind2] = s2.T
-        F2["h", "h"] += 3 + s2.T @ s2
+        F2["h", "h"] = 3 + s2.T @ s2
         F2 *= rho / 2
 
         return [F1, F2]
@@ -683,11 +683,12 @@ if __name__ == "__main__":
 
     # Test clique generation
     # prob = RotSynchLoopProblem()
+    # junction_tree = prob.get_junction_tree(plot=True)
     # prob.split_graph()
     # junction_tree = prob.get_junction_tree(plot=True)
 
     # ADMM without decomposition
-    # test_chord_admm(decompose=False, N=10)
+    test_chord_admm(decompose=False, N=10)
 
     # ADMM with decomposition
     # test_chord_admm(decompose=True, N=10)
@@ -697,4 +698,4 @@ if __name__ == "__main__":
 
     # Compare solvers
     # compare_solvers()
-    compare_solvers_plot()
+    # compare_solvers_plot()
