@@ -7,6 +7,7 @@ import mosek
 import mosek.fusion as fu
 import numpy as np
 import scipy.sparse as sp
+
 from cert_tools.fusion_tools import mat_fusion
 
 # General tolerance parameter for SDPs (see "adjust_tol" function for its exact effect)
