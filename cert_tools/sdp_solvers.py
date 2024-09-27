@@ -237,9 +237,9 @@ def solve_sdp_mosek(
         # bound keys
         bkc = mosek.boundkey.fx
         # Cost matrix
-        Q_l = sp.tril(Q_here)
-        rows, cols = Q_l.coords
-        vals = Q_l.data
+        Q_l = sp.tril(Q_here, format="csr")
+        rows, cols = Q_l.nonzero()
+        vals = Q_l[rows, cols].tolist()[0]
         assert not np.any(np.isinf(vals)), ValueError("Cost matrix has inf vals")
         symq = task.appendsparsesymmat(dim, rows.astype(int), cols.astype(int), vals)
         task.putbarcj(0, [symq], [1.0])
@@ -249,9 +249,9 @@ def solve_sdp_mosek(
         cnt = 0
         for A, b in Constraints:
             # Generate matrix
-            A_l = sp.tril(A)
-            rows, cols = A_l.coords
-            vals = A_l.data
+            A_l = sp.tril(A, format="csr")
+            rows, cols = A_l.nonzero()
+            vals = A_l[rows, cols].tolist()[0]
             syma = task.appendsparsesymmat(dim, rows, cols, vals)
             # Add constraint matrix
             task.putbaraij(cnt, 0, [syma], [1.0])
