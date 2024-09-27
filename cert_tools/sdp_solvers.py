@@ -1,4 +1,5 @@
 import sys
+from copy import deepcopy
 
 import casadi as cas
 import cvxpy as cp
