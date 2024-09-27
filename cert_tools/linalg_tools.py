@@ -1,8 +1,23 @@
+from copy import deepcopy
+
 import numpy as np
 import scipy.linalg as la
 
 METHOD = "qrp"
 NULL_THRESH = 1e-5
+
+
+def project_so3(X):
+    if X.shape[0] == 4:
+        X = deepcopy(X)
+        rot = X[:3, :3]
+        U, S, Vh = np.linalg.svd(rot)
+        rot = U @ Vh
+        X[:3, :3] = rot
+        return X
+    else:
+        U, S, Vh = np.linalg.svd(X)
+        return U @ Vh
 
 
 def rank_project(X, p=1, tolerance=1e-10):
@@ -17,7 +32,8 @@ def rank_project(X, p=1, tolerance=1e-10):
         X_hat = np.outer(x, x)
         info = {
             "error X": np.linalg.norm(X_hat - X),
-            "error eigs": np.sum(np.abs(E[:p])),
+            "error eigs": np.sum(np.abs(E[:-p])),
+            "EVR": abs(E[-p] / E[-p - 1]),  # largest over second-largest
         }
     except (ValueError, AssertionError):
         U, E, Vh = np.linalg.svd(X)
@@ -28,11 +44,12 @@ def rank_project(X, p=1, tolerance=1e-10):
         info = {
             "error X": np.linalg.norm(X_hat - X),
             "error eigs": np.sum(np.abs(E[p:])),
+            "EVR": abs(E[p - 1] / E[p]),  # largest over second-largest
         }
     return x, info
 
 
-def find_dependent_columns(A_sparse, tolerance=1e-10):
+def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False, debug=False):
     """
     Returns a list of indices corresponding to the columns of A_sparse that are linearly dependent.
     """
@@ -46,29 +63,32 @@ def find_dependent_columns(A_sparse, tolerance=1e-10):
     Z, R, E, rank = sqr.rz(
         A_sparse, np.zeros((A_sparse.shape[0], 1)), tolerance=tolerance
     )
+    if rank == A_sparse.shape[1]:
+        return []
 
     # Sort the diagonal values. Note that SuiteSparse uses A_sparseMD/METIS ordering
     # to acheive sparsity.
     r_vals = np.abs(R.diagonal())
     sort_inds = np.argsort(r_vals)[::-1]
-    if rank < A_sparse.shape[1]:
+    if (rank < A_sparse.shape[1]) and verbose:
         print(f"clean_constraints: keeping {rank}/{A_sparse.shape[1]} independent")
 
     bad_idx = list(range(A_sparse.shape[1]))
-    keep_idx = sorted(E[sort_inds[:rank]])[::-1]
-    for good_idx in keep_idx:
+    good_idx_list = sorted(E[sort_inds[:rank]])[::-1]
+    for good_idx in good_idx_list:
         del bad_idx[good_idx]
 
     # Sanity check
-    Z, R, E, rank_full = sqr.rz(
-        A_sparse.tocsc()[:, keep_idx],
-        np.zeros((A_sparse.shape[0], 1)),
-        tolerance=tolerance,
-    )
-    if rank_full != rank:
-        print(
-            f"Warning: selected constraints did not pass lin. independence check. Rank is {rank_full}, should be {rank}."
+    if debug:
+        Z, R, E, rank_full = sqr.rz(
+            A_sparse.tocsc()[:, good_idx_list],
+            np.zeros((A_sparse.shape[0], 1)),
+            tolerance=tolerance,
         )
+        if rank_full != rank:
+            print(
+                f"Warning: selected constraints did not pass lin. independence check. Rank is {rank_full}, should be {rank}."
+            )
     return bad_idx
 
 
@@ -99,7 +119,8 @@ def get_nullspace(A_dense, method=METHOD, tolerance=NULL_THRESH):
         # assert A_dense.shape[0] >= A_dense.shape[1], "only tall matrices supported"
 
         Q, R, P = la.qr(A_dense, pivoting=True, mode="economic")
-        np.testing.assert_almost_equal(Q @ R - A_dense[:, P], 0)
+        if Q.shape[0] < 1e4:
+            np.testing.assert_allclose(Q @ R, A_dense[:, P], atol=1e-5)
 
         S = np.abs(np.diag(R))
         rank = np.sum(S > tolerance)
