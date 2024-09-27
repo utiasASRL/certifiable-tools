@@ -1,5 +1,4 @@
 import sys
-from copy import deepcopy
 
 import casadi as cas
 import cvxpy as cp
@@ -77,7 +76,9 @@ def adjust_Q(Q, scale=True, offset=True, scale_method=SCALE_METHOD):
     """
     ii, jj = (Q == Q.max()).nonzero()
     if (ii[0], jj[0]) != (0, 0) or (len(ii) > 1):
-        pass
+        print(
+            "Warning: largest element of Q is not unique or not in top-left. Check ordering?"
+        )
 
     Q_mat = deepcopy(Q)
     if offset:
@@ -235,9 +236,9 @@ def solve_sdp_mosek(
         # bound keys
         bkc = mosek.boundkey.fx
         # Cost matrix
-        Q_l = sp.tril(Q_here, format="csr")
-        rows, cols = Q_l.nonzero()
-        vals = Q_l[rows, cols].tolist()[0]
+        Q_l = sp.tril(Q_here)
+        rows, cols = Q_l.coords
+        vals = Q_l.data
         assert not np.any(np.isinf(vals)), ValueError("Cost matrix has inf vals")
         symq = task.appendsparsesymmat(dim, rows.astype(int), cols.astype(int), vals)
         task.putbarcj(0, [symq], [1.0])
@@ -247,9 +248,9 @@ def solve_sdp_mosek(
         cnt = 0
         for A, b in Constraints:
             # Generate matrix
-            A_l = sp.tril(A, format="csr")
-            rows, cols = A_l.nonzero()
-            vals = A_l[rows, cols].tolist()[0]
+            A_l = sp.tril(A)
+            rows, cols = A_l.coords
+            vals = A_l.data
             syma = task.appendsparsesymmat(dim, rows, cols, vals)
             # Add constraint matrix
             task.putbaraij(cnt, 0, [syma], [1.0])
@@ -266,18 +267,28 @@ def solve_sdp_mosek(
         solsta = task.getsolsta(mosek.soltype.itr)
         if solsta == mosek.solsta.optimal:
             msg = "Optimal"
+            # Primal variable
             barx = task.getbarxj(mosek.soltype.itr, 0)
+            # Problem Cost
             cost = task.getprimalobj(mosek.soltype.itr) * scale + offset
-            yvals = np.array(task.getbarsj(mosek.soltype.itr, 0))
+            # Lagrange Multipliers
+            yvals = task.gety(mosek.soltype.itr)
+            # Dual SDP
+            bars = task.getbarsj(mosek.soltype.itr, 0)
+            # Convert back
             X = np.zeros((dim, dim))
+            S = np.zeros((dim, dim))
             cnt = 0
             for i in range(dim):
                 for j in range(i, dim):
                     if j == 0:
                         X[i, i] = barx[cnt]
+                        S[i, i] = bars[cnt]
                     else:
                         X[j, i] = barx[cnt]
                         X[i, j] = barx[cnt]
+                        S[j, i] = bars[cnt]
+                        S[i, j] = bars[cnt]
                     cnt += 1
         elif (
             solsta == mosek.solsta.dual_infeas_cer
@@ -294,11 +305,9 @@ def solve_sdp_mosek(
             msg = f"Other solution status: {solsta}"
             X = np.nan
             cost = np.nan
-
-        # TODO(FD) can we read the dual variables from mosek solution?
-        # H = Q_here - LHS.value
-        # yvals = [x.value for x in y]
-        info = {"H": None, "yvals": yvals, "cost": cost, "msg": msg}
+        # Return Additional information
+        info = {"H": S, "yvals": yvals, "cost": cost, "msg": msg}
+        # info = {"cost": cost, "msg": msg}
         return X, info
 
 
@@ -637,188 +646,3 @@ def solve_feasibility_sdp(
 
     info = {"X": X, "yvals": yvals, "cost": cost, "msg": msg, "eps": eps}
     return H, info
-
-
-def solve_lambda_fusion(
-    Q,
-    Constraints,
-    xhat,
-    B_list=[],
-    force_first=1,
-    adjust=ADJUST,
-    primal=PRIMAL,
-    tol=LAMBDA_TOL,
-    verbose=False,
-    fixed_epsilon=EPSILON,
-    options=options_fusion,
-):
-    """Determine lambda with an SDP.
-    :param force_first: number of constraints on which we do not put a L1 cost, effectively encouraging the problem to use them.
-    """
-    if primal:
-        raise NotImplementedError("primal not implemented yet")
-    elif len(B_list):
-        raise NotImplementedError("B_list not implemented yet")
-    if fixed_epsilon is None:
-        raise NotImplementedError("variable expsilon not implemented yet")
-
-    Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
-
-    if tol:
-        adjust_tol_fusion(options, tol)
-    options["intpntCoTolRelGap"] = LAMBDA_REL_GAP
-
-    with fu.Model("dual") as M:
-        m = len(Constraints)
-        y = M.variable("y", [m, 1])
-
-        # standard equality constraints
-        H = fu.Expr.add(
-            mat_fusion(Q_here),
-            fu.Expr.add(
-                [
-                    fu.Expr.mul(mat_fusion(Constraints[i][0]), y.index([i, 0]))
-                    for i in range(m)
-                ]
-            ),
-        )
-        M.constraint(H, fu.Domain.inPSDCone(Q.shape[0]))
-        xhat = fu.Matrix.dense(xhat[:, None])
-        if fixed_epsilon is not None:
-            # |Hx| <= eps: Hx > -eps,  Hx <= eps
-            M.constraint(fu.Expr.dot(H, xhat), fu.Domain.lessThan(fixed_epsilon))
-            M.constraint(fu.Expr.dot(H, xhat), fu.Domain.greaterThan(-fixed_epsilon))
-        else:
-            M.constraint(fu.Expr.dot(H, xhat), fu.Domain.equalsTo(0.0))
-
-        # model the l1 norm |y[force_first:]|
-        # see section 2.2.3 https://docs.mosek.com/modeling-cookbook/linear.html#sec-lo-modeling-abs
-        z = M.variable("z", [m - force_first, 1])
-        for i in range(m - force_first):
-            # together, these enforce that -zi <= yi <= zi
-            M.constraint(
-                fu.Expr.add(y.index([force_first + i, 0]), z.index([i, 0])),
-                fu.Domain.greaterThan(0),
-            )
-            M.constraint(
-                fu.Expr.sub(z.index([i, 0]), y.index([force_first + i, 0])),
-                fu.Domain.greaterThan(0),
-            )
-        M.objective(fu.ObjectiveSense.Minimize, fu.Expr.sum(z)),
-
-        if verbose:
-            M.setLogHandler(sys.stdout)
-
-        for key, val in options.items():
-            M.setSolverParam(key, val)
-
-        M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
-        M.solve()
-        cost = M.primalObjValue() * scale + offset
-        lamda = np.array(y.level())
-        info = {"success": True, "cost": cost}
-    return info, lamda
-
-
-def solve_lambda_cvxpy(
-    Q,
-    Constraints,
-    xhat,
-    B_list=[],
-    force_first=1,
-    adjust=ADJUST,
-    primal=PRIMAL,
-    tol=LAMBDA_TOL,
-    verbose=False,
-    fixed_epsilon=EPSILON,
-    options=options_cvxpy,
-):
-    """Determine lambda (the importance of each constraint) with an SDP.
-
-    :param force_first: number of constraints on which we do not put a L1 cost,
-        because we will use them either way (usually the known substitution constraints).
-    """
-    if tol:
-        adjust_tol(options, tol)
-    options["verbose"] = verbose
-    options["mosek_params"]["MSK_DPAR_INTPNT_CO_TOL_REL_GAP"] = LAMBDA_REL_GAP
-
-    Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
-
-    if primal:
-        raise NotImplementedError("primal form not implemented yet")
-    else:  # Dual
-        """
-        max | y |
-        s.t. H := Q + sum(Ai * yi for all i) >> 0
-             H xhat == 0
-        """
-        m = len(Constraints)
-        y = cp.Variable(shape=(m,))
-
-        if fixed_epsilon is None:
-            epsilon = cp.Variable()
-        else:
-            epsilon = fixed_epsilon
-
-        k = len(B_list)
-        if k > 0:
-            u = cp.Variable(shape=(k,))
-
-        As, b = zip(*Constraints)
-        H = Q_here + cp.sum(
-            [y[i] * Ai for (i, Ai) in enumerate(As)]
-            + [u[i] * Bi for (i, Bi) in enumerate(B_list)]
-        )
-
-        if k > 0 and fixed_epsilon is None:
-            objective = cp.Minimize(cp.norm1(y[force_first:]) + cp.norm1(u) + epsilon)
-        elif k > 0:  # EPSILONS is fixed
-            objective = cp.Minimize(cp.norm1(y[force_first:]) + cp.norm1(u))
-        elif fixed_epsilon is None:
-            objective = cp.Minimize(cp.norm1(y[force_first:]) + epsilon)
-        else:  # EPSILONS is fixed
-            objective = cp.Minimize(cp.norm1(y[force_first:]))
-
-        constraints = [H >> 0]  # >> 0 denotes positive SEMI-definite
-
-        if (fixed_epsilon is not None and epsilon != 0) or (fixed_epsilon is None):
-            constraints += [H @ xhat <= epsilon]
-            constraints += [H @ xhat >= -epsilon]
-        elif fixed_epsilon is not None:
-            constraints += [H @ xhat == 0]
-
-        if k > 0:
-            constraints += [u >= 0]
-
-        cprob = cp.Problem(objective, constraints)
-        try:
-            cprob.solve(solver="MOSEK", **options)
-        except Exception as e:
-            print("caught exception:", e)
-            X = None
-            lamda = None
-        else:
-            if fixed_epsilon is None:
-                print("solve_lamda: epsilon is", epsilon.value)
-            else:
-                print("solve_lamda: epsilon is", epsilon)
-            X = constraints[0].dual_value
-            lamda = y.value
-    return X, lamda
-
-
-def solve_sdp(
-    Q,
-    Constraints,
-    B_list=[],
-    adjust=ADJUST,
-    primal=PRIMAL,
-    tol=TOL,
-    verbose=False,
-    use_fusion=False,
-):
-    if use_fusion:
-        return solve_sdp_fusion(Q, Constraints, B_list, adjust, primal, tol, verbose)
-    else:
-        return solve_sdp_cvxpy(Q, Constraints, B_list, adjust, primal, tol, verbose)
