@@ -46,7 +46,7 @@ class RotSynchLoopProblem(HomQCQP):
         # Associated variable list
         self.var_dict = {"h": 1}
         for i in range(N):
-            self.var_dict[i] = 9
+            self.var_dict[str(i)] = 9
         # Generate Measurements as a dictionary on tuples
         self.loop_pose = loop_pose  # Loop relinks to chain at this pose
         self.locked_pose = locked_pose  # Pose locked at this pose
@@ -60,7 +60,7 @@ class RotSynchLoopProblem(HomQCQP):
                     continue
             else:
                 j = i + 1
-            self.meas_dict[(i, j)] = R_pert @ R_gt[i] @ R_gt[j].T
+            self.meas_dict[(str(i), str(j))] = R_pert @ R_gt[i] @ R_gt[j].T
         # Store data
         self.R_gt = R_gt
         self.N = N
