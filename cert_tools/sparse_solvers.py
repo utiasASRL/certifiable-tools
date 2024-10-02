@@ -2,11 +2,14 @@ import itertools
 import sys
 
 import cvxpy as cp
-import mosek.fusion as fu
+import mosek.fusion.pythonic as fu
 import numpy as np
+import scipy.sparse as sp
+from igraph import Graph
 
 from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
+from cert_tools.hom_qcqp import HomQCQP
 from cert_tools.sdp_solvers import (
     adjust_tol,
     adjust_tol_fusion,
@@ -122,6 +125,91 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL, verbose=False, adjust=False):
         info = {"cost": np.inf, "sigma_dict": sigma_dict}
         info["success"] = False
     return X_k_list, info
+
+
+def sparse_to_fusion(mat: sp.coo_array):
+    mat_fu = fu.Matrix.sparse(mat.shape[0], mat.shape[1], mat.row, mat.col, mat.data)
+    return mat_fu
+
+
+def solve_dsdp(problem: HomQCQP, verbose=False, tol=TOL, adjust=False):
+    """Solve decomposed SDP corresponding to input problem
+
+    Args:
+        prob (HomQCQP): Homogenous QCQP Problem
+        verbose (bool, optional): If true, display solver output. Defaults to False.
+        tol (float, optional): Tolerance for solver. Defaults to TOL.
+        adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
+    """
+
+    # Alias
+    jtree = problem.jtree
+
+    # Define problem model
+    M = fu.Model()
+
+    # CLIQUE VARIABLES
+    cliques = jtree.vs["clique"]
+    cvars = [M.variable(fu.Domain.inPSDCone(c.size)) for c in cliques]
+
+    # INTERCLIQUE EQUALITIES
+    clq_constrs = problem.build_interclique_constraints()
+    cnt = 0
+    for k, l, A_k, A_l in clq_constrs:
+        # Convert sparse array to fusion sparse matrix
+        A_k_fusion = sparse_to_fusion(A_k)
+        A_l_fusion = sparse_to_fusion(A_l)
+        # Create constraint
+        M.constraint(
+            "clq_" + str(k) + "_" + str(l) + "_" + str(cnt),
+            fu.Expr.dot(A_k_fusion, cvars[k]) + fu.Expr.dot(A_l_fusion, cvars[l]),
+            fu.Domain.equalsTo(0.0),
+        )
+        cnt += 1
+    # OBJECTIVE
+
+    # AFFINE CONSTRAINTS
+
+    # SOLVE
+    M.writeTask("problem_dump.ptf")
+    adjust_tol_fusion(options_fusion, tol)
+    options_fusion["intpntCoTolRelGap"] = tol
+    for key, val in options_fusion.items():
+        M.setSolverParam(key, val)  # default 1e-8
+
+    if verbose:
+        M.setLogHandler(sys.stdout)
+    else:
+        f = open("mosek_output.tmp", "a+")
+        M.setLogHandler(f)
+
+    M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
+    M.solve()
+
+    # EXTRACT SOLN
+    if M.getProblemStatus() in [
+        fu.ProblemStatus.PrimalAndDualFeasible,
+        fu.ProblemStatus.Unknown,
+    ]:
+        # Get MOSEK cost
+        cost = M.primalObjValue()
+        if cost < 0:
+            print("cost is negative! sanity check:")
+        clq_list = [cvar.level().reshape(cvar.shape) for cvar in cvars]
+        info = {"success": True, "cost": cost, "msg": M.getProblemStatus()}
+    elif M.getProblemStatus() is fu.ProblemStatus.DualInfeasible:
+        clq_list = []
+        info = {"success": False, "cost": -np.inf, "msg": "dual infeasible"}
+    else:
+        print("Unknown status:", M.getProblemStatus())
+        clq_list = []
+        info = {"success": False, "cost": -np.inf, "msg": M.getProblemStatus()}
+    return clq_list, info
+
+
+def print_tuples(rows, cols, vals):
+    for i in range(len(rows)):
+        print(f"({rows[i]},{cols[i]},{vals[i]})")
 
 
 def solve_oneshot_primal_fusion(junction_tree, verbose=False, tol=TOL, adjust=False):

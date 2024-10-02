@@ -2,9 +2,9 @@ import itertools
 import os
 
 import numpy as np
-from cert_tools.base_clique import BaseClique
-
 from poly_matrix import PolyMatrix
+
+from cert_tools.base_clique import BaseClique
 
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
@@ -39,7 +39,7 @@ def test_overlap():
     for vars in clique_vars:
         var_dict = {v: X.variable_dict_i[v] for v in vars}
         X_k = X.get_matrix(variables=var_dict, output_type="dense")
-        clique_list.append(BaseClique(var_dict=var_dict, X=X_k, Q=None))
+        clique_list.append(BaseClique(var_size=var_dict, X=X_k, Q=None))
 
     # sanity check
     c0 = clique_list[0]

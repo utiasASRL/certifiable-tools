@@ -1,12 +1,14 @@
 from time import time
 
 import matplotlib.pyplot as plt
+import numpy as np
 import scipy.sparse as sp
 import sksparse.cholmod as cholmod
 from igraph import Graph
 from igraph import plot as plot_graph
 from poly_matrix import PolyMatrix
 
+from cert_tools.base_clique import BaseClique
 from cert_tools.sdp_solvers import solve_sdp_mosek
 
 
@@ -25,11 +27,11 @@ class HomQCQP:
         # Define variable dictionary.
         # keys: variable names used in cost and constraint PolyMatrix definitions.
         # values: the size of each variable
-        self.var_dict = dict("h", 1)
+        self.var_sizes = dict("h", 1)
         # Define cost matrix
-        self.def_cost_matrix()
+        self.C = self.define_objective()
         # Define list of constraints
-        self.def_constraint_list()
+        self.As = self.define_constraints()
         # Aggregate sparsity graph
         self.asg = Graph()
         # Junction tree
@@ -39,21 +41,21 @@ class HomQCQP:
 
     def define_objective(self, *args, **kwargs) -> PolyMatrix:
         """Function should define the cost matrix for the problem
-
+        NOTE: Defined by inhereting class
         Returns:
             PolyMatrix: _description_
         """
         # Default to empty poly matrix
-        self.C = PolyMatrix()
+        return PolyMatrix()
 
     def define_constraints(self, *args, **kwargs) -> list[PolyMatrix]:
         """Function should define a list of PolyMatrices that represent
         the set of affine constraints for the problem.
-
+        NOTE: Defined by inhereting class
         Returns:
             list[PolyMatrix]: _description_
         """
-        self.As = []
+        return []
 
     def get_asg(self, rm_homog=False):
         """Generate Aggregate Sparsity Graph for a given problem. Note that values
@@ -113,8 +115,27 @@ class HomQCQP:
             [self.asg.vs["name"][node] for node in clique] for clique in cliques
         ]
         # Build edges in junction tree based on clique overlap
-        clique_obj = []
+        self.var_clique_map = {}
+        clique_obj_list = []
         for i in range(len(cliques)):
+            # Define clique object for each clique
+            clique_var_size = {}
+            clique_var_start = {}
+            index = 0
+            for v in cliques[i]:
+                varname = self.asg.vs["name"][v]
+                clique_var_size[varname] = self.var_sizes[varname]
+                clique_var_start[varname] = index
+                index += self.var_sizes[varname]
+                # Update map between variables and cliques
+                if varname in self.var_clique_map.keys():
+                    self.var_clique_map[varname].append(i)
+                else:
+                    self.var_clique_map[varname] = [i]
+            # Define clique object and add to list
+            clique_obj = BaseClique(index=i, var_sizes=clique_var_size)
+            clique_obj_list.append(clique_obj)
+            # Define edge in junction tree based on separaters
             for j in range(i + 1, len(cliques)):
                 # Get seperator set for list (intersection of cliques)
                 sepset = set(cliques[i]) & set(cliques[j])
@@ -123,6 +144,9 @@ class HomQCQP:
                     sepset_vars = [self.asg.vs["name"][v] for v in sepset]
                     # Create edge in junction graph
                     junction.add_edge(i, j, weight=-len(sepset), sepset=sepset_vars)
+        # store sizes and start indics for each variable in each clique
+        junction.vs["clique"] = clique_obj_list
+
         # Get Junction tree
         self.jtree = junction.spanning_tree(
             weights=junction.es["weight"], return_tree=True
@@ -132,15 +156,71 @@ class HomQCQP:
         """Get sparse, numerical form of objective and constraint matrices
         for use in optimization"""
         # convert cost to sparse matrix
-        cost = self.C.get_matrix(self.var_dict)
+        cost = self.C.get_matrix(self.var_sizes)
         # Define other constraints
-        constraints = [(A.get_matrix(self.var_dict), 0.0) for A in self.As]
+        constraints = [(A.get_matrix(self.var_sizes), 0.0) for A in self.As]
         # define homogenizing constraint
         Ah = PolyMatrix()
         Ah["h", "h"] = 1
-        homog_constraint = (Ah.get_matrix(self.var_dict), 1.0)
+        homog_constraint = (Ah.get_matrix(self.var_sizes), 1.0)
         constraints.append(homog_constraint)
         return cost, constraints
+
+    def build_interclique_constraints(self):
+        """Return a list of constraints that enforce equalities between
+        clique variables. List consist of 4-tuples: (k, l, A_k, A_l)
+        where k and l are the indices of the cliques for which the equality is
+        defined and A_k and A_l are the matrices enforcing variable equality
+        Equality Equation:  <A_k, X_k> + <A_l, X_l> = 0
+
+        NOTE: The complicating factor here is that different cliques have
+        different variables and orderings. We get around this by using the
+        PolyMatrix module.
+        """
+        # Lopp through edges in the junction tree
+        eq_list = []
+        for edge in self.jtree.es:
+            # Get clique objects and seperator set
+            k = edge.tuple[0]
+            l = edge.tuple[1]
+            clique_k = self.jtree.vs[k]["clique"]
+            clique_l = self.jtree.vs[l]["clique"]
+            sepset = edge["sepset"]
+            # loop through variable combinations
+            for i, var1 in enumerate(sepset):
+                for var2 in sepset[i:]:
+                    # loop through rows and columns
+                    for row in range(self.var_sizes[var1]):
+                        for col in range(self.var_sizes[var2]):
+                            # TODO This should be defined as a sparse matrix
+                            mat = np.zeros((self.var_sizes[var1], self.var_sizes[var2]))
+                            mat[row, col] = 1.0
+                            if var1 == var2:
+                                if col < row:
+                                    # skip lower diagonal
+                                    continue
+                                elif col > row:
+                                    # Make mat symmetric
+                                    mat[col, row] = 1.0
+                            # Define Abstract Matrix
+                            A = PolyMatrix(symmetric=True)
+                            A[var1, var2] = mat
+                            # Get matrices, organized using clique variables
+                            A_k = A.get_matrix(
+                                variables=clique_k.var_sizes, output_type="coo"
+                            )
+                            A_l = -A.get_matrix(
+                                variables=clique_l.var_sizes, output_type="coo"
+                            )
+                            # Ensure matrices are as sparse as possible.
+                            A_k.eliminate_zeros()
+                            A_l.eliminate_zeros()
+                            eq_list.append((k, l, A_k, A_l))
+
+        return eq_list
+
+    def decompose_matrix():
+        pass
 
     def solve_sdp(self, method="sdp", solver="mosek", verbose=False):
         """Solve non-chordal SDP for PGO problem without using ADMM"""

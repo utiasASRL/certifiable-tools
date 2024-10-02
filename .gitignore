@@ -4,6 +4,8 @@ __pycache__/
 *.code-workspace
 *.vscode/
 
+/build
+
 *.ipynb
 *.egg-info/
 _plots/

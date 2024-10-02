@@ -3,6 +3,7 @@ import itertools
 import cvxpy as cp
 import numpy as np
 import scipy.sparse as sp
+
 from cert_tools.base_clique import BaseClique
 from cert_tools.sdp_solvers import adjust_Q
 
@@ -59,7 +60,7 @@ class ADMMClique(BaseClique):
             Q=Q,
             A_list=A_list,
             b_list=b_list,
-            var_dict=var_dict,
+            var_size=var_dict,
             X=X,
             index=index,
             hom=hom,

@@ -44,9 +44,9 @@ class RotSynchLoopProblem(HomQCQP):
         aaxis_ab_rand = np.random.uniform(-np.pi / 2, np.pi / 2, size=(N, 3, 1))
         R_gt = so3op.vec2rot(aaxis_ab_rand)
         # Associated variable list
-        self.var_dict = {"h": 1}
+        self.var_sizes = {"h": 1}
         for i in range(N):
-            self.var_dict[str(i)] = 9
+            self.var_sizes[str(i)] = 9
         # Generate Measurements as a dictionary on tuples
         self.loop_pose = loop_pose  # Loop relinks to chain at this pose
         self.locked_pose = locked_pose  # Pose locked at this pose
@@ -107,7 +107,7 @@ class RotSynchLoopProblem(HomQCQP):
     def define_constraints(self) -> list[PolyMatrix]:
         """Generate all constraints for the problem"""
         constraints = []
-        for key in self.var_dict.keys():
+        for key in self.var_sizes.keys():
             if key == "h":
                 continue
             else:
@@ -215,7 +215,7 @@ class RotSynchLoopProblem(HomQCQP):
         split_var = str(edge[1]) + "s"
         self.meas_dict[(edge[0], split_var)] = self.meas_dict.pop(edge)
         # Add new variable
-        self.var_dict[split_var] = 9
+        self.var_sizes[split_var] = 9
         # Store edge that is associated with ADMM
         self.split_edge = (split_var, edge[1])
         # Regenerate Cost and Constraints
@@ -251,9 +251,9 @@ class RotSynchLoopProblem(HomQCQP):
                     admm_cliques[1] = clique
             admm_cliques_stored = deepcopy(admm_cliques)
         else:
-            Cost = self.cost.get_matrix(self.var_dict)
+            Cost = self.cost.get_matrix(self.var_sizes)
             Constraints = [
-                (A.get_matrix(self.var_dict), b) for A, b in self.constraints
+                (A.get_matrix(self.var_sizes), b) for A, b in self.constraints
             ]
         # INIITIALIZE
         U = {
@@ -398,7 +398,7 @@ class RotSynchLoopProblem(HomQCQP):
         NOTE: Eventually this will depend on the aggregate sparsity graph."""
 
         # Construct a networkx representation of the factor graph
-        nodes = [key for key in self.var_dict.keys()]
+        nodes = [key for key in self.var_sizes.keys()]
         nodes.remove("h")
         edges = [(a, b) for a, b in self.meas_dict.keys()]
         G = ig.Graph()
@@ -516,7 +516,7 @@ class RotSynchLoopProblem(HomQCQP):
 
         R = {}
         cnt = 0
-        for key in self.var_dict.keys():
+        for key in self.var_sizes.keys():
             if "h" == key:
                 continue
             R[key] = sign * R_block[:, 3 * cnt : 3 * (cnt + 1)]
@@ -583,8 +583,8 @@ class RotSynchLoopProblem(HomQCQP):
             return rmse
 
     def plot_matrices(self):
-        Cost = self.cost.get_matrix(self.var_dict)
+        Cost = self.cost.get_matrix(self.var_sizes)
         plt.matshow(Cost.todense())
-        A_all = np.sum([A.get_matrix(self.var_dict) for A, b in self.constraints])
+        A_all = np.sum([A.get_matrix(self.var_sizes) for A, b in self.constraints])
         plt.matshow(A_all.todense())
         plt.show()
