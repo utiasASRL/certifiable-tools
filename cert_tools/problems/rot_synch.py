@@ -39,6 +39,9 @@ class RotSynchLoopProblem(HomQCQP):
         """
 
     def __init__(self, N=10, sigma=1e-3, loop_pose=3, locked_pose=0, seed=0):
+        # Call super
+        super().__init__()
+
         np.random.seed(seed)
         # generate ground truth poses
         aaxis_ab_rand = np.random.uniform(-np.pi / 2, np.pi / 2, size=(N, 3, 1))

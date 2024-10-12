@@ -27,17 +27,13 @@ class HomQCQP:
         # Define variable dictionary.
         # keys: variable names used in cost and constraint PolyMatrix definitions.
         # values: the size of each variable
-        self.var_sizes = dict("h", 1)
-        # Define cost matrix
-        self.C = self.define_objective()
-        # Define list of constraints
-        self.As = self.define_constraints()
-        # Aggregate sparsity graph
-        self.asg = Graph()
-        # Junction tree
-        self.jtree = Graph()
-        # Elimination ordering
-        self.order = []
+        self.var_sizes = dict(h=1)
+        self.C = None  # cost matrix
+        self.As = None  # list of constraints
+        self.asg = Graph()  # Aggregate sparsity graph
+        self.jtree = Graph()  # Junction tree
+        self.order = []  # Elimination ordering
+        self.var_clique_map = {}  # Variable to clique mapping (maps to set)
 
     def define_objective(self, *args, **kwargs) -> PolyMatrix:
         """Function should define the cost matrix for the problem
@@ -115,7 +111,6 @@ class HomQCQP:
             [self.asg.vs["name"][node] for node in clique] for clique in cliques
         ]
         # Build edges in junction tree based on clique overlap
-        self.var_clique_map = {}
         clique_obj_list = []
         for i in range(len(cliques)):
             # Define clique object for each clique
@@ -128,10 +123,10 @@ class HomQCQP:
                 clique_var_start[varname] = index
                 index += self.var_sizes[varname]
                 # Update map between variables and cliques
-                if varname in self.var_clique_map.keys():
-                    self.var_clique_map[varname].append(i)
-                else:
-                    self.var_clique_map[varname] = [i]
+                if varname not in self.var_clique_map.keys():
+                    self.var_clique_map[varname] = set()
+                self.var_clique_map[varname].add(i)
+
             # Define clique object and add to list
             clique_obj = BaseClique(index=i, var_sizes=clique_var_size)
             clique_obj_list.append(clique_obj)
@@ -219,8 +214,41 @@ class HomQCQP:
 
         return eq_list
 
-    def decompose_matrix():
-        pass
+    def decompose_matrix(self, pmat: PolyMatrix, method="split"):
+        """Decompose a matrix according to clique decomposition. Returns a dictionary with the key being the clique number and the value being a PolyMatrix that contains decomposed matrix on that clique."""
+        assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
+        assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")
+        dmat = {}  # defined decomposed matrix dictionary
+        # Loop through elements of polymatrix
+        for iVar1, var1 in enumerate(pmat.matrix.keys()):
+            for var2 in pmat.matrix[var1].keys():
+                # NOTE: Next line avoids double counting elements due to symmetry of matrix. There should be a better way to do this and this could be quite slow.
+                if var2 in list(pmat.matrix.keys())[:iVar1]:
+                    continue
+                # Get the cliques that contain both variables
+                cliques1 = self.var_clique_map[var1]
+                cliques2 = self.var_clique_map[var2]
+                cliques = cliques1 & cliques2
+                # Define weighting based on method
+                if method == "split":
+                    alpha = np.ones(len(cliques)) / len(cliques)
+                elif method == "first":
+                    alpha = np.zeros(len(cliques))
+                    alpha[0] = 1.0
+                else:
+                    raise ValueError("Decomposition method unknown")
+                # Loop through cliques and add to dictionary
+                for k, clique in enumerate(cliques):
+                    if alpha[k] > 0.0:  # Check non-zero weighting
+                        # Define polymatrix
+                        pmat_k = PolyMatrix()
+                        pmat_k[var1, var2] = pmat[var1, var2] * alpha[k]
+                        # Add to dictionary
+                        if clique not in dmat.keys():
+                            dmat[clique] = pmat_k
+                        else:
+                            dmat[clique] += pmat_k
+        return dmat
 
     def solve_sdp(self, method="sdp", solver="mosek", verbose=False):
         """Solve non-chordal SDP for PGO problem without using ADMM"""
@@ -236,7 +264,8 @@ class HomQCQP:
         if method == "sdp":
             X, info = solver(Q=obj, Constraints=constrs, adjust=False, verbose=verbose)
         elif method == "dsdp":
-
+            ValueError("Method not defined.")
+        else:
             ValueError("Method not defined.")
         # Get solution time.
         solve_time = time() - start_time
