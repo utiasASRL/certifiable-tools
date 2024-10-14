@@ -40,6 +40,10 @@ class BaseClique(object):
         self.A_list = A_list
         self.b_list = b_list
 
+    def __repr__(self):
+        vars_pretty = tuple(self.var_sizes.keys()) if self.var_sizes is not None else ()
+        return f"clique var_sizes={vars_pretty}"
+
     def _get_start_indices(self):
         "Loop through variable sizes and get starting indices"
         index = 0
@@ -50,16 +54,27 @@ class BaseClique(object):
         size = index
         return var_inds, size
 
-    def __repr__(self):
-        vars_pretty = tuple(self.var_sizes.keys()) if self.var_sizes is not None else ()
-        return f"clique var_sizes={vars_pretty}"
-
-    def get_slices(self, mat, var_list):
-        """get slices according to variable ordering"""
+    def get_slices(self, mat, var_list_row, var_list_col=[]):
+        """Get slices according to prescribed variable ordering.
+        If one list provided then slices are assumed to be symmetric. If two lists are provided, they are interpreted as the row and column lists, respectively.
+        """
         slices = []
-        for varname in var_list:
+        # Get index slices for the rows
+        for varname in var_list_row:
             start = self.var_inds[varname]
             end = self.var_inds[varname] + self.var_sizes[varname]
             slices.append(np.array(range(start, end)))
-        inds = np.hstack(slices)
-        return mat[np.ix_(inds, inds)]
+        inds1 = np.hstack(slices)
+        # Get index slices for the columns
+        if len(var_list_col) > 0:
+            slices = []
+            for varname in var_list_col:
+                start = self.var_inds[varname]
+                end = self.var_inds[varname] + self.var_sizes[varname]
+                slices.append(np.array(range(start, end)))
+            inds2 = np.hstack(slices)
+        else:
+            # If not defined use the same list as rows
+            inds2 = inds1
+
+        return mat[np.ix_(inds1, inds2)]

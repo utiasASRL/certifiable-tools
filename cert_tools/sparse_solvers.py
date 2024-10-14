@@ -6,6 +6,7 @@ import mosek.fusion.pythonic as fu
 import numpy as np
 import scipy.sparse as sp
 from igraph import Graph
+from poly_matrix import PolyMatrix
 
 from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
@@ -128,11 +129,21 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL, verbose=False, adjust=False):
 
 
 def sparse_to_fusion(mat: sp.coo_array):
-    mat_fu = fu.Matrix.sparse(mat.shape[0], mat.shape[1], mat.row, mat.col, mat.data)
+    if isinstance(mat, sp.coo_matrix):
+        mat_fu = fu.Matrix.sparse(
+            mat.shape[0], mat.shape[1], mat.row, mat.col, mat.data
+        )
+    elif isinstance(mat, sp.csc_matrix):
+        rows, cols = mat.nonzero()
+        mat_fu = fu.Matrix.sparse(mat.shape[0], mat.shape[1], rows, cols, mat.data)
+    else:
+        raise ValueError("Matrix type not supported")
     return mat_fu
 
 
-def solve_dsdp(problem: HomQCQP, verbose=False, tol=TOL, adjust=False):
+def solve_dsdp(
+    problem: HomQCQP, decomp_method="split", verbose=False, tol=TOL, adjust=False
+):
     """Solve decomposed SDP corresponding to input problem
 
     Args:
@@ -152,6 +163,45 @@ def solve_dsdp(problem: HomQCQP, verbose=False, tol=TOL, adjust=False):
     cliques = jtree.vs["clique"]
     cvars = [M.variable(fu.Domain.inPSDCone(c.size)) for c in cliques]
 
+    def get_decomp_fusion_expr(pmat_in):
+        """decompose PolyMatrix and convert to fusion expression"""
+        # decompose matrix
+        mat_decomp = problem.decompose_matrix(pmat_in, decomp_method)
+        # add clique components to fusion expression
+        expr = None
+        for k, pmat in mat_decomp.items():
+            clique = cliques[k]
+            mat_k = pmat.get_matrix(variables=clique.var_sizes)
+            mat_k_fusion = sparse_to_fusion(mat_k)
+            if expr is None:
+                expr = fu.Expr.dot(mat_k_fusion, cvars[k])
+            else:
+                expr += fu.Expr.dot(mat_k_fusion, cvars[k])
+        return expr
+
+    # OBJECTIVE
+    obj_expr = get_decomp_fusion_expr(problem.C)
+    M.objective(fu.ObjectiveSense.Minimize, obj_expr)
+
+    # HOMOGENIZING CONSTRAINT
+    A_h = PolyMatrix()
+    A_h["h", "h"] = 1
+    constr_expr_h = get_decomp_fusion_expr(A_h)
+    M.constraint(
+        "homog",
+        constr_expr_h,
+        fu.Domain.equalsTo(1.0),
+    )
+
+    # AFFINE CONSTRAINTS
+    for iCnstr, A in enumerate(problem.As):
+        constr_expr = get_decomp_fusion_expr(A)
+        M.constraint(
+            "c_" + str(iCnstr),
+            constr_expr,
+            fu.Domain.equalsTo(0.0),
+        )
+
     # INTERCLIQUE EQUALITIES
     clq_constrs = problem.build_interclique_constraints()
     cnt = 0
@@ -166,17 +216,16 @@ def solve_dsdp(problem: HomQCQP, verbose=False, tol=TOL, adjust=False):
             fu.Domain.equalsTo(0.0),
         )
         cnt += 1
-    # OBJECTIVE
-
-    # AFFINE CONSTRAINTS
 
     # SOLVE
-    M.writeTask("problem_dump.ptf")
+    # record problem
+    if verbose:
+        M.writeTask("problem_dump.ptf")
+    # adjust tolerances
     adjust_tol_fusion(options_fusion, tol)
     options_fusion["intpntCoTolRelGap"] = tol
     for key, val in options_fusion.items():
         M.setSolverParam(key, val)  # default 1e-8
-
     if verbose:
         M.setLogHandler(sys.stdout)
     else:

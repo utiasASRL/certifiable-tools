@@ -96,6 +96,7 @@ class TestHomQCQP(unittest.TestCase):
                 assert varname in cliques[i]["vlist"]
 
     def test_interclique_constraints():
+        """Test interclique overlap constraints"""
         # Test chain topology
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
@@ -130,6 +131,7 @@ class TestHomQCQP(unittest.TestCase):
             )
 
     def test_decompose_matrix(self):
+        """Test matrix decomposition into cliques"""
         # setup
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
@@ -166,6 +168,32 @@ class TestHomQCQP(unittest.TestCase):
                 err_msg="Clique decomposition then reassembly failed for objective",
             )
 
+    def test_solve_dsdp(self):
+        """Test solve of Decomposed SDP using interior point solver"""
+        # Test chain topology
+        nvars = 5
+        problem = get_chain_rot_prob(N=nvars)
+        problem.get_asg(rm_homog=False)  # Get agg sparse graph
+        problem.triangulate_graph()  # Triangulate graph
+        problem.build_jtree()  # Build Junction tree
+        # Solve non-decomposed problem
+        X, info, time = problem.solve_sdp(verbose=True)
+        # get cliques from non-decomposed solution
+        c_list_nd = problem.get_cliques_from_psd_mat(X)
+        # Solve decomposed problem (Interior Point Version)
+        c_list, info = solve_dsdp(problem, verbose=True, tol=1e-8)  # check solutions
+        for c, c_nd in zip(c_list, c_list_nd):
+            np.testing.assert_allclose(
+                c,
+                c_nd,
+                atol=1e-7,
+                err_msg="Decomposed and non-decomposed solutions differ",
+            )
+
+        # Test solution recovery
+        X_psdc = problem.get_psdc_mat(c_list, decomp_method="split")
+        X_complete = problem.complete_matrix(X_psdc)
+
 
 if __name__ == "__main__":
     test = TestHomQCQP()
@@ -173,4 +201,5 @@ if __name__ == "__main__":
     # test.test_get_asg(plot=True)
     # test.test_build_jtree(plot=True)
     # test.test_interclique_constraints()
-    test.test_decompose_matrix()
+    # test.test_decompose_matrix()
+    test.test_solve_dsdp()

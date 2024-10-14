@@ -1,9 +1,11 @@
 from time import time
 
+import chompack as chom
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.sparse as sp
 import sksparse.cholmod as cholmod
+from cvxopt import amd, spmatrix
 from igraph import Graph
 from igraph import plot as plot_graph
 from poly_matrix import PolyMatrix
@@ -27,7 +29,9 @@ class HomQCQP:
         # Define variable dictionary.
         # keys: variable names used in cost and constraint PolyMatrix definitions.
         # values: the size of each variable
-        self.var_sizes = dict(h=1)
+        self.var_sizes = dict(h=1)  # dictionary of sizes of variables
+        self.var_inds = None  # dictionary of starting indices of variables
+        self.dim = None  # total size of variables
         self.C = None  # cost matrix
         self.As = None  # list of constraints
         self.asg = Graph()  # Aggregate sparsity graph
@@ -250,8 +254,10 @@ class HomQCQP:
                             dmat[clique] += pmat_k
         return dmat
 
-    def solve_sdp(self, method="sdp", solver="mosek", verbose=False):
+    def solve_sdp(self, method="sdp", solver="mosek", verbose=False, tol=1e-11):
         """Solve non-chordal SDP for PGO problem without using ADMM"""
+        # TODO move this into the solvers module. shouldnt be here
+
         # Get matrices
         obj, constrs = self.get_sdp_matrices()
         # Select the solver
@@ -262,7 +268,9 @@ class HomQCQP:
         # Solve SDP
         start_time = time()
         if method == "sdp":
-            X, info = solver(Q=obj, Constraints=constrs, adjust=False, verbose=verbose)
+            X, info = solver(
+                Q=obj, Constraints=constrs, adjust=False, verbose=verbose, tol=tol
+            )
         elif method == "dsdp":
             ValueError("Method not defined.")
         else:
@@ -380,6 +388,130 @@ class HomQCQP:
             # Mark vertex as eliminated
             v["elim"] = True
         return fill_total
+
+    def get_cliques_from_psd_mat(self, mat):
+        """Return clique matrices corresponding to solution matrix."""
+        # If not generated, get starting indices for slicing
+        if self.var_inds is None:
+            self.var_inds, self.dim = self._get_start_indices()
+
+        cliques = self.jtree.vs["clique"]
+        clique_vars = []
+        for k, clique in enumerate(cliques):
+            var_list = clique.var_sizes.keys()
+            # Get slices
+            clique_vars.append(self.get_slices(mat, var_list))
+        return clique_vars
+
+    def get_psdc_mat(self, clique_vars, decomp_method="split"):
+        """Return positive semidefinite completable matrix derived from cliques
+
+        Args:
+            clique_vars (_type_): list of clique variable solutions
+            decomp_method (str, optional): decomposition method that was used to divide cost and constraint matrices. Defaults to "split".
+
+        Raises:
+            ValueError: if decomposition method is not known
+
+        Returns:
+            lil_matrix: positive semidefinite completable matrix
+        """
+        # If not generated, get starting indices for slicing
+        if self.var_inds is None:
+            self.var_inds, self.dim = self._get_start_indices()
+        # Make output matrix
+        X = sp.lil_matrix((self.dim, self.dim))
+        # get clique objects
+        cliques = self.jtree.vs["clique"]
+        # loop through variables
+        varlist = list(self.var_sizes.keys())
+        for i, var1 in enumerate(varlist):
+            # row slice of X matrix
+            x_rows = slice(
+                self.var_inds[var1],
+                self.var_inds[var1] + self.var_sizes[var1],
+            )
+            for var2 in varlist[i:]:
+                # column slice of X matrix
+                x_cols = slice(
+                    self.var_inds[var2],
+                    self.var_inds[var2] + self.var_sizes[var2],
+                )
+                # Find cliques that contain this variable
+                clq1 = self.var_clique_map[var1]
+                clq2 = self.var_clique_map[var2]
+                clqs = clq1 & clq2
+                if len(clqs) > 0:
+                    # Define weighting based on method
+                    if decomp_method == "split":
+                        alpha = np.ones(len(clqs)) / len(clqs)
+                    elif decomp_method == "first":
+                        alpha = np.zeros(len(clqs))
+                        alpha[0] = 1.0
+                    else:
+                        raise ValueError("Decomposition method unknown")
+                    # Loop through cliques and insert weighted sums into psdc matrix
+                    for k, clique_ind in enumerate(clqs):
+                        if alpha[k] > 0.0:  # Check non-zero weighting
+                            cvar = clique_vars[clique_ind]  # clique variable
+                            X[x_rows, x_cols] += (
+                                cliques[clique_ind].get_slices(cvar, [var1], [var2])
+                                * alpha[k]
+                            )
+                            if not var1 == var2:
+                                X[x_cols, x_rows] = X[x_rows, x_cols].T
+        return X
+
+    @staticmethod
+    def complete_matrix(mat, method="mr"):
+        """Complete a positive semidefinite completable matrix
+
+        Args:
+            psdc_mat (_type_): matrix to be completed
+            method (str, optional): method used to complete. Defaults to "mr".
+        """
+        # symbolic factorization
+        rows, cols = mat.nonzero()
+        mat_sp = spmatrix(mat[rows, cols].toarray()[0], rows, cols, mat.shape)
+        symb = chom.symbolic(mat_sp, p=amd.order)
+        # create cspmatrix
+        mat_csp = chom.cspmatrix(symb)
+        Y = chom.mrcompletion(mat_csp)
+        return Y
+
+    def _get_start_indices(self):
+        "Loop through variable sizes and get starting indices"
+        index = 0
+        var_inds = {}
+        for varname in self.var_sizes.keys():
+            var_inds[varname] = index
+            index += self.var_sizes[varname]
+        size = index
+        return var_inds, size
+
+    def get_slices(self, mat, var_list_row, var_list_col=[]):
+        """Get slices according to prescribed variable ordering.
+        If one list provided then slices are assumed to be symmetric. If two lists are provided, they are interpreted as the row and column lists, respectively.
+        """
+        slices = []
+        # Get index slices for the rows
+        for varname in var_list_row:
+            start = self.var_inds[varname]
+            end = self.var_inds[varname] + self.var_sizes[varname]
+            slices.append(np.array(range(start, end)))
+        inds1 = np.hstack(slices)
+        # Get index slices for the columns
+        if len(var_list_col) > 0:
+            for varname in var_list_col:
+                start = self.var_inds[varname]
+                end = self.var_inds[varname] + self.var_sizes[varname]
+                slices.append(np.array(range(start, end)))
+            inds2 = np.hstack(slices)
+        else:
+            # If not defined use the same list as rows
+            inds2 = inds1
+
+        return mat[np.ix_(inds1, inds2)]
 
 
 def get_pattern(G: Graph):
