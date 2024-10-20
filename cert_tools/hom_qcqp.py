@@ -1,6 +1,7 @@
+import warnings
 from time import time
 
-import chompack as chom
+import chompack
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.sparse as sp
@@ -35,7 +36,7 @@ class HomQCQP:
         self.C = None  # cost matrix
         self.As = None  # list of constraints
         self.asg = Graph()  # Aggregate sparsity graph
-        self.jtree = Graph()  # Junction tree
+        self.cliques = []  # List of clique objects
         self.order = []  # Elimination ordering
         self.var_clique_map = {}  # Variable to clique mapping (maps to set)
 
@@ -98,58 +99,88 @@ class HomQCQP:
         # Store the sparsity graph
         self.asg = G
 
-    def build_jtree(self):
-        """Build the junction tree associated with the aggregate sparsity
-        graph for this problem. It is assumed that the graph has been
-        triangulated (i.e, it is chordal).
+    def triangulate_graph(self, elim_method="amd"):
+        """Find an elimination ordering.
+        Loop through elimination ordering and add fill in edges.
+        Adds an edge attribute to the graph that specifies if an edge is a fill in
+        edge."""
+        G = self.asg
+        self.get_elim_order(method=elim_method)
 
-        NOTE: It is likely that this could be made more efficient by combining
-        it with the the graph triangulation step.
-        """
-        # Find maximal cliques
-        cliques = self.asg.maximal_cliques()
-        # Define the junction graph
-        junction = Graph()
-        junction.add_vertices(len(cliques))
-        junction.vs["vlist"] = [
-            [self.asg.vs["name"][node] for node in clique] for clique in cliques
-        ]
-        # Build edges in junction tree based on clique overlap
-        clique_obj_list = []
-        for i in range(len(cliques)):
-            # Define clique object for each clique
-            clique_var_size = {}
-            clique_var_start = {}
-            index = 0
-            for v in cliques[i]:
-                varname = self.asg.vs["name"][v]
-                clique_var_size[varname] = self.var_sizes[varname]
-                clique_var_start[varname] = index
-                index += self.var_sizes[varname]
+        # Define attribute to track whether an edge is a fill edge
+        G.es.set_attribute_values("fill_edge", [False] * len(G.es))
+        # Define attribute to keep track of eliminated nodes
+        G.vs.set_attribute_values("elim", [False] * len(G.vs))
+
+        # init fill data
+        fill_total = 0
+        # Get list of vertices to eliminate
+        vert_order = [G.vs[i] for i in self.order]
+        for v in vert_order:
+            # Get Neighborhood
+            N = G.vs[G.neighbors(v)]
+            for i, n1 in enumerate(N):
+                if n1["elim"]:  # skip if eliminated already
+                    continue
+                for n2 in N[(i + 1) :]:
+                    if n2["elim"] or n1 == n2:  # skip if eliminated already
+                        continue
+                    if not G.are_connected(n1, n2):
+                        # Add a fill in edge
+                        attr_dict = dict(
+                            name=f"f{fill_total}",
+                            fill_edge=True,
+                        )
+                        G.add_edge(n1, n2, **attr_dict)
+                        fill_total += 1
+            # Mark vertex as eliminated
+            v["elim"] = True
+        return fill_total
+
+    def clique_decomposition(self, elim_order="amd"):
+        """Uses CHOMPACK to get the maximal cliques and build the clique tree
+        The clique objects are stored in a list. Each clique object stores information
+        about its parents and children, as well as seperators"""
+        if len(self.asg.vs) == 0:
+            warnings.warn("Aggregate sparsity graph not defined. Building now.")
+            # build aggregate sparsity graph
+            self.get_asg()
+        if elim_order == "amd":
+            p = amd.order
+
+        # Convert adjacency to sparsity pattern
+        nvars = len(self.var_sizes)
+        A = self.asg.get_adjacency_sparse() + sp.eye(nvars)
+        rows, cols = A.nonzero()
+        S = spmatrix(1.0, rows, cols, A.shape)
+        # get information from factorization
+        self.symb = chompack.symbolic(S, p=p)
+        # NOTE: reordered set to false so that everything is expressed in terms of the original variables.
+        cliques = self.symb.cliques()
+        sepsets = self.symb.separators()
+        parents = self.symb.parent()
+        var_list_perm = [self.asg.vs["name"][p] for p in self.symb.p]
+        # Define cliques
+        for i, clique in enumerate(cliques):
+            # Store variable information for each clique
+            clique_var_sizes = {}  # dict for storing variable sizes in a clique
+            for v in clique:
+                varname = var_list_perm[v]
+                clique_var_sizes[varname] = self.var_sizes[varname]
                 # Update map between variables and cliques
                 if varname not in self.var_clique_map.keys():
                     self.var_clique_map[varname] = set()
                 self.var_clique_map[varname].add(i)
-
+            # seperator as variables
+            sepset_vars = [var_list_perm[v] for v in sepsets[i]]
             # Define clique object and add to list
-            clique_obj = BaseClique(index=i, var_sizes=clique_var_size)
-            clique_obj_list.append(clique_obj)
-            # Define edge in junction tree based on separaters
-            for j in range(i + 1, len(cliques)):
-                # Get seperator set for list (intersection of cliques)
-                sepset = set(cliques[i]) & set(cliques[j])
-                if len(sepset) > 0:
-                    # Convert to variable names
-                    sepset_vars = [self.asg.vs["name"][v] for v in sepset]
-                    # Create edge in junction graph
-                    junction.add_edge(i, j, weight=-len(sepset), sepset=sepset_vars)
-        # store sizes and start indics for each variable in each clique
-        junction.vs["clique"] = clique_obj_list
-
-        # Get Junction tree
-        self.jtree = junction.spanning_tree(
-            weights=junction.es["weight"], return_tree=True
-        )
+            clique_obj = BaseClique(
+                index=i,
+                var_sizes=clique_var_sizes,
+                seperator=sepset_vars,
+                parent=parents[i],
+            )
+            self.cliques.append(clique_obj)
 
     def get_sdp_matrices(self):
         """Get sparse, numerical form of objective and constraint matrices
@@ -165,7 +196,7 @@ class HomQCQP:
         constraints.append(homog_constraint)
         return cost, constraints
 
-    def build_interclique_constraints(self):
+    def get_consistency_constraints(self):
         """Return a list of constraints that enforce equalities between
         clique variables. List consist of 4-tuples: (k, l, A_k, A_l)
         where k and l are the indices of the cliques for which the equality is
@@ -178,13 +209,11 @@ class HomQCQP:
         """
         # Lopp through edges in the junction tree
         eq_list = []
-        for edge in self.jtree.es:
-            # Get clique objects and seperator set
-            k = edge.tuple[0]
-            l = edge.tuple[1]
-            clique_k = self.jtree.vs[k]["clique"]
-            clique_l = self.jtree.vs[l]["clique"]
-            sepset = edge["sepset"]
+        for l, clique_l in enumerate(self.cliques):
+            # Get parent clique object and seperator set
+            k = clique_l.parent
+            clique_k = self.cliques[k]
+            sepset = clique_l.seperator
             # loop through variable combinations
             for i, var1 in enumerate(sepset):
                 for var2 in sepset[i:]:
@@ -337,57 +366,30 @@ class HomQCQP:
         )
         plt.show()
 
-    def plot_jtree(self):
+    def plot_ctree(self):
         """Plot junction tree associated with the problem."""
-        junction_tree = self.jtree
+        ctree = Graph(directed=True)
+        ctree.add_vertices(len(self.cliques))
+        vlabel = []
+        elabel = []
+        for clique in self.cliques:
+            vlabel.append(f"{clique.index}:{list(clique.var_sizes.keys())}")
+            if len(clique.seperator) > 0:
+                ctree.add_edge(clique.parent, clique.index)
+                elabel.append(clique.seperator)
+            else:
+                root = clique.index
+
         fig, ax = plt.subplots()
-        # relabel cliques
         plot_options = {
-            "vertex_label": junction_tree.vs["vlist"],
-            "edge_label": junction_tree.es["sepset"],
+            "vertex_label": vlabel,
+            "edge_label": elabel,
             "target": ax,
+            "layout": ctree.layout_reingold_tilford(),
         }
-        plot_graph(junction_tree, **plot_options)
-        plt.title("Junction Tree")
+        plot_graph(ctree, **plot_options)
+        plt.title("Clique Tree")
         plt.show()
-
-    def triangulate_graph(self, elim_method="amd"):
-        """Find an elimination ordering.
-        Loop through elimination ordering and add fill in edges.
-        Adds an edge attribute to the graph that specifies if an edge is a fill in
-        edge."""
-        G = self.asg
-        self.get_elim_order(method=elim_method)
-
-        # Define attribute to track whether an edge is a fill edge
-        G.es.set_attribute_values("fill_edge", [False] * len(G.es))
-        # Define attribute to keep track of eliminated nodes
-        G.vs.set_attribute_values("elim", [False] * len(G.vs))
-
-        # init fill data
-        fill_total = 0
-        # Get list of vertices to eliminate
-        vert_order = [G.vs[i] for i in self.order]
-        for v in vert_order:
-            # Get Neighborhood
-            N = G.vs[G.neighbors(v)]
-            for i, n1 in enumerate(N):
-                if n1["elim"]:  # skip if eliminated already
-                    continue
-                for n2 in N[(i + 1) :]:
-                    if n2["elim"] or n1 == n2:  # skip if eliminated already
-                        continue
-                    if not G.are_connected(n1, n2):
-                        # Add a fill in edge
-                        attr_dict = dict(
-                            name=f"f{fill_total}",
-                            fill_edge=True,
-                        )
-                        G.add_edge(n1, n2, **attr_dict)
-                        fill_total += 1
-            # Mark vertex as eliminated
-            v["elim"] = True
-        return fill_total
 
     def get_cliques_from_psd_mat(self, mat):
         """Return clique matrices corresponding to solution matrix."""
@@ -395,7 +397,7 @@ class HomQCQP:
         if self.var_inds is None:
             self.var_inds, self.dim = self._get_start_indices()
 
-        cliques = self.jtree.vs["clique"]
+        cliques = self.cliques
         clique_vars = []
         for k, clique in enumerate(cliques):
             var_list = clique.var_sizes.keys()
@@ -422,7 +424,7 @@ class HomQCQP:
         # Make output matrix
         X = sp.lil_matrix((self.dim, self.dim))
         # get clique objects
-        cliques = self.jtree.vs["clique"]
+        cliques = self.ctree.vs["clique"]
         # loop through variables
         varlist = list(self.var_sizes.keys())
         for i, var1 in enumerate(varlist):
@@ -462,22 +464,16 @@ class HomQCQP:
                                 X[x_cols, x_rows] = X[x_rows, x_cols].T
         return X
 
-    @staticmethod
-    def complete_matrix(mat, method="mr"):
+    def get_psd_completion(self, cliques, method="mr"):
         """Complete a positive semidefinite completable matrix
 
         Args:
             psdc_mat (_type_): matrix to be completed
             method (str, optional): method used to complete. Defaults to "mr".
         """
-        # symbolic factorization
-        rows, cols = mat.nonzero()
-        mat_sp = spmatrix(mat[rows, cols].toarray()[0], rows, cols, mat.shape)
-        symb = chom.symbolic(mat_sp, p=amd.order)
-        # create cspmatrix
-        mat_csp = chom.cspmatrix(symb)
-        Y = chom.mrcompletion(mat_csp)
-        return Y
+        # get inverse topological ordering for the junction tree
+        order = self.ctree.topological_sorting(mode="in")
+        return None
 
     def _get_start_indices(self):
         "Loop through variable sizes and get starting indices"

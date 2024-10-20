@@ -153,14 +153,11 @@ def solve_dsdp(
         adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
     """
 
-    # Alias
-    jtree = problem.jtree
-
     # Define problem model
     M = fu.Model()
 
     # CLIQUE VARIABLES
-    cliques = jtree.vs["clique"]
+    cliques = problem.cliques
     cvars = [M.variable(fu.Domain.inPSDCone(c.size)) for c in cliques]
 
     def get_decomp_fusion_expr(pmat_in):
@@ -203,7 +200,7 @@ def solve_dsdp(
         )
 
     # INTERCLIQUE EQUALITIES
-    clq_constrs = problem.build_interclique_constraints()
+    clq_constrs = problem.get_consistency_constraints()
     cnt = 0
     for k, l, A_k, A_l in clq_constrs:
         # Convert sparse array to fusion sparse matrix

@@ -22,6 +22,8 @@ dependencies:
 
     - pip:
       - sparseqr
+      - cholmod
+      - chompack
       - gurobipy
       - quadprog
       - cvxopt

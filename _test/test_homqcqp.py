@@ -7,7 +7,7 @@ from poly_matrix import PolyMatrix
 
 from cert_tools import HomQCQP
 from cert_tools.problems.rot_synch import RotSynchLoopProblem
-from cert_tools.sparse_solvers import solve_dsdp, solve_oneshot
+from cert_tools.sparse_solvers import solve_dsdp
 
 
 def get_chain_rot_prob(N=10):
@@ -50,20 +50,17 @@ class TestHomQCQP(unittest.TestCase):
         if plot:
             problem.plot_asg()
 
-    def test_build_jtree(rm_homog=False, plot=False):
-        """Test function that builds the junction tree associated
-        with the problem"""
-
+    def test_clique_decomp(self, rm_homog=False, plot=False):
+        """Test solve of Decomposed SDP using interior point solver"""
         # Test chain topology
-        problem = get_chain_rot_prob()
-        problem.get_asg(rm_homog=rm_homog)  # Get Graph
-        problem.triangulate_graph()  # Triangulate graph
-        problem.build_jtree()  # Build Junction tree
+        nvars = 5
+        problem = get_chain_rot_prob(N=nvars)
+        problem.clique_decomposition()
         if plot:
-            # problem.plot_asg()
-            problem.plot_jtree()
+            problem.plot_asg()
+            problem.plot_ctree()
         # Check number of cliques
-        assert len(problem.jtree.vs) == 9, ValueError(
+        assert len(problem.cliques) == nvars - 1, ValueError(
             "Junction tree has wrong number of cliques"
         )
         # Test clique sizes
@@ -71,20 +68,21 @@ class TestHomQCQP(unittest.TestCase):
             cliquesize = 2
         else:
             cliquesize = 3
-        for clique in problem.jtree.vs:
-            assert len(clique["vlist"]) == cliquesize, ValueError(
+        for clique in problem.cliques:
+            assert len(clique.var_sizes.keys()) == cliquesize, ValueError(
                 "Cliques should have 3 vertices each"
             )
 
-        for jedge in problem.jtree.es:
-            cliques = problem.jtree.vs.select(jedge.tuple)
-            vertices = set([v for v_list in cliques["vlist"] for v in v_list])
-            assert set(jedge["sepset"]).issubset(vertices), ValueError(
+        for clique in problem.cliques:
+            parent = problem.cliques[clique.parent]
+
+            vertices = list(parent.var_sizes.keys()) + list(clique.var_sizes.keys())
+            assert set(clique.seperator).issubset(vertices), ValueError(
                 "seperator set should be in set of involved clique vertices"
             )
 
         # Check that mapping from variables to cliques is correct
-        cliques = problem.jtree.vs
+        cliques = problem.cliques
         # loop through vars
         for varname in problem.var_sizes.keys():
             # Skip homogenizing var
@@ -93,17 +91,16 @@ class TestHomQCQP(unittest.TestCase):
             # loop through map values
             for i in problem.var_clique_map[varname]:
                 # check that var is actually in clique
-                assert varname in cliques[i]["vlist"]
+                assert varname in cliques[i].var_sizes.keys()
 
-    def test_interclique_constraints():
-        """Test interclique overlap constraints"""
+    def test_consistency_constraints(self):
+        """Test clique overlap consistency constraints"""
         # Test chain topology
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
         problem.get_asg(rm_homog=False)  # Get Graph
-        problem.triangulate_graph()  # Triangulate graph
-        problem.build_jtree()  # Build Junction tree
-        eq_list = problem.build_interclique_constraints()
+        problem.clique_decomposition()  # Run clique decomposition
+        eq_list = problem.get_consistency_constraints()
 
         # check the number of constraints generated
         clq_dim = 10  # homogenizing var plus rotation
@@ -117,13 +114,16 @@ class TestHomQCQP(unittest.TestCase):
         problem.As = []
         x_list, info = solve_dsdp(problem, verbose=True, tol=1e-8)
         # Verify that the clique variables are equal on overlaps
-        for edge in problem.jtree.es:
-            # Get clique objects and seperator set
-            k = edge.tuple[0]
-            l = edge.tuple[1]
-            clique_k = problem.jtree.vs[k]["clique"]
-            clique_l = problem.jtree.vs[l]["clique"]
-            sepset = edge["sepset"]
+        for l, clique_l in enumerate(problem.cliques):
+            # seperator
+            sepset = clique_l.seperator
+            if len(sepset) == 0:  # skip the root clique
+                continue
+            # fet parent clique and seperator set
+            k = clique_l.parent
+            clique_k = problem.cliques[k]
+
+            # get variables
             X_k = clique_k.get_slices(x_list[k], sepset)
             X_l = clique_k.get_slices(x_list[l], sepset)
             np.testing.assert_allclose(
@@ -136,8 +136,7 @@ class TestHomQCQP(unittest.TestCase):
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
         problem.get_asg(rm_homog=False)  # Get Graph
-        problem.triangulate_graph()  # Triangulate graph
-        problem.build_jtree()  # Build Junction tree
+        problem.clique_decomposition()  # get clique decomposition
         C = problem.C
 
         # args
@@ -174,8 +173,7 @@ class TestHomQCQP(unittest.TestCase):
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
         problem.get_asg(rm_homog=False)  # Get agg sparse graph
-        problem.triangulate_graph()  # Triangulate graph
-        problem.build_jtree()  # Build Junction tree
+        problem.clique_decomposition()  # get cliques
         # Solve non-decomposed problem
         X, info, time = problem.solve_sdp(verbose=True)
         # get cliques from non-decomposed solution
@@ -191,15 +189,14 @@ class TestHomQCQP(unittest.TestCase):
             )
 
         # Test solution recovery
-        X_psdc = problem.get_psdc_mat(c_list, decomp_method="split")
-        X_complete = problem.complete_matrix(X_psdc)
+        # X_complete = problem.get_psd_completion(c_list)
 
 
 if __name__ == "__main__":
     test = TestHomQCQP()
     # test.test_solve()
     # test.test_get_asg(plot=True)
-    # test.test_build_jtree(plot=True)
-    # test.test_interclique_constraints()
+    # test.test_clique_decomp(plot=False)
+    # test.test_consistency_constraints()
     # test.test_decompose_matrix()
     test.test_solve_dsdp()

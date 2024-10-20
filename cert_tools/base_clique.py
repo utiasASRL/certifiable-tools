@@ -26,6 +26,8 @@ class BaseClique(object):
         self,
         index,
         var_sizes,
+        parent,
+        seperator,
         Q: PolyMatrix = PolyMatrix(),
         A_list=[],
         b_list=[],
@@ -35,6 +37,14 @@ class BaseClique(object):
             assert "h" in var_sizes, f"Each clique must have a homogenizing variable"
         self.var_sizes = var_sizes
         self.var_inds, self.size = self._get_start_indices()
+        # Store clique tree information
+        for key in seperator:
+            assert (
+                key in self.var_sizes.keys()
+            ), f"seperator element {key} not contained in clique"
+        self.seperator = seperator  # seperator set between this clique and its parent
+        self.parent = parent  # index of the parent clique
+        self.children = set()  # set of children of this clique in the clique tree
         # Assign cost and constraints if provided
         self.Q = Q
         self.A_list = A_list
@@ -53,6 +63,9 @@ class BaseClique(object):
             index += self.var_sizes[varname]
         size = index
         return var_inds, size
+
+    def add_children(self, children: list = []):
+        self.children.add(children)
 
     def get_slices(self, mat, var_list_row, var_list_col=[]):
         """Get slices according to prescribed variable ordering.
