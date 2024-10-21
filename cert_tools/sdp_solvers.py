@@ -7,6 +7,7 @@ import mosek
 import mosek.fusion as fu
 import numpy as np
 import scipy.sparse as sp
+
 from cert_tools.fusion_tools import mat_fusion
 
 # General tolerance parameter for SDPs (see "adjust_tol" function for its exact effect)
@@ -251,7 +252,7 @@ def solve_sdp_mosek(
             # Generate matrix
             A_l = sp.tril(A, format="csr")
             rows, cols = A_l.nonzero()
-            vals = A_l[rows, cols].tolist()[0]
+            vals = np.array(A_l[rows, cols]).flatten()
             syma = task.appendsparsesymmat(dim, rows, cols, vals)
             # Add constraint matrix
             task.putbaraij(cnt, 0, [syma], [1.0])
