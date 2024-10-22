@@ -195,6 +195,7 @@ def solve_low_rank_sdp(
 def solve_sdp_mosek(
     Q,
     Constraints,
+    IneqConstraints=[],
     adjust=ADJUST,
     primal=PRIMAL,
     tol=TOL,
@@ -207,6 +208,8 @@ def solve_sdp_mosek(
         Q: Cost matrix
         Constraints: List of tuples representing constraints. Each tuple, (A,b) is such that
                         tr(A @ X) == b
+        IneqConstraints: List of tuples representing inequality constraints. Each tuple, (A,bl, br) is such that
+                        bl <= tr(A @ X) <= br
         adjust (bool, optional): Whether or not to rescale and shift Q for better conditioning.
         verbose (bool, optional): If true, prints output to screen. Defaults to True.
 
@@ -246,12 +249,16 @@ def solve_sdp_mosek(
         )
         # problem params
         dim = Q_here.shape[0]
-        numcon = len(Constraints)
+        numcon = len(Constraints) + len(IneqConstraints)
+
         # append vars,constr
         task.appendbarvars([dim])
         task.appendcons(numcon)
+
         # bound keys
         bkc = mosek.boundkey.fx
+        bkr = mosek.boundkey.ra
+
         # Cost matrix
         Q_l = sp.tril(Q_here, format="csr")
         rows, cols = Q_l.nonzero()
@@ -259,9 +266,11 @@ def solve_sdp_mosek(
         assert not np.any(np.isinf(vals)), ValueError("Cost matrix has inf vals")
         symq = task.appendsparsesymmat(dim, rows.astype(int), cols.astype(int), vals)
         task.putbarcj(0, [symq], [1.0])
+
         # Input the objective sense (minimize/maximize)
         task.putobjsense(mosek.objsense.minimize)
-        # Add constraints
+
+        # Add equality constraints
         cnt = 0
         for A, b in Constraints:
             # Generate matrix
@@ -274,8 +283,22 @@ def solve_sdp_mosek(
             # Set bound (equality)
             task.putconbound(cnt, bkc, b, b)
             cnt += 1
+
+        # Add inequality constraints
+        for A, bl, br in IneqConstraints:
+            A_l = sp.tril(A, format="csr")
+            rows, cols = A_l.nonzero()
+            vals = np.array(A_l[rows, cols]).flatten()
+            syma = task.appendsparsesymmat(dim, rows, cols, vals)
+            # Add constraint matrix
+            task.putbaraij(cnt, 0, [syma], [1.0])
+            # Set bound (equality)
+            task.putconbound(cnt, bkr, bl, br)
+            cnt += 1
+
         # Store problem
         task.writedata("solve_mosek.ptf")
+
         # Solve the problem and print summary
         task.optimize()
         task.solutionsummary(mosek.streamtype.msg)
