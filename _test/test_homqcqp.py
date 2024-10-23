@@ -168,7 +168,8 @@ class TestHomQCQP(unittest.TestCase):
             )
 
     def test_solve_dsdp(self):
-        """Test solve of Decomposed SDP using interior point solver"""
+        """Test solve of Decomposed SDP using interior point solver.
+        Test minimum rank SDP completion."""
         # Test chain topology
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
@@ -188,8 +189,24 @@ class TestHomQCQP(unittest.TestCase):
                 err_msg="Decomposed and non-decomposed solutions differ",
             )
 
-        # Test solution recovery
-        # X_complete = problem.get_psd_completion(c_list)
+        # Test PSD completion
+        # Perform completion
+        Y, factor_dict = problem.get_mr_completion(c_list)
+        # Check locked pose
+        R_0 = factor_dict["0"].reshape((3, 3)).T
+        np.testing.assert_allclose(
+            problem.R_gt[0],
+            R_0,
+            atol=1e-7,
+            err_msg="Locked pose incorrect after PSD Completion",
+        )
+        X_complete = Y @ Y.T
+        np.testing.assert_allclose(
+            X,
+            X_complete,
+            atol=1e-7,
+            err_msg="Completed and non-decomposed solutions differ",
+        )
 
 
 if __name__ == "__main__":

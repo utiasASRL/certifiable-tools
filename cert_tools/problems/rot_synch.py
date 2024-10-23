@@ -51,14 +51,14 @@ class RotSynchLoopProblem(HomQCQP):
         for i in range(N):
             self.var_sizes[str(i)] = 9
         # Generate Measurements as a dictionary on tuples
-        self.loop_pose = loop_pose  # Loop relinks to chain at this pose
-        self.locked_pose = locked_pose  # Pose locked at this pose
+        self.loop_pose = str(loop_pose)  # Loop relinks to chain at this pose
+        self.locked_pose = str(locked_pose)  # Pose locked at this pose
         self.meas_dict = {}
         for i in range(0, N):
             R_pert = so3op.vec2rot(sigma * np.random.randn(3, 1))
             if i == N - 1:
-                if self.loop_pose > 0:
-                    j = self.loop_pose
+                if loop_pose > 0:
+                    j = loop_pose
                 else:
                     continue
             else:
@@ -128,7 +128,8 @@ class RotSynchLoopProblem(HomQCQP):
         """Get constraint that locks a particular pose to its ground truth value
         rather than adding a prior cost term. This should remove the gauge freedom
         from the problem, giving a rank-1 solution"""
-        r_gt = self.R_gt[index].reshape((9, 1), order="F")
+
+        r_gt = self.R_gt[int(index)].reshape((9, 1), order="F")
         constraints = []
         for k in range(9):
             A = PolyMatrix()

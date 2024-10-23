@@ -36,6 +36,7 @@ class BaseClique(object):
         if var_sizes is not None:
             assert "h" in var_sizes, f"Each clique must have a homogenizing variable"
         self.var_sizes = var_sizes
+        self.var_list = list(self.var_sizes.keys())
         self.var_inds, self.size = self._get_start_indices()
         # Store clique tree information
         for key in seperator:
@@ -43,6 +44,9 @@ class BaseClique(object):
                 key in self.var_sizes.keys()
             ), f"seperator element {key} not contained in clique"
         self.seperator = seperator  # seperator set between this clique and its parent
+        self.residual = self.var_list.copy()
+        for varname in seperator:
+            self.residual.remove(varname)
         self.parent = parent  # index of the parent clique
         self.children = set()  # set of children of this clique in the clique tree
         # Assign cost and constraints if provided
@@ -67,25 +71,35 @@ class BaseClique(object):
     def add_children(self, children: list = []):
         self.children.add(children)
 
+    def _get_indices(self, var_list):
+        """get the indices corresponding to a list of variable keys
+
+        Args:
+            var_list: variable key or list of variable keys
+
+        Returns:
+            _type_: _description_
+        """
+        if type(var_list) is not list:
+            var_list = list(var_list)
+        # Get index slices for the rows
+        slices = []
+        for varname in var_list:
+            start = self.var_inds[varname]
+            end = self.var_inds[varname] + self.var_sizes[varname]
+            slices.append(np.array(range(start, end)))
+        inds = np.hstack(slices)
+        return inds
+
     def get_slices(self, mat, var_list_row, var_list_col=[]):
         """Get slices according to prescribed variable ordering.
         If one list provided then slices are assumed to be symmetric. If two lists are provided, they are interpreted as the row and column lists, respectively.
         """
-        slices = []
         # Get index slices for the rows
-        for varname in var_list_row:
-            start = self.var_inds[varname]
-            end = self.var_inds[varname] + self.var_sizes[varname]
-            slices.append(np.array(range(start, end)))
-        inds1 = np.hstack(slices)
+        inds1 = self._get_indices(var_list_col)
         # Get index slices for the columns
         if len(var_list_col) > 0:
-            slices = []
-            for varname in var_list_col:
-                start = self.var_inds[varname]
-                end = self.var_inds[varname] + self.var_sizes[varname]
-                slices.append(np.array(range(start, end)))
-            inds2 = np.hstack(slices)
+            inds2 = self._get_indices(var_list_row)
         else:
             # If not defined use the same list as rows
             inds2 = inds1

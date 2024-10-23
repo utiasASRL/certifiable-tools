@@ -99,44 +99,6 @@ class HomQCQP:
         # Store the sparsity graph
         self.asg = G
 
-    def triangulate_graph(self, elim_method="amd"):
-        """Find an elimination ordering.
-        Loop through elimination ordering and add fill in edges.
-        Adds an edge attribute to the graph that specifies if an edge is a fill in
-        edge."""
-        G = self.asg
-        self.get_elim_order(method=elim_method)
-
-        # Define attribute to track whether an edge is a fill edge
-        G.es.set_attribute_values("fill_edge", [False] * len(G.es))
-        # Define attribute to keep track of eliminated nodes
-        G.vs.set_attribute_values("elim", [False] * len(G.vs))
-
-        # init fill data
-        fill_total = 0
-        # Get list of vertices to eliminate
-        vert_order = [G.vs[i] for i in self.order]
-        for v in vert_order:
-            # Get Neighborhood
-            N = G.vs[G.neighbors(v)]
-            for i, n1 in enumerate(N):
-                if n1["elim"]:  # skip if eliminated already
-                    continue
-                for n2 in N[(i + 1) :]:
-                    if n2["elim"] or n1 == n2:  # skip if eliminated already
-                        continue
-                    if not G.are_connected(n1, n2):
-                        # Add a fill in edge
-                        attr_dict = dict(
-                            name=f"f{fill_total}",
-                            fill_edge=True,
-                        )
-                        G.add_edge(n1, n2, **attr_dict)
-                        fill_total += 1
-            # Mark vertex as eliminated
-            v["elim"] = True
-        return fill_total
-
     def clique_decomposition(self, elim_order="amd"):
         """Uses CHOMPACK to get the maximal cliques and build the clique tree
         The clique objects are stored in a list. Each clique object stores information
@@ -159,20 +121,25 @@ class HomQCQP:
         cliques = self.symb.cliques()
         sepsets = self.symb.separators()
         parents = self.symb.parent()
+        residuals = self.symb.supernodes()
         var_list_perm = [self.asg.vs["name"][p] for p in self.symb.p]
         # Define cliques
         for i, clique in enumerate(cliques):
+            # seperator as variables
+            sepset_vars = [var_list_perm[v] for v in sepsets[i]]
+            # Order the clique variable list so that the seperators are first
+            # NOTE: This is used for minimum rank completion
+            varlist = sepsets[i] + residuals[i]
             # Store variable information for each clique
             clique_var_sizes = {}  # dict for storing variable sizes in a clique
-            for v in clique:
+            for v in varlist:
                 varname = var_list_perm[v]
                 clique_var_sizes[varname] = self.var_sizes[varname]
                 # Update map between variables and cliques
                 if varname not in self.var_clique_map.keys():
                     self.var_clique_map[varname] = set()
                 self.var_clique_map[varname].add(i)
-            # seperator as variables
-            sepset_vars = [var_list_perm[v] for v in sepsets[i]]
+
             # Define clique object and add to list
             clique_obj = BaseClique(
                 index=i,
@@ -309,23 +276,6 @@ class HomQCQP:
 
         return X, info, solve_time
 
-    def get_elim_order(self, method="amd"):
-        """Get elimination ordering for the problem
-
-        Args:
-            method (str, optional): _description_. Defaults to "amd".
-
-        Returns:
-            _type_: _description_
-        """
-        if self.asg is None:
-            raise ValueError(
-                "Aggregate sparsity graph must be defined prior to attaining elimination ordering"
-            )
-        pattern = get_pattern(self.asg)
-        factor = cholmod.analyze(pattern, mode="simplicial", ordering_method=method)
-        self.order = factor.P()
-
     def plot_asg(self, G=None):
         """plot aggregate sparsity pattern
 
@@ -373,7 +323,7 @@ class HomQCQP:
         vlabel = []
         elabel = []
         for clique in self.cliques:
-            vlabel.append(f"{clique.index}:{list(clique.var_sizes.keys())}")
+            vlabel.append(f"{clique.index}:{list(clique.var_list)}")
             if len(clique.seperator) > 0:
                 ctree.add_edge(clique.parent, clique.index)
                 elabel.append(clique.seperator)
@@ -400,80 +350,81 @@ class HomQCQP:
         cliques = self.cliques
         clique_vars = []
         for k, clique in enumerate(cliques):
-            var_list = clique.var_sizes.keys()
             # Get slices
-            clique_vars.append(self.get_slices(mat, var_list))
+            clique_vars.append(self.get_slices(mat, clique.var_list))
         return clique_vars
 
-    def get_psdc_mat(self, clique_vars, decomp_method="split"):
-        """Return positive semidefinite completable matrix derived from cliques
+    @staticmethod
+    def factor_psd_mat(mat, rank_tol=1e5):
+        # Compute eigendecomposition in descending order
+        eigvals, eigvecs = np.linalg.eigh(mat)
+        eigvals = eigvals[::-1]
+        eigvecs = eigvecs[:, ::-1]
+        # Compute rank
+        rankfound = False
+        for r, val in enumerate(eigvals):
+            if eigvals[0] / val > rank_tol:
+                rankfound = True
+                break
+        if not rankfound:
+            r = len(eigvals)
+
+        # return factorized solution
+        factor = eigvecs[:, :r] * np.sqrt(eigvals)[:r]
+
+        return factor, r
+
+    def get_mr_completion(self, clique_mats, rank_tol=1e5):
+        """Complete a positive semidefinite completable matrix using the
+        minimum-rank completion as proposed in:
+        Jiang, Xin et al. “Minimum-Rank Positive Semidefinite Matrix Completion with Chordal Patterns and Applications to Semidefinite Relaxations.”
 
         Args:
-            clique_vars (_type_): list of clique variable solutions
-            decomp_method (str, optional): decomposition method that was used to divide cost and constraint matrices. Defaults to "split".
-
-        Raises:
-            ValueError: if decomposition method is not known
-
-        Returns:
-            lil_matrix: positive semidefinite completable matrix
+            clique_mats (list): list of nd-arrays representing the SDP solution (per clique)
+            rank_tol (_type_, optional): Tolerance for determining rank. Defaults to 1e5.
         """
-        # If not generated, get starting indices for slicing
-        if self.var_inds is None:
-            self.var_inds, self.dim = self._get_start_indices()
-        # Make output matrix
-        X = sp.lil_matrix((self.dim, self.dim))
-        # get clique objects
-        cliques = self.ctree.vs["clique"]
-        # loop through variables
-        varlist = list(self.var_sizes.keys())
-        for i, var1 in enumerate(varlist):
-            # row slice of X matrix
-            x_rows = slice(
-                self.var_inds[var1],
-                self.var_inds[var1] + self.var_sizes[var1],
-            )
-            for var2 in varlist[i:]:
-                # column slice of X matrix
-                x_cols = slice(
-                    self.var_inds[var2],
-                    self.var_inds[var2] + self.var_sizes[var2],
-                )
-                # Find cliques that contain this variable
-                clq1 = self.var_clique_map[var1]
-                clq2 = self.var_clique_map[var2]
-                clqs = clq1 & clq2
-                if len(clqs) > 0:
-                    # Define weighting based on method
-                    if decomp_method == "split":
-                        alpha = np.ones(len(clqs)) / len(clqs)
-                    elif decomp_method == "first":
-                        alpha = np.zeros(len(clqs))
-                        alpha[0] = 1.0
-                    else:
-                        raise ValueError("Decomposition method unknown")
-                    # Loop through cliques and insert weighted sums into psdc matrix
-                    for k, clique_ind in enumerate(clqs):
-                        if alpha[k] > 0.0:  # Check non-zero weighting
-                            cvar = clique_vars[clique_ind]  # clique variable
-                            X[x_rows, x_cols] += (
-                                cliques[clique_ind].get_slices(cvar, [var1], [var2])
-                                * alpha[k]
-                            )
-                            if not var1 == var2:
-                                X[x_cols, x_rows] = X[x_rows, x_cols].T
-        return X
+        r_max = 0  # max rank found
+        factor_dict = {}  # dictionary of factored solution
+        # traverse clique tree in inverse topological order (start at root)
+        for i in range(len(self.cliques) - 1, -1, -1):
+            # get corresponding clique
+            clique = self.cliques[i]
+            # factor solution, negate if homog var is negative
+            factor, r = self.factor_psd_mat(clique_mats[i])
+            if factor[clique._get_indices("h")] < 0:
+                factor = -factor
+            # keep track of max rank
+            if r > r_max:
+                r_max = r
 
-    def get_psd_completion(self, cliques, method="mr"):
-        """Complete a positive semidefinite completable matrix
+            # if no seperator, then we are at the root, add all vars to dictionary
+            if len(clique.seperator) == 0:
+                for key in clique.var_list:
+                    inds = clique._get_indices(key)
+                    factor_dict[key] = factor[inds, :]
+            else:
+                # divide clique solution into seperator and residual
+                sep_inds = clique._get_indices(clique.seperator)
+                res_inds = clique._get_indices(clique.residual)
+                V, U = factor[sep_inds], factor[res_inds]
+                # get seperator from dict (should already be defined)
+                Yval = np.vstack([factor_dict[var] for var in clique.seperator])
+                # Find the orthogonal transformation between cliques
+                u1, s1, Qh1 = np.linalg.svd(Yval)
+                u2, s2, Qh2 = np.linalg.svd(V)
+                U_Q = U @ Qh2.T @ Qh1
+                for key in clique.residual:
+                    # NOTE: Assumes that seperator comes before residual in variable ordering
+                    inds = clique._get_indices(key) - (max(sep_inds) + 1)
+                    factor_dict[key] = U_Q[inds, :]
 
-        Args:
-            psdc_mat (_type_): matrix to be completed
-            method (str, optional): method used to complete. Defaults to "mr".
-        """
-        # get inverse topological ordering for the junction tree
-        order = self.ctree.topological_sorting(mode="in")
-        return None
+        # Construct full factor
+        Y = []
+        for varname in self.var_sizes.keys():
+            factor = factor_dict[varname]
+            Y.append(np.pad(factor, [[0, 0], [0, r_max - factor.shape[1]]]))
+        Y = np.vstack(Y)
+        return Y, factor_dict
 
     def _get_start_indices(self):
         "Loop through variable sizes and get starting indices"
