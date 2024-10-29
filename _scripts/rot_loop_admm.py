@@ -434,7 +434,7 @@ class RotSynchLoopProblem:
             var2 = G.vs["name"][cliques[i][1]]
             clique_obj += [self.get_clique_obj(var1, var2, i)]
             for j in range(i + 1, len(cliques)):
-                # Get seperator set for list
+                # Get separator set for list
                 sepset = set(cliques[i]) & set(cliques[j])
                 if len(sepset) > 0:
                     junction.add_edge(i, j, weight=-len(sepset), sepset=sepset)

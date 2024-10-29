@@ -27,25 +27,25 @@ class BaseClique(object):
         index,
         var_sizes,
         parent,
-        seperator,
+        separator,
         Q: PolyMatrix = PolyMatrix(),
         A_list=[],
         b_list=[],
     ):
         self.index = index
-        if var_sizes is not None:
-            assert "h" in var_sizes, f"Each clique must have a homogenizing variable"
+        # if var_sizes is not None:
+        #     assert "h" in var_sizes, f"Each clique must have a homogenizing variable"
         self.var_sizes = var_sizes
         self.var_list = list(self.var_sizes.keys())
         self.var_inds, self.size = self._get_start_indices()
         # Store clique tree information
-        for key in seperator:
+        for key in separator:
             assert (
                 key in self.var_sizes.keys()
-            ), f"seperator element {key} not contained in clique"
-        self.seperator = seperator  # seperator set between this clique and its parent
+            ), f"separator element {key} not contained in clique"
+        self.separator = separator  # separator set between this clique and its parent
         self.residual = self.var_list.copy()
-        for varname in seperator:
+        for varname in separator:
             self.residual.remove(varname)
         self.parent = parent  # index of the parent clique
         self.children = set()  # set of children of this clique in the clique tree
@@ -81,7 +81,7 @@ class BaseClique(object):
             _type_: _description_
         """
         if type(var_list) is not list:
-            var_list = list(var_list)
+            var_list = [var_list]
         # Get index slices for the rows
         slices = []
         for varname in var_list:
@@ -96,10 +96,10 @@ class BaseClique(object):
         If one list provided then slices are assumed to be symmetric. If two lists are provided, they are interpreted as the row and column lists, respectively.
         """
         # Get index slices for the rows
-        inds1 = self._get_indices(var_list_col)
+        inds1 = self._get_indices(var_list_row)
         # Get index slices for the columns
         if len(var_list_col) > 0:
-            inds2 = self._get_indices(var_list_row)
+            inds2 = self._get_indices(var_list_col)
         else:
             # If not defined use the same list as rows
             inds2 = inds1

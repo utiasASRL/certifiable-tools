@@ -1,7 +1,9 @@
 import itertools
 import sys
 
+import clarabel
 import cvxpy as cp
+import matplotlib.pyplot as plt
 import mosek.fusion.pythonic as fu
 import numpy as np
 import scipy.sparse as sp
@@ -11,6 +13,7 @@ from poly_matrix import PolyMatrix
 from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
 from cert_tools.hom_qcqp import HomQCQP
+from cert_tools.linalg_tools import smat, svec
 from cert_tools.sdp_solvers import (
     adjust_tol,
     adjust_tol_fusion,
@@ -141,6 +144,33 @@ def sparse_to_fusion(mat: sp.coo_array):
     return mat_fu
 
 
+def solve_clarabel(problem: HomQCQP, use_decomp=False):
+    """Use Clarabel to solve Homogenized SDP"""
+    # Get problem data
+    P, q, A, b = problem.get_standard_form()
+    A = sp.csc_matrix(A)
+    # Define cones
+    cones = [clarabel.PSDTriangleConeT(problem.dim)]
+    # settings
+    settings = clarabel.DefaultSettings()
+    # loosen tolerances
+    tol = 1e-8
+    settings.tol_gap_abs = tol
+    settings.tol_gap_rel = tol
+    settings.tol_feas = tol
+    settings.tol_infeas_abs = tol
+    settings.tol_infeas_rel = tol
+    settings.tol_ktratio = tol * 1e2
+
+    # set up problem
+    solver = clarabel.DefaultSolver(P, q, A, b, cones, settings)
+    # solve
+    solution = solver.solve()
+    # retrieve solution
+    X = smat(solution.z)
+    return X
+
+
 def solve_dsdp(
     problem: HomQCQP, decomp_method="split", verbose=False, tol=TOL, adjust=False
 ):
@@ -177,12 +207,14 @@ def solve_dsdp(
         return expr
 
     # OBJECTIVE
+    if verbose:
+        print("Adding Objective")
     obj_expr = get_decomp_fusion_expr(problem.C)
     M.objective(fu.ObjectiveSense.Minimize, obj_expr)
 
     # HOMOGENIZING CONSTRAINT
     A_h = PolyMatrix()
-    A_h["h", "h"] = 1
+    A_h[problem.h, problem.h] = 1
     constr_expr_h = get_decomp_fusion_expr(A_h)
     M.constraint(
         "homog",
@@ -191,6 +223,8 @@ def solve_dsdp(
     )
 
     # AFFINE CONSTRAINTS
+    if verbose:
+        print("Adding Affine Constraints")
     for iCnstr, A in enumerate(problem.As):
         constr_expr = get_decomp_fusion_expr(A)
         M.constraint(
@@ -199,7 +233,9 @@ def solve_dsdp(
             fu.Domain.equalsTo(0.0),
         )
 
-    # INTERCLIQUE EQUALITIES
+    # CLIQUE CONSISTENCY EQUALITIES
+    if verbose:
+        print("Generating consistency constraints")
     clq_constrs = problem.get_consistency_constraints()
     cnt = 0
     for k, l, A_k, A_l in clq_constrs:
@@ -215,9 +251,11 @@ def solve_dsdp(
         cnt += 1
 
     # SOLVE
+    M.setSolverParam("intpntSolveForm", "dual")
     # record problem
     if verbose:
         M.writeTask("problem_dump.ptf")
+        print("Starting Solve")
     # adjust tolerances
     adjust_tol_fusion(options_fusion, tol)
     options_fusion["intpntCoTolRelGap"] = tol

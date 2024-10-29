@@ -1,5 +1,6 @@
 import sys
 from copy import deepcopy
+from time import time
 
 import casadi as cas
 import cvxpy as cp
@@ -9,6 +10,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from cert_tools.fusion_tools import mat_fusion
+from cert_tools.hom_qcqp import HomQCQP
 
 # General tolerance parameter for SDPs (see "adjust_tol" function for its exact effect)
 TOL = 1e-11
@@ -265,6 +267,9 @@ def solve_sdp_mosek(
         # Get status information about the solution
         prosta = task.getprosta(mosek.soltype.itr)
         solsta = task.getsolsta(mosek.soltype.itr)
+        X = np.nan
+        cost = np.nan
+        yvals = np.nan
         if solsta == mosek.solsta.optimal:
             msg = "Optimal"
             barx = task.getbarxj(mosek.soltype.itr, 0)
@@ -285,20 +290,11 @@ def solve_sdp_mosek(
             or solsta == mosek.solsta.prim_infeas_cer
         ):
             msg = "Primal or dual infeasibility certificate found.\n"
-            X = np.nan
-            cost = np.nan
         elif solsta == mosek.solsta.unknown:
             msg = "Unknown solution status"
-            X = np.nan
-            cost = np.nan
         else:
             msg = f"Other solution status: {solsta}"
-            X = np.nan
-            cost = np.nan
 
-        # TODO(FD) can we read the dual variables from mosek solution?
-        # H = Q_here - LHS.value
-        # yvals = [x.value for x in y]
         info = {"H": None, "yvals": yvals, "cost": cost, "msg": msg}
         return X, info
 
@@ -806,6 +802,34 @@ def solve_lambda_cvxpy(
             X = constraints[0].dual_value
             lamda = y.value
     return X, lamda
+
+
+def solve_sdp_homqcqp(
+    problem: HomQCQP, method="sdp", solver="mosek", verbose=False, tol=1e-11
+):
+    """Solve non-chordal SDP for PGO problem without using ADMM"""
+
+    # Get matrices
+    obj, constrs = problem.get_problem_matrices()
+    # Select the solver
+    if solver == "mosek":
+        solver = solve_sdp_mosek
+    else:
+        raise ValueError("Solver not supported")
+    # Solve SDP
+    start_time = time()
+    if method == "sdp":
+        X, info = solver(
+            Q=obj, Constraints=constrs, adjust=False, verbose=verbose, tol=tol
+        )
+    elif method == "dsdp":
+        ValueError("Method not defined.")
+    else:
+        ValueError("Method not defined.")
+    # Get solution time.
+    solve_time = time() - start_time
+
+    return X, info, solve_time
 
 
 def solve_sdp(

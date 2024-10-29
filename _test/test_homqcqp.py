@@ -6,8 +6,10 @@ import scipy.sparse as sp
 from poly_matrix import PolyMatrix
 
 from cert_tools import HomQCQP
+from cert_tools.linalg_tools import smat, svec
 from cert_tools.problems.rot_synch import RotSynchLoopProblem
-from cert_tools.sparse_solvers import solve_dsdp
+from cert_tools.sdp_solvers import solve_sdp_homqcqp
+from cert_tools.sparse_solvers import solve_clarabel, solve_dsdp
 
 
 def get_chain_rot_prob(N=10):
@@ -20,33 +22,32 @@ def get_loop_rot_prob():
 
 class TestHomQCQP(unittest.TestCase):
 
-    def test_solve():
+    def test_solve(self):
         # Create chain of rotations problem:
         problem = get_chain_rot_prob()
         assert isinstance(problem, HomQCQP), TypeError(
             "Problem should be homogenized qcqp object"
         )
         # Solve SDP via standard method
-        X, info, time = problem.solve_sdp(verbose=True)
+        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
         # Convert solution
         R = problem.convert_sdp_to_rot(X)
 
-    def test_get_asg(plot=False):
-        """Test retreival of aggregate sparsity graph"""
+    def test_get_asg(self, plot=False):
+        """Test retrieval of aggregate sparsity graph"""
         # Test on chain graph
         problem = get_chain_rot_prob()
-        problem.get_asg(rm_homog=True)  # Get Graph
-        problem.triangulate_graph()  # Triangulate graph
+        problem.clique_decomposition()
         # No fill in expected
-        assert any(problem.asg.es["fill_edge"]) is False
+        assert problem.symb.fill[0] == 0, ValueError("Expected no fill in")
         if plot:
             problem.plot_asg()
 
         # Test on loop graph
         problem = get_loop_rot_prob()
-        problem.get_asg(rm_homog=True)
-        problem.triangulate_graph()
-        assert any(problem.asg.es["fill_edge"]) is True
+        problem.get_asg(rm_homog=False)
+        problem.clique_decomposition()
+        assert problem.symb.fill[0] > 0, ValueError("Expected fill in")
         if plot:
             problem.plot_asg()
 
@@ -77,8 +78,8 @@ class TestHomQCQP(unittest.TestCase):
             parent = problem.cliques[clique.parent]
 
             vertices = list(parent.var_sizes.keys()) + list(clique.var_sizes.keys())
-            assert set(clique.seperator).issubset(vertices), ValueError(
-                "seperator set should be in set of involved clique vertices"
+            assert set(clique.separator).issubset(vertices), ValueError(
+                "separator set should be in set of involved clique vertices"
             )
 
         # Check that mapping from variables to cliques is correct
@@ -98,7 +99,6 @@ class TestHomQCQP(unittest.TestCase):
         # Test chain topology
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
-        problem.get_asg(rm_homog=False)  # Get Graph
         problem.clique_decomposition()  # Run clique decomposition
         eq_list = problem.get_consistency_constraints()
 
@@ -115,11 +115,11 @@ class TestHomQCQP(unittest.TestCase):
         x_list, info = solve_dsdp(problem, verbose=True, tol=1e-8)
         # Verify that the clique variables are equal on overlaps
         for l, clique_l in enumerate(problem.cliques):
-            # seperator
-            sepset = clique_l.seperator
+            # separator
+            sepset = clique_l.separator
             if len(sepset) == 0:  # skip the root clique
                 continue
-            # fet parent clique and seperator set
+            # fet parent clique and separator set
             k = clique_l.parent
             clique_k = problem.cliques[k]
 
@@ -135,7 +135,6 @@ class TestHomQCQP(unittest.TestCase):
         # setup
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
-        problem.get_asg(rm_homog=False)  # Get Graph
         problem.clique_decomposition()  # get clique decomposition
         C = problem.C
 
@@ -173,10 +172,9 @@ class TestHomQCQP(unittest.TestCase):
         # Test chain topology
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
-        problem.get_asg(rm_homog=False)  # Get agg sparse graph
         problem.clique_decomposition()  # get cliques
         # Solve non-decomposed problem
-        X, info, time = problem.solve_sdp(verbose=True)
+        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
         # get cliques from non-decomposed solution
         c_list_nd = problem.get_cliques_from_psd_mat(X)
         # Solve decomposed problem (Interior Point Version)
@@ -208,12 +206,52 @@ class TestHomQCQP(unittest.TestCase):
             err_msg="Completed and non-decomposed solutions differ",
         )
 
+    def test_standard_form(self):
+        """Test that the standard form problem definition is correct"""
+        nvars = 2
+        problem = get_chain_rot_prob(N=nvars)
+        problem.get_asg()
+        P, q, A, b = problem.get_standard_form()
+
+        # get solution from MOSEK
+        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
+        x = svec(X)
+
+        # Check cost matrix
+        cost = np.dot(b, x)
+        np.testing.assert_allclose(
+            cost, info["cost"], atol=1e-12, err_msg="Cost incorrect"
+        )
+        # Check constraints
+        for i, vec in enumerate(A.T):
+            a = vec.toarray().squeeze(0)
+            value = np.dot(a, x)
+            np.testing.assert_allclose(
+                value, -q[i], atol=1e-10, err_msg=f"Constraint {i} has violation"
+            )
+
+    def test_clarabel(self):
+        nvars = 2
+        problem = get_chain_rot_prob(N=nvars)
+        problem.get_asg()
+        X_clarabel = solve_clarabel(problem)
+        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
+
+        np.testing.assert_allclose(
+            X_clarabel,
+            X,
+            atol=1e-9,
+            err_msg="Clarabel and MOSEK solutions differ",
+        )
+
 
 if __name__ == "__main__":
     test = TestHomQCQP()
     # test.test_solve()
     # test.test_get_asg(plot=True)
     # test.test_clique_decomp(plot=False)
-    # test.test_consistency_constraints()
+    test.test_consistency_constraints()
     # test.test_decompose_matrix()
-    test.test_solve_dsdp()
+    # test.test_solve_dsdp()
+    # test.test_standard_form()
+    # test.test_clarabel()

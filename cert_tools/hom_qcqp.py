@@ -5,14 +5,13 @@ import chompack
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.sparse as sp
-import sksparse.cholmod as cholmod
 from cvxopt import amd, spmatrix
 from igraph import Graph
 from igraph import plot as plot_graph
 from poly_matrix import PolyMatrix
 
 from cert_tools.base_clique import BaseClique
-from cert_tools.sdp_solvers import solve_sdp_mosek
+from cert_tools.linalg_tools import find_dependent_columns, smat, svec
 
 
 class HomQCQP:
@@ -26,19 +25,21 @@ class HomQCQP:
              X == PSD(n)
     """
 
-    def __init__(self):
+    def __init__(self, homog_var="h"):
         # Define variable dictionary.
         # keys: variable names used in cost and constraint PolyMatrix definitions.
         # values: the size of each variable
         self.var_sizes = dict(h=1)  # dictionary of sizes of variables
         self.var_inds = None  # dictionary of starting indices of variables
-        self.dim = None  # total size of variables
+        self.var_list = []  # List of variables
+        self.dim = 0  # total size of variables
         self.C = None  # cost matrix
         self.As = None  # list of constraints
         self.asg = Graph()  # Aggregate sparsity graph
         self.cliques = []  # List of clique objects
         self.order = []  # Elimination ordering
         self.var_clique_map = {}  # Variable to clique mapping (maps to set)
+        self.h = homog_var  # Homogenizing variable name
 
     def define_objective(self, *args, **kwargs) -> PolyMatrix:
         """Function should define the cost matrix for the problem
@@ -58,6 +59,18 @@ class HomQCQP:
         """
         return []
 
+    def remove_dependent_constraints(self):
+        """Remove dependent constraints from the list of constraints"""
+
+        # Get the matrix representation of the constraints
+        As = [svec(A.get_matrix(self.var_sizes)) for A in self.As]
+        # Get the rank of the constraints
+        A = sp.vstack(As).T
+        # Find dependent columns
+        bad_idx = find_dependent_columns(A, tolerance=1e-10)
+        # Remove dependent constraints
+        self.As = [self.As[i] for i in range(len(self.As)) if i not in bad_idx]
+
     def get_asg(self, rm_homog=False):
         """Generate Aggregate Sparsity Graph for a given problem. Note that values
         of the matrices are irrelevant.
@@ -70,20 +83,28 @@ class HomQCQP:
             ig.Graph: _description_
         """
 
-        # Add edges corresponding to aggregate sparsity
-        pmats = [self.C] + self.As
+        # Combine cost and constraints
+        # NOTE: The numerical values here do not matter, just whether or not an element of the matrix is filled.
+        pmat = self.C
+        for A in self.As:
+            pmat += A
+        # build variable dictionaries
+        self.var_sizes = pmat.variable_dict_i.copy()
+        self._update_variables()
+
+        # generate edges and vertices
         edge_list = []
         variables = set()
-        for i, pmat in enumerate(pmats):
-            # ensure symmetric
-            assert pmat.symmetric, ValueError("Input PolyMatrices must be symmetric")
-            for key1 in pmat.matrix.keys():
-                for key2 in pmat.matrix[key1]:
-                    # Add to set of variables
-                    variables.add(key1)
-                    variables.add(key2)
-                    if key1 is not key2:
-                        edge_list.append((key1, key2))
+        # ensure symmetric
+        assert pmat.symmetric, ValueError("Input PolyMatrices must be symmetric")
+        # Loop through filled matrix elements
+        for key1 in pmat.matrix.keys():
+            for key2 in pmat.matrix[key1]:
+                # Add to set of variables
+                variables.add(key1)
+                variables.add(key2)
+                if key1 is not key2:
+                    edge_list.append((key1, key2))
 
         G = Graph(directed=False)
         # Create vertices based on variables
@@ -93,16 +114,33 @@ class HomQCQP:
         G.add_edges(edge_list)
         # Remove homogenizing variable from aggregate sparsity graph
         if rm_homog:
-            G.delete_vertices(G.vs.select(name_eq="h"))
+            G.delete_vertices(G.vs.select(name_eq=self.h))
         # Remove any self loops or multi-edges
         G.simplify(loops=True, multiple=True)
         # Store the sparsity graph
         self.asg = G
 
-    def clique_decomposition(self, elim_order="amd"):
+    @staticmethod
+    def merge_cosmo(cp, ck, np, nk):
+        """clique merge function from COSMO paper:
+        https://arxiv.org/pdf/1901.10887
+
+        Uses the metric:
+        Cp^3  + Ck^3 - (Cp U Ck)^3 > 0
+
+        Args:
+            cp (int): clique order of parent
+            ck (int): clique order of child
+            np (int): supernode order of parent
+            nk (int): supernode order of child
+        """
+        # Metric: Cp^3  + Ck^3 - (Cp + Nk)^3
+        return cp**3 + ck**3 > (cp + nk) ** 3
+
+    def clique_decomposition(self, elim_order="amd", merge_function=None):
         """Uses CHOMPACK to get the maximal cliques and build the clique tree
         The clique objects are stored in a list. Each clique object stores information
-        about its parents and children, as well as seperators"""
+        about its parents and children, as well as separators"""
         if len(self.asg.vs) == 0:
             warnings.warn("Aggregate sparsity graph not defined. Building now.")
             # build aggregate sparsity graph
@@ -116,18 +154,18 @@ class HomQCQP:
         rows, cols = A.nonzero()
         S = spmatrix(1.0, rows, cols, A.shape)
         # get information from factorization
-        self.symb = chompack.symbolic(S, p=p)
+        self.symb = chompack.symbolic(S, p=p, merge_function=merge_function)
         # NOTE: reordered set to false so that everything is expressed in terms of the original variables.
         cliques = self.symb.cliques()
         sepsets = self.symb.separators()
         parents = self.symb.parent()
         residuals = self.symb.supernodes()
         var_list_perm = [self.asg.vs["name"][p] for p in self.symb.p]
-        # Define cliques
+        # Define clique objects
         for i, clique in enumerate(cliques):
-            # seperator as variables
+            # separator as variables
             sepset_vars = [var_list_perm[v] for v in sepsets[i]]
-            # Order the clique variable list so that the seperators are first
+            # Order the clique variable list so that the separators are first
             # NOTE: This is used for minimum rank completion
             varlist = sepsets[i] + residuals[i]
             # Store variable information for each clique
@@ -144,12 +182,12 @@ class HomQCQP:
             clique_obj = BaseClique(
                 index=i,
                 var_sizes=clique_var_sizes,
-                seperator=sepset_vars,
+                separator=sepset_vars,
                 parent=parents[i],
             )
             self.cliques.append(clique_obj)
 
-    def get_sdp_matrices(self):
+    def get_problem_matrices(self):
         """Get sparse, numerical form of objective and constraint matrices
         for use in optimization"""
         # convert cost to sparse matrix
@@ -158,10 +196,36 @@ class HomQCQP:
         constraints = [(A.get_matrix(self.var_sizes), 0.0) for A in self.As]
         # define homogenizing constraint
         Ah = PolyMatrix()
-        Ah["h", "h"] = 1
+        Ah[self.h, self.h] = 1
         homog_constraint = (Ah.get_matrix(self.var_sizes), 1.0)
         constraints.append(homog_constraint)
         return cost, constraints
+
+    def get_standard_form(self, vec_order="C"):
+        """Returns the problem in standard form for input to solvers like SCS, Clarabel, COSMO, SparseCoLo, etc.
+        Note that the Hom QCQP is in the standard dual conic form:
+        max    -x^T P x - b^T z
+        s.t.    P*x + A^T z = -q
+                z \in PSD
+        Args:
+            vec_order (str, optional): Order of vectorization on triu indices. Defaults to "C". Clarabel uses "C", SCS uses "R"
+        """
+        # Retrieve problem matrices
+        C, constraints = self.get_problem_matrices()
+        # get constraints
+        A = []
+        b = []
+        for A_mat, b_val in constraints:
+            A.append(svec(A_mat, vec_order))
+            b.append(b_val)
+        A = sp.vstack(A).T
+        A = sp.csc_matrix(A)
+        q = -np.array(b)
+        # quadratic part (zeros)
+        P = sp.csc_matrix((len(q), len(q)))
+        # get cost
+        b = svec(C.toarray(), vec_order)
+        return P, q, A, b
 
     def get_consistency_constraints(self):
         """Return a list of constraints that enforce equalities between
@@ -177,26 +241,38 @@ class HomQCQP:
         # Lopp through edges in the junction tree
         eq_list = []
         for l, clique_l in enumerate(self.cliques):
-            # Get parent clique object and seperator set
+            # Get parent clique object and separator set
             k = clique_l.parent
             clique_k = self.cliques[k]
-            sepset = clique_l.seperator
+            sepset = clique_l.separator
             # loop through variable combinations
             for i, var1 in enumerate(sepset):
                 for var2 in sepset[i:]:
                     # loop through rows and columns
                     for row in range(self.var_sizes[var1]):
                         for col in range(self.var_sizes[var2]):
-                            # TODO This should be defined as a sparse matrix
-                            mat = np.zeros((self.var_sizes[var1], self.var_sizes[var2]))
-                            mat[row, col] = 1.0
                             if var1 == var2:
                                 if col < row:
                                     # skip lower diagonal
                                     continue
                                 elif col > row:
                                     # Make mat symmetric
-                                    mat[col, row] = 1.0
+                                    vals = [1.0, 1.0]
+                                    rows = [row, col]
+                                    cols = [col, row]
+
+                                else:
+                                    vals = [1.0]
+                                    rows = [row]
+                                    cols = [col]
+                            else:
+                                vals = [1.0]
+                                rows = [row]
+                                cols = [col]
+                            mat = sp.coo_matrix(
+                                (vals, (rows, cols)),
+                                (self.var_sizes[var1], self.var_sizes[var2]),
+                            )
                             # Define Abstract Matrix
                             A = PolyMatrix(symmetric=True)
                             A[var1, var2] = mat
@@ -250,40 +326,14 @@ class HomQCQP:
                             dmat[clique] += pmat_k
         return dmat
 
-    def solve_sdp(self, method="sdp", solver="mosek", verbose=False, tol=1e-11):
-        """Solve non-chordal SDP for PGO problem without using ADMM"""
-        # TODO move this into the solvers module. shouldnt be here
-
-        # Get matrices
-        obj, constrs = self.get_sdp_matrices()
-        # Select the solver
-        if solver == "mosek":
-            solver = solve_sdp_mosek
-        else:
-            raise ValueError("Solver not supported")
-        # Solve SDP
-        start_time = time()
-        if method == "sdp":
-            X, info = solver(
-                Q=obj, Constraints=constrs, adjust=False, verbose=verbose, tol=tol
-            )
-        elif method == "dsdp":
-            ValueError("Method not defined.")
-        else:
-            ValueError("Method not defined.")
-        # Get solution time.
-        solve_time = time() - start_time
-
-        return X, info, solve_time
-
-    def plot_asg(self, G=None):
+    def plot_asg(self, remove_vars=[], block=True, plot_fill=True):
         """plot aggregate sparsity pattern
 
         Args:
             G (_type_, optional): _description_. Defaults to None.
         """
-        if G is None:
-            G = self.asg
+
+        G = self.asg
 
         # Parameters
         vertex_color = "red"
@@ -291,6 +341,34 @@ class HomQCQP:
         vertex_size = 10
         edge_width = 0.5
         edge_color = "gray"
+
+        if plot_fill:
+            G.es["fill_edge"] = [False] * len(G.es)
+            A_filled = self.symb.sparsity_pattern()
+            data = np.array(A_filled.V).squeeze(1)
+            rows = np.array(A_filled.I).squeeze(1)
+            cols = np.array(A_filled.J).squeeze(1)
+            A_filled = sp.csr_matrix((data, (rows, cols)), shape=A_filled.size)
+            p = np.array(self.symb.p).flatten()
+            A = self.asg.get_adjacency_sparse()
+            A += sp.eye(A.shape[0])
+            A = A[p, :][:, p]
+            ip = np.array(self.symb.ip).flatten()
+            fill_in = (A_filled - A)[ip, :][:, ip]
+            fill_in = sp.tril(fill_in)
+            fill_in.eliminate_zeros()
+            nz = fill_in.nonzero()
+            edges = zip(nz[0], nz[1])
+            G.add_edges(edges, attributes=dict(fill_edge=True))
+
+            # plt.spy(A_filled, markersize=3)
+            # plt.spy(A, markersize=1, color="red")
+            # plt.show()
+
+        if len(remove_vars) > 0:
+            G = G.copy()
+            rm_verts = G.vs.select(name_in=remove_vars)
+            G.delete_vertices(rm_verts)
 
         if "fill_edge" not in self.asg.es.attribute_names():
             G.es["fill_edge"] = [False] * len(G.es)
@@ -314,9 +392,9 @@ class HomQCQP:
             edge_color=edge_color,
             margin=20,
         )
-        plt.show()
+        plt.show(block=block)
 
-    def plot_ctree(self):
+    def plot_ctree(self, block=True):
         """Plot junction tree associated with the problem."""
         ctree = Graph(directed=True)
         ctree.add_vertices(len(self.cliques))
@@ -324,9 +402,9 @@ class HomQCQP:
         elabel = []
         for clique in self.cliques:
             vlabel.append(f"{clique.index}:{list(clique.var_list)}")
-            if len(clique.seperator) > 0:
+            if len(clique.separator) > 0:
                 ctree.add_edge(clique.parent, clique.index)
-                elabel.append(clique.seperator)
+                elabel.append(clique.separator)
             else:
                 root = clique.index
 
@@ -339,13 +417,13 @@ class HomQCQP:
         }
         plot_graph(ctree, **plot_options)
         plt.title("Clique Tree")
-        plt.show()
+        plt.show(block=block)
 
     def get_cliques_from_psd_mat(self, mat):
         """Return clique matrices corresponding to solution matrix."""
         # If not generated, get starting indices for slicing
         if self.var_inds is None:
-            self.var_inds, self.dim = self._get_start_indices()
+            self.var_inds, self.dim = self._update_variables()
 
         cliques = self.cliques
         clique_vars = []
@@ -384,57 +462,59 @@ class HomQCQP:
             rank_tol (_type_, optional): Tolerance for determining rank. Defaults to 1e5.
         """
         r_max = 0  # max rank found
+        ranks = []
         factor_dict = {}  # dictionary of factored solution
         # traverse clique tree in inverse topological order (start at root)
         for i in range(len(self.cliques) - 1, -1, -1):
             # get corresponding clique
             clique = self.cliques[i]
-            # factor solution, negate if homog var is negative
+            # factor solution pad if required
             factor, r = self.factor_psd_mat(clique_mats[i])
-            if factor[clique._get_indices("h")] < 0:
-                factor = -factor
             # keep track of max rank
             if r > r_max:
                 r_max = r
-
-            # if no seperator, then we are at the root, add all vars to dictionary
-            if len(clique.seperator) == 0:
+            ranks.append(r)
+            # Pad the factor if necessary
+            factor = np.pad(factor, [[0, 0], [0, r_max - factor.shape[1]]])
+            # if no separator, then we are at the root, add all vars to dictionary
+            if len(clique.separator) == 0:
                 for key in clique.var_list:
                     inds = clique._get_indices(key)
                     factor_dict[key] = factor[inds, :]
             else:
-                # divide clique solution into seperator and residual
-                sep_inds = clique._get_indices(clique.seperator)
+                # divide clique solution into separator and residual
+                sep_inds = clique._get_indices(clique.separator)
                 res_inds = clique._get_indices(clique.residual)
-                V, U = factor[sep_inds], factor[res_inds]
-                # get seperator from dict (should already be defined)
-                Yval = np.vstack([factor_dict[var] for var in clique.seperator])
+                V, U = factor[sep_inds, :], factor[res_inds, :]
+                # get separator from dict (should already be defined)
+                Yval = np.vstack([factor_dict[var] for var in clique.separator])
+                Yval = np.pad(Yval, [[0, 0], [0, r_max - Yval.shape[1]]])
                 # Find the orthogonal transformation between cliques
                 u1, s1, Qh1 = np.linalg.svd(Yval)
                 u2, s2, Qh2 = np.linalg.svd(V)
                 U_Q = U @ Qh2.T @ Qh1
                 for key in clique.residual:
-                    # NOTE: Assumes that seperator comes before residual in variable ordering
+                    # NOTE: Assumes that separator comes before residual in variable ordering
                     inds = clique._get_indices(key) - (max(sep_inds) + 1)
                     factor_dict[key] = U_Q[inds, :]
 
         # Construct full factor
         Y = []
-        for varname in self.var_sizes.keys():
+        for varname in self.var_list:
             factor = factor_dict[varname]
             Y.append(np.pad(factor, [[0, 0], [0, r_max - factor.shape[1]]]))
         Y = np.vstack(Y)
-        return Y, factor_dict
+        return Y, ranks, factor_dict
 
-    def _get_start_indices(self):
+    def _update_variables(self):
         "Loop through variable sizes and get starting indices"
         index = 0
-        var_inds = {}
+        self.var_inds = {}
         for varname in self.var_sizes.keys():
-            var_inds[varname] = index
+            self.var_inds[varname] = index
             index += self.var_sizes[varname]
-        size = index
-        return var_inds, size
+        self.dim = index
+        self.var_list = list(self.var_sizes.keys())
 
     def get_slices(self, mat, var_list_row, var_list_col=[]):
         """Get slices according to prescribed variable ordering.
