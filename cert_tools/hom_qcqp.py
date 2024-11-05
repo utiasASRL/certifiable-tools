@@ -2,13 +2,16 @@ import warnings
 from time import time
 
 import chompack
+import igraph as ig
 import matplotlib.pyplot as plt
 import numpy as np
+import plotly.graph_objects as go
+import plotly.io as pio
 import scipy.sparse as sp
 from cvxopt import amd, spmatrix
 from igraph import Graph
-from igraph import plot as plot_graph
 from poly_matrix import PolyMatrix
+from scipy.linalg import polar
 
 from cert_tools.base_clique import BaseClique
 from cert_tools.linalg_tools import find_dependent_columns, smat, svec
@@ -227,6 +230,7 @@ class HomQCQP:
         b = svec(C.toarray(), vec_order)
         return P, q, A, b
 
+    @profile
     def get_consistency_constraints(self):
         """Return a list of constraints that enforce equalities between
         clique variables. List consist of 4-tuples: (k, l, A_k, A_l)
@@ -326,7 +330,7 @@ class HomQCQP:
                             dmat[clique] += pmat_k
         return dmat
 
-    def plot_asg(self, remove_vars=[], block=True, plot_fill=True):
+    def plot_asg(self, remove_vars=[], html=None, block=True, plot_fill=True):
         """plot aggregate sparsity pattern
 
         Args:
@@ -380,21 +384,34 @@ class HomQCQP:
                 edge_color.append("gray")
 
         # Plot
-        fig, ax = plt.subplots()
-        plot_graph(
-            G,
-            target=ax,
-            vertex_size=vertex_size,
-            vertex_color=vertex_color,
-            vertex_shape=vertex_shape,
-            vertex_label=G.vs["name"],
-            edge_width=edge_width,
-            edge_color=edge_color,
-            margin=20,
-        )
-        plt.show(block=block)
+        if html:
+            plot_graph(
+                G,
+                target=html,
+                vertex_size=vertex_size,
+                vertex_color=vertex_color,
+                vertex_shape=vertex_shape,
+                vertex_label=G.vs["name"],
+                edge_width=edge_width,
+                edge_color=edge_color,
+                margin=20,
+            )
+        else:
+            fig, ax = plt.subplots()
+            plot_graph(
+                G,
+                target=ax,
+                vertex_size=vertex_size,
+                vertex_color=vertex_color,
+                vertex_shape=vertex_shape,
+                vertex_label=G.vs["name"],
+                edge_width=edge_width,
+                edge_color=edge_color,
+                margin=20,
+            )
+            plt.show(block=block)
 
-    def plot_ctree(self, block=True):
+    def plot_ctree(self, html=None, block=True):
         """Plot junction tree associated with the problem."""
         ctree = Graph(directed=True)
         ctree.add_vertices(len(self.cliques))
@@ -408,26 +425,26 @@ class HomQCQP:
             else:
                 root = clique.index
 
-        fig, ax = plt.subplots()
         plot_options = {
             "vertex_label": vlabel,
             "edge_label": elabel,
-            "target": ax,
             "layout": ctree.layout_reingold_tilford(),
         }
-        plot_graph(ctree, **plot_options)
-        plt.title("Clique Tree")
-        plt.show(block=block)
+        if html:
+            plot_options["target"] = html
+            plot_graph(ctree, **plot_options)
+        else:
+            fig, ax = plt.subplots()
+            plot_options["target"] = ax
+            plot_graph(ctree, **plot_options)
+            plt.title("Clique Tree")
+            plt.show(block=block)
 
-    def get_cliques_from_psd_mat(self, mat):
+    def get_cliques_from_sol(self, mat):
         """Return clique matrices corresponding to solution matrix."""
-        # If not generated, get starting indices for slicing
-        if self.var_inds is None:
-            self.var_inds, self.dim = self._update_variables()
-
         cliques = self.cliques
         clique_vars = []
-        for k, clique in enumerate(cliques):
+        for clique in cliques:
             # Get slices
             clique_vars.append(self.get_slices(mat, clique.var_list))
         return clique_vars
@@ -448,11 +465,11 @@ class HomQCQP:
             r = len(eigvals)
 
         # return factorized solution
-        factor = eigvecs[:, :r] * np.sqrt(eigvals)[:r]
+        factor = eigvecs[:, :r] * np.sqrt(eigvals[:r])
 
         return factor, r
 
-    def get_mr_completion(self, clique_mats, rank_tol=1e5):
+    def get_mr_completion(self, clique_mats, rank_tol=1e5, debug=False):
         """Complete a positive semidefinite completable matrix using the
         minimum-rank completion as proposed in:
         Jiang, Xin et al. “Minimum-Rank Positive Semidefinite Matrix Completion with Chordal Patterns and Applications to Semidefinite Relaxations.”
@@ -468,12 +485,19 @@ class HomQCQP:
         for i in range(len(self.cliques) - 1, -1, -1):
             # get corresponding clique
             clique = self.cliques[i]
-            # factor solution pad if required
-            factor, r = self.factor_psd_mat(clique_mats[i])
+            # factor solution.
+            factor, r = self.factor_psd_mat(clique_mats[i], rank_tol=rank_tol)
+            ranks.append(r)
             # keep track of max rank
             if r > r_max:
                 r_max = r
-            ranks.append(r)
+                # pad previous factors to make dimensions consistent
+                for key, val in factor_dict.items():
+                    factor_dict[key] = np.pad(val, [[0, 0], [0, r_max - val.shape[1]]])
+            elif r < r_max:
+                # pad this factor to make its dim consistent
+                factor = np.pad(factor, [[0, 0], [0, r_max - factor.shape[1]]])
+
             # Pad the factor if necessary
             factor = np.pad(factor, [[0, 0], [0, r_max - factor.shape[1]]])
             # if no separator, then we are at the root, add all vars to dictionary
@@ -488,11 +512,16 @@ class HomQCQP:
                 V, U = factor[sep_inds, :], factor[res_inds, :]
                 # get separator from dict (should already be defined)
                 Yval = np.vstack([factor_dict[var] for var in clique.separator])
-                Yval = np.pad(Yval, [[0, 0], [0, r_max - Yval.shape[1]]])
-                # Find the orthogonal transformation between cliques
-                u1, s1, Qh1 = np.linalg.svd(Yval)
-                u2, s2, Qh2 = np.linalg.svd(V)
-                U_Q = U @ Qh2.T @ Qh1
+                # Find the orthogonal transformation between cliques using the polar decomposition
+                Q, H = polar(V.T @ Yval)
+                U_Q = U @ Q
+                if debug:
+                    V_Q = V @ Q
+                    y = np.vstack([Yval, U_Q])
+                    np.testing.assert_allclose(
+                        y @ y.T, clique_mats[i], atol=1e-5, rtol=1e-4
+                    )
+
                 for key in clique.residual:
                     # NOTE: Assumes that separator comes before residual in variable ordering
                     inds = clique._get_indices(key) - (max(sep_inds) + 1)
@@ -501,8 +530,7 @@ class HomQCQP:
         # Construct full factor
         Y = []
         for varname in self.var_list:
-            factor = factor_dict[varname]
-            Y.append(np.pad(factor, [[0, 0], [0, r_max - factor.shape[1]]]))
+            Y.append(factor_dict[varname])
         Y = np.vstack(Y)
         return Y, ranks, factor_dict
 
@@ -516,29 +544,141 @@ class HomQCQP:
         self.dim = index
         self.var_list = list(self.var_sizes.keys())
 
+    def _get_indices(self, var_list):
+        """get the indices corresponding to a list of variable keys
+
+        Args:
+            var_list: variable key or list of variable keys
+
+        Returns:
+            _type_: _description_
+        """
+        if type(var_list) is not list:
+            var_list = [var_list]
+        # Get index slices for the rows
+        slices = []
+        for varname in var_list:
+            start = self.var_inds[varname]
+            end = self.var_inds[varname] + self.var_sizes[varname]
+            slices.append(np.array(range(start, end)))
+        inds = np.hstack(slices)
+        return inds
+
     def get_slices(self, mat, var_list_row, var_list_col=[]):
         """Get slices according to prescribed variable ordering.
         If one list provided then slices are assumed to be symmetric. If two lists are provided, they are interpreted as the row and column lists, respectively.
         """
-        slices = []
         # Get index slices for the rows
-        for varname in var_list_row:
-            start = self.var_inds[varname]
-            end = self.var_inds[varname] + self.var_sizes[varname]
-            slices.append(np.array(range(start, end)))
-        inds1 = np.hstack(slices)
+        inds1 = self._get_indices(var_list_row)
         # Get index slices for the columns
         if len(var_list_col) > 0:
-            for varname in var_list_col:
-                start = self.var_inds[varname]
-                end = self.var_inds[varname] + self.var_sizes[varname]
-                slices.append(np.array(range(start, end)))
-            inds2 = np.hstack(slices)
+            inds2 = self._get_indices(var_list_col)
         else:
             # If not defined use the same list as rows
             inds2 = inds1
 
         return mat[np.ix_(inds1, inds2)]
+
+
+def plot_graph(graph, **kwargs):
+    layout = kwargs.get("layout", graph.layout("kk"))
+    vertex_label = kwargs.get(
+        "vertex_label", graph.vs["name"] if "name" in graph.vs.attributes() else None
+    )
+    edge_label = kwargs.get("edge_label", None)
+    target = kwargs.get("target", None)
+    vertex_size = kwargs.get("vertex_size", 10)
+    vertex_color = kwargs.get("vertex_color", "blue")
+    vertex_shape = kwargs.get("vertex_shape", "circle")
+    edge_width = kwargs.get("edge_width", 1)
+    edge_color = kwargs.get("edge_color", "black")
+    margin = kwargs.get("margin", 20)
+
+    if isinstance(target, plt.Axes):
+        # Matplotlib plotting
+        ax = target
+        ig.plot(
+            graph,
+            target=ax,
+            layout=layout,
+            vertex_size=vertex_size,
+            vertex_color=vertex_color,
+            vertex_shape=vertex_shape,
+            vertex_label=vertex_label,
+            edge_width=edge_width,
+            edge_color=edge_color,
+            margin=margin,
+        )
+        plt.show()
+    else:
+        # Plotly plotting
+        fig = go.Figure()
+
+        # Add edges
+        for idx, edge in enumerate(graph.es):
+            x0, y0 = layout[edge.source]
+            x1, y1 = layout[edge.target]
+            if isinstance(edge_color, list):
+                color = edge_color[idx]
+            else:
+                color = edge_color
+            fig.add_trace(
+                go.Scatter(
+                    x=[x0, x1, None],
+                    y=[y0, y1, None],
+                    mode="lines",
+                    line=dict(width=edge_width, color=color),
+                    hoverinfo="none",
+                )
+            )
+
+        # Add vertices
+        for idx, vertex in enumerate(graph.vs):
+            x, y = layout[idx]
+            if isinstance(vertex_color, list):
+                color = vertex_color[idx]
+            else:
+                color = vertex_color
+            fig.add_trace(
+                go.Scatter(
+                    x=[x],
+                    y=[y],
+                    mode="markers+text",
+                    marker=dict(size=vertex_size, color=color),
+                    text=vertex_label[idx] if vertex_label else "",
+                    textposition="top center",
+                    hoverinfo="text",
+                )
+            )
+
+        # Add edge labels
+        if edge_label:
+            for idx, edge in enumerate(graph.es):
+                x0, y0 = layout[edge.source]
+                x1, y1 = layout[edge.target]
+                x_mid, y_mid = (x0 + x1) / 2, (y0 + y1) / 2
+                fig.add_trace(
+                    go.Scatter(
+                        x=[x_mid],
+                        y=[y_mid],
+                        mode="text",
+                        text=edge_label[idx],
+                        textposition="top center",
+                        hoverinfo="none",
+                    )
+                )
+
+        # Update layout
+        fig.update_layout(
+            showlegend=False,
+            autosize=True,
+            xaxis=dict(showgrid=False, zeroline=False),
+            yaxis=dict(showgrid=False, zeroline=False),
+        )
+        if isinstance(target, str):
+            pio.write_html(fig, file=target, auto_open=False)
+        else:
+            fig.show()
 
 
 def get_pattern(G: Graph):

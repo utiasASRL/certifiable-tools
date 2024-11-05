@@ -1,5 +1,7 @@
 import itertools
+import random
 import sys
+from time import time
 
 import clarabel
 import cvxpy as cp
@@ -172,7 +174,12 @@ def solve_clarabel(problem: HomQCQP, use_decomp=False):
 
 
 def solve_dsdp(
-    problem: HomQCQP, decomp_method="split", verbose=False, tol=TOL, adjust=False
+    problem: HomQCQP,
+    decomp_method="split",
+    reduce_constrs=None,
+    verbose=False,
+    tol=TOL,
+    adjust=False,
 ):
     """Solve decomposed SDP corresponding to input problem
 
@@ -237,6 +244,11 @@ def solve_dsdp(
     if verbose:
         print("Generating consistency constraints")
     clq_constrs = problem.get_consistency_constraints()
+    # TEST reduce number of clique
+    if reduce_constrs is not None:
+        n_constrs = int(reduce_constrs * len(clq_constrs))
+        clq_constrs = random.sample(clq_constrs, n_constrs)
+
     cnt = 0
     for k, l, A_k, A_l in clq_constrs:
         # Convert sparse array to fusion sparse matrix
@@ -268,7 +280,9 @@ def solve_dsdp(
         M.setLogHandler(f)
 
     M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
+    T0 = time()
     M.solve()
+    T1 = time()
 
     # EXTRACT SOLN
     if M.getProblemStatus() in [
@@ -280,14 +294,29 @@ def solve_dsdp(
         if cost < 0:
             print("cost is negative! sanity check:")
         clq_list = [cvar.level().reshape(cvar.shape) for cvar in cvars]
-        info = {"success": True, "cost": cost, "msg": M.getProblemStatus()}
+        info = {
+            "success": True,
+            "cost": cost,
+            "time": T1 - T0,
+            "msg": M.getProblemStatus(),
+        }
     elif M.getProblemStatus() is fu.ProblemStatus.DualInfeasible:
         clq_list = []
-        info = {"success": False, "cost": -np.inf, "msg": "dual infeasible"}
+        info = {
+            "success": False,
+            "cost": -np.inf,
+            "time": T1 - T0,
+            "msg": "dual infeasible",
+        }
     else:
         print("Unknown status:", M.getProblemStatus())
         clq_list = []
-        info = {"success": False, "cost": -np.inf, "msg": M.getProblemStatus()}
+        info = {
+            "success": False,
+            "cost": -np.inf,
+            "time": T1 - T0,
+            "msg": M.getProblemStatus(),
+        }
     return clq_list, info
 
 

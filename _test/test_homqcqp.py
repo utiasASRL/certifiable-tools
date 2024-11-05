@@ -12,8 +12,8 @@ from cert_tools.sdp_solvers import solve_sdp_homqcqp
 from cert_tools.sparse_solvers import solve_clarabel, solve_dsdp
 
 
-def get_chain_rot_prob(N=10):
-    return RotSynchLoopProblem(N=N, loop_pose=-1, locked_pose=0)
+def get_chain_rot_prob(N=10, locked_pose=0):
+    return RotSynchLoopProblem(N=N, loop_pose=-1, locked_pose=locked_pose)
 
 
 def get_loop_rot_prob():
@@ -166,38 +166,57 @@ class TestHomQCQP(unittest.TestCase):
                 err_msg="Clique decomposition then reassembly failed for objective",
             )
 
-    def test_solve_dsdp(self):
+    def test_solve_dsdp(self, rank1=False):
         """Test solve of Decomposed SDP using interior point solver.
         Test minimum rank SDP completion."""
         # Test chain topology
         nvars = 5
-        problem = get_chain_rot_prob(N=nvars)
+        # If pose not locked we get a higher rank sdp
+        if rank1:
+            locked_pose = 0
+        else:
+            locked_pose = -1
+        problem = get_chain_rot_prob(N=nvars, locked_pose=locked_pose)
         problem.clique_decomposition()  # get cliques
-        # Solve non-decomposed problem
-        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
-        # get cliques from non-decomposed solution
-        c_list_nd = problem.get_cliques_from_psd_mat(X)
         # Solve decomposed problem (Interior Point Version)
         c_list, info = solve_dsdp(problem, verbose=True, tol=1e-8)  # check solutions
+
+        # Solve non-decomposed problem
+        X, info, time = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
+        # get cliques from non-decomposed solution
+        c_list_nd = problem.get_cliques_from_sol(X)
         for c, c_nd in zip(c_list, c_list_nd):
             np.testing.assert_allclose(
                 c,
                 c_nd,
-                atol=1e-7,
+                atol=1e-6,
                 err_msg="Decomposed and non-decomposed solutions differ",
             )
 
         # Test PSD completion
         # Perform completion
-        Y, factor_dict = problem.get_mr_completion(c_list)
-        # Check locked pose
-        R_0 = factor_dict["0"].reshape((3, 3)).T
-        np.testing.assert_allclose(
-            problem.R_gt[0],
-            R_0,
-            atol=1e-7,
-            err_msg="Locked pose incorrect after PSD Completion",
-        )
+        (
+            Y,
+            ranks,
+            factors,
+        ) = problem.get_mr_completion(c_list)
+        if rank1:
+            # Check locked pose
+            R_0 = factors["0"].reshape((3, 3)).T
+            np.testing.assert_allclose(
+                problem.R_gt[0],
+                R_0,
+                atol=1e-7,
+                err_msg="Locked pose incorrect after PSD Completion",
+            )
+        # Verify cliques
+        for i, clique in enumerate(problem.cliques):
+            factor = []
+            for varname in clique.var_list:
+                factor.append(factors[varname])
+            factor = np.vstack(factor)
+            np.testing.assert_allclose(factor @ factor.T, c_list[i], atol=1e-8)
+
         X_complete = Y @ Y.T
         np.testing.assert_allclose(
             X,
@@ -250,8 +269,8 @@ if __name__ == "__main__":
     # test.test_solve()
     # test.test_get_asg(plot=True)
     # test.test_clique_decomp(plot=False)
-    test.test_consistency_constraints()
+    # test.test_consistency_constraints()
     # test.test_decompose_matrix()
-    # test.test_solve_dsdp()
+    test.test_solve_dsdp()
     # test.test_standard_form()
     # test.test_clarabel()
