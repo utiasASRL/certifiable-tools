@@ -230,7 +230,6 @@ class HomQCQP:
         b = svec(C.toarray(), vec_order)
         return P, q, A, b
 
-    @profile
     def get_consistency_constraints(self):
         """Return a list of constraints that enforce equalities between
         clique variables. List consist of 4-tuples: (k, l, A_k, A_l)
@@ -249,48 +248,39 @@ class HomQCQP:
             k = clique_l.parent
             clique_k = self.cliques[k]
             sepset = clique_l.separator
-            # loop through variable combinations
-            for i, var1 in enumerate(sepset):
-                for var2 in sepset[i:]:
-                    # loop through rows and columns
-                    for row in range(self.var_sizes[var1]):
-                        for col in range(self.var_sizes[var2]):
-                            if var1 == var2:
-                                if col < row:
-                                    # skip lower diagonal
-                                    continue
-                                elif col > row:
-                                    # Make mat symmetric
-                                    vals = [1.0, 1.0]
-                                    rows = [row, col]
-                                    cols = [col, row]
-
-                                else:
-                                    vals = [1.0]
-                                    rows = [row]
-                                    cols = [col]
-                            else:
-                                vals = [1.0]
-                                rows = [row]
-                                cols = [col]
-                            mat = sp.coo_matrix(
-                                (vals, (rows, cols)),
-                                (self.var_sizes[var1], self.var_sizes[var2]),
-                            )
-                            # Define Abstract Matrix
-                            A = PolyMatrix(symmetric=True)
-                            A[var1, var2] = mat
-                            # Get matrices, organized using clique variables
-                            A_k = A.get_matrix(
-                                variables=clique_k.var_sizes, output_type="coo"
-                            )
-                            A_l = -A.get_matrix(
-                                variables=clique_l.var_sizes, output_type="coo"
-                            )
-                            # Ensure matrices are as sparse as possible.
-                            A_k.eliminate_zeros()
-                            A_l.eliminate_zeros()
-                            eq_list.append((k, l, A_k, A_l))
+            if len(sepset) == 0:
+                continue
+            # Get indices for each clique on separator
+            indices_k = clique_k._get_indices(var_list=sepset)
+            indices_l = clique_l._get_indices(var_list=sepset)
+            size_k = clique_k.size
+            size_l = clique_l.size
+            # Define sparse constraint matrices for each element in the seperator overlap
+            for i in range(len(indices_k)):
+                for j in range(i, len(indices_k)):
+                    if i == j:
+                        vals_k = [1.0]
+                        rows_k = [indices_k[i]]
+                        cols_k = [indices_k[j]]
+                        vals_l = [-1.0]
+                        rows_l = [indices_l[i]]
+                        cols_l = [indices_l[j]]
+                    else:
+                        vals_k = [1.0, 1.0]
+                        rows_k = [indices_k[i], indices_k[j]]
+                        cols_k = [indices_k[j], indices_k[i]]
+                        vals_l = [-1.0, -1.0]
+                        rows_l = [indices_l[i], indices_l[j]]
+                        cols_l = [indices_l[j], indices_l[i]]
+                    A_k = sp.coo_matrix(
+                        (vals_k, (rows_k, cols_k)),
+                        (size_k, size_k),
+                    )
+                    A_l = sp.coo_matrix(
+                        (vals_l, (rows_l, cols_l)),
+                        (size_l, size_l),
+                    )
+                    eq_list.append((k, l, A_k, A_l))
 
         return eq_list
 

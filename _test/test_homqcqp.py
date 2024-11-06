@@ -113,6 +113,7 @@ class TestHomQCQP(unittest.TestCase):
         problem.C *= 0.0
         problem.As = []
         x_list, info = solve_dsdp(problem, verbose=True, tol=1e-8)
+        assert info["success"], ValueError("Feasibility optimization failed")
         # Verify that the clique variables are equal on overlaps
         for l, clique_l in enumerate(problem.cliques):
             # separator
@@ -269,8 +270,8 @@ if __name__ == "__main__":
     # test.test_solve()
     # test.test_get_asg(plot=True)
     # test.test_clique_decomp(plot=False)
-    # test.test_consistency_constraints()
+    test.test_consistency_constraints()
     # test.test_decompose_matrix()
-    test.test_solve_dsdp()
+    # test.test_solve_dsdp()
     # test.test_standard_form()
     # test.test_clarabel()

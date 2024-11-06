@@ -242,27 +242,31 @@ def solve_dsdp(
 
     # CLIQUE CONSISTENCY EQUALITIES
     if verbose:
-        print("Generating consistency constraints")
+        print("Generating overlap consistency constraints")
     clq_constrs = problem.get_consistency_constraints()
     # TEST reduce number of clique
     if reduce_constrs is not None:
         n_constrs = int(reduce_constrs * len(clq_constrs))
         clq_constrs = random.sample(clq_constrs, n_constrs)
-
+    if verbose:
+        print("Adding overlap consistency constraints to problem")
     cnt = 0
     for k, l, A_k, A_l in clq_constrs:
         # Convert sparse array to fusion sparse matrix
         A_k_fusion = sparse_to_fusion(A_k)
         A_l_fusion = sparse_to_fusion(A_l)
         # Create constraint
+        expr = fu.Expr.dot(A_k_fusion, cvars[k]) + fu.Expr.dot(A_l_fusion, cvars[l])
         M.constraint(
-            "clq_" + str(k) + "_" + str(l) + "_" + str(cnt),
-            fu.Expr.dot(A_k_fusion, cvars[k]) + fu.Expr.dot(A_l_fusion, cvars[l]),
+            "ovrlap_" + str(k) + "_" + str(l) + "_" + str(cnt),
+            expr,
             fu.Domain.equalsTo(0.0),
         )
         cnt += 1
 
     # SOLVE
+    if verbose:
+        print("Starting problem solve")
     M.setSolverParam("intpntSolveForm", "dual")
     # record problem
     if verbose:
