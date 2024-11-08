@@ -291,35 +291,51 @@ class HomQCQP:
         assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
         assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")
         dmat = {}  # defined decomposed matrix dictionary
-        # Loop through elements of polymatrix
+        # Loop through elements of polymatrix and gather information about cliques and edges
+        edges = []
+        clique_sets = [set() for _ in range(len(self.cliques))]
+        edge_clique_map = {}
         for iVar1, var1 in enumerate(pmat.matrix.keys()):
             for var2 in pmat.matrix[var1].keys():
-                # NOTE: Next line avoids double counting elements due to symmetry of matrix. There should be a better way to do this and this could be quite slow.
+                # NOTE: Next line avoids double counting elements due to symmetry of matrix.
                 if var2 in list(pmat.matrix.keys())[:iVar1]:
                     continue
-                # Get the cliques that contain both variables
-                cliques1 = self.var_clique_map[var1]
-                cliques2 = self.var_clique_map[var2]
-                cliques = cliques1 & cliques2
-                # Define weighting based on method
-                if method == "split":
-                    alpha = np.ones(len(cliques)) / len(cliques)
-                elif method == "first":
-                    alpha = np.zeros(len(cliques))
-                    alpha[0] = 1.0
-                else:
-                    raise ValueError("Decomposition method unknown")
-                # Loop through cliques and add to dictionary
-                for k, clique in enumerate(cliques):
-                    if alpha[k] > 0.0:  # Check non-zero weighting
-                        # Define polymatrix
-                        pmat_k = PolyMatrix()
-                        pmat_k[var1, var2] = pmat[var1, var2] * alpha[k]
-                        # Add to dictionary
-                        if clique not in dmat.keys():
-                            dmat[clique] = pmat_k
-                        else:
-                            dmat[clique] += pmat_k
+                # Get the cliques that contain the associated edge in the ASG
+                edge = (var1, var2)
+                cliques = self.var_clique_map[var1] & self.var_clique_map[var2]
+                edge_clique_map[edge] = cliques
+                edges.append(edge)
+                for clique in cliques:
+                    clique_sets[clique].add(edge)
+
+        if method == "greedy-cover":
+            # Get a greedy cover for the edges
+            valid_cliques = set(greedy_cover(edges, clique_sets))
+        else:
+            valid_cliques = set(range(len(self.cliques)))
+
+        for edge in edges:
+            cliques = edge_clique_map[edge] & valid_cliques
+            # Define weighting based on method
+            if method in ["split"]:
+                alpha = np.ones(len(cliques)) / len(cliques)
+            elif method in ["first", "greedy-cover"]:
+                alpha = np.zeros(len(cliques))
+                alpha[0] = 1.0
+            else:
+                raise ValueError("Decomposition method unknown")
+            # Loop through cliques and add to dictionary
+            for k, clique in enumerate(cliques):
+                if alpha[k] > 0.0:  # Check non-zero weighting
+                    # Define polymatrix
+                    pmat_k = PolyMatrix()
+                    pmat_k[edge] = pmat[edge] * alpha[k]
+                    # Add to dictionary
+                    if clique not in dmat.keys():
+                        dmat[clique] = pmat_k
+                    else:
+                        dmat[clique] += pmat_k
+
         return dmat
 
     def plot_asg(self, remove_vars=[], html=None, block=True, plot_fill=True):
@@ -674,6 +690,31 @@ def plot_graph(graph, **kwargs):
             pio.write_html(fig, file=target, auto_open=False)
         else:
             fig.show()
+
+
+def greedy_cover(universe, sets):
+    """Solve the set cover problem using a greedy method.
+
+    Args:
+        universe (list): list of values that we want to cover
+        sets (list of sets): list of sets that are used to cover the universe.
+
+    Returns:
+        list: list of indices of the sets that cover the universe
+    """
+    # Define uncovered set
+    uncovered = set(universe)
+
+    cover = []
+    while len(uncovered) > 0:
+        # Find best set
+        set_ind = np.argmax([len(this_set & uncovered) for this_set in sets])
+        # Add index to cover list
+        cover.append(set_ind)
+        # Cover the elements
+        uncovered -= sets[set_ind]
+
+    return cover
 
 
 def get_pattern(G: Graph):

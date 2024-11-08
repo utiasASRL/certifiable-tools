@@ -175,11 +175,11 @@ def solve_clarabel(problem: HomQCQP, use_decomp=False):
 
 def solve_dsdp(
     problem: HomQCQP,
-    decomp_method="split",
     reduce_constrs=None,
     verbose=False,
     tol=TOL,
     adjust=False,
+    decomp_methods=dict(objective="split", constraint="greedy-cover"),
 ):
     """Solve decomposed SDP corresponding to input problem
 
@@ -197,7 +197,7 @@ def solve_dsdp(
     cliques = problem.cliques
     cvars = [M.variable(fu.Domain.inPSDCone(c.size)) for c in cliques]
 
-    def get_decomp_fusion_expr(pmat_in):
+    def get_decomp_fusion_expr(pmat_in, decomp_method="split"):
         """decompose PolyMatrix and convert to fusion expression"""
         # decompose matrix
         mat_decomp = problem.decompose_matrix(pmat_in, decomp_method)
@@ -214,7 +214,9 @@ def solve_dsdp(
     # OBJECTIVE
     if verbose:
         print("Adding Objective")
-    obj_expr = get_decomp_fusion_expr(problem.C)
+    obj_expr = get_decomp_fusion_expr(
+        problem.C, decomp_method=decomp_methods["objective"]
+    )
     M.objective(fu.ObjectiveSense.Minimize, obj_expr)
 
     # HOMOGENIZING CONSTRAINT
@@ -231,7 +233,9 @@ def solve_dsdp(
     if verbose:
         print("Adding Affine Constraints")
     for iCnstr, A in enumerate(problem.As):
-        constr_expr = get_decomp_fusion_expr(A)
+        constr_expr = get_decomp_fusion_expr(
+            A, decomp_method=decomp_methods["constraint"]
+        )
         M.constraint(
             "c_" + str(iCnstr),
             constr_expr,

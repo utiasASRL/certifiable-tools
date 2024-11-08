@@ -6,6 +6,7 @@ import scipy.sparse as sp
 from poly_matrix import PolyMatrix
 
 from cert_tools import HomQCQP
+from cert_tools.hom_qcqp import greedy_cover
 from cert_tools.linalg_tools import smat, svec
 from cert_tools.problems.rot_synch import RotSynchLoopProblem
 from cert_tools.sdp_solvers import solve_sdp_homqcqp
@@ -131,6 +132,21 @@ class TestHomQCQP(unittest.TestCase):
                 X_k, X_l, atol=1e-9, err_msg=f"Clique overlaps not equal for ({k},{l})"
             )
 
+    def test_greedy_cover(self):
+        """test greedy cover set selection"""
+        universe = [1, 2, 3, 4, 5]
+        sets = [{1, 2}, {2, 3, 4}, {1, 4, 5}, {5}]
+        cover_inds = greedy_cover(universe, sets)
+        cover = set()
+        for ind in cover_inds:
+            cover = cover.union(sets[ind])
+        assert cover == set(universe), ValueError(
+            "greedy set cover not covering universe."
+        )
+        assert set(cover_inds) == set([1, 2]), ValueError(
+            "greedy set cover not working."
+        )
+
     def test_decompose_matrix(self):
         """Test matrix decomposition into cliques"""
         # setup
@@ -145,7 +161,7 @@ class TestHomQCQP(unittest.TestCase):
         self.assertRaises(AssertionError, problem.decompose_matrix, A)
 
         # functionality
-        for method in ["split", "first"]:
+        for method in ["split", "first", "greedy-cover"]:
             C_d = problem.decompose_matrix(C, method=method)
             assert len(C_d.keys()) == nvars - 1, ValueError(
                 f"{method} Method: Wrong number of cliques in decomposed matrix"
@@ -270,8 +286,9 @@ if __name__ == "__main__":
     # test.test_solve()
     # test.test_get_asg(plot=True)
     # test.test_clique_decomp(plot=False)
-    test.test_consistency_constraints()
+    # test.test_consistency_constraints()
+    # test.test_greedy_cover()
     # test.test_decompose_matrix()
-    # test.test_solve_dsdp()
+    test.test_solve_dsdp()
     # test.test_standard_form()
     # test.test_clarabel()
