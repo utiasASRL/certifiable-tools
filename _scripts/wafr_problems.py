@@ -72,7 +72,10 @@ def process_problems(fname="_examples/mw_loc_3d_small.pkl"):
         pickle.dump(df, file)
 
 
-def test_problem(fname="_examples/mw_loc_3d_small.pkl", id=8):
+def test_problem(
+    fname="_examples/mw_loc_3d_small.pkl",
+    id=8,
+):
     problem, df = load_problem(fname=fname, id=id)
 
     problem.plot_asg(remove_vars=["h"], html="asg.html")
@@ -80,15 +83,26 @@ def test_problem(fname="_examples/mw_loc_3d_small.pkl", id=8):
 
     # Solve standard SDP
     # X, info, solve_time = solve_sdp_homqcqp(problem, tol=1e-10, verbose=True)
+
     # Solve decomposed SDP
     clq_list, info = solve_dsdp(problem, tol=1e-10, verbose=True)
     Y, ranks, factor_dict = problem.get_mr_completion(clq_list)
 
+    # Check solution
     assert Y.shape[1] == 1, ValueError("Decomposed solution is not rank 1")
+    x = []
+    for varname in df.var_sizes.keys():
+        x.append(factor_dict[varname].flatten())
+    x = np.concatenate(x)
+    np.testing.assert_allclose(
+        x, df.x_gt_init, atol=5e-5, err_msg="solution doesn't match"
+    )
 
 
 if __name__ == "__main__":
-    test_problem(fname="_examples/mw_loc_3d_small.pkl")
+    # test_problem(fname="_examples/mw_loc_3d_small.pkl")
+    # test_problem(fname="_examples/mw_loc_3d.pkl")
     # test_problem(fname="_examples/rangeonlyloc2d_no_const-vel_small.pkl")
+    test_problem(fname="_examples/rangeonlyloc2d_no_const-vel.pkl", id=27)
     # process_problems(fname="_examples/mw_loc_3d_small.pkl")
     # process_problems(fname="_examples/rangeonlyloc2d_no_const-vel_small.pkl")

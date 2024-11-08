@@ -202,15 +202,13 @@ def solve_dsdp(
         # decompose matrix
         mat_decomp = problem.decompose_matrix(pmat_in, decomp_method)
         # add clique components to fusion expression
-        expr = None
+        expr_sum_list = []
         for k, pmat in mat_decomp.items():
             clique = cliques[k]
             mat_k = pmat.get_matrix(variables=clique.var_sizes)
             mat_k_fusion = sparse_to_fusion(mat_k)
-            if expr is None:
-                expr = fu.Expr.dot(mat_k_fusion, cvars[k])
-            else:
-                expr += fu.Expr.dot(mat_k_fusion, cvars[k])
+            expr_sum_list.append(fu.Expr.dot(mat_k_fusion, cvars[k]))
+        expr = fu.Expr.add(expr_sum_list)
         return expr
 
     # OBJECTIVE

@@ -74,6 +74,8 @@ class HomQCQP:
         # Remove dependent constraints
         self.As = [self.As[i] for i in range(len(self.As)) if i not in bad_idx]
 
+        return bad_idx
+
     def get_asg(self, rm_homog=False):
         """Generate Aggregate Sparsity Graph for a given problem. Note that values
         of the matrices are irrelevant.
@@ -88,7 +90,7 @@ class HomQCQP:
 
         # Combine cost and constraints
         # NOTE: The numerical values here do not matter, just whether or not an element of the matrix is filled.
-        pmat = self.C
+        pmat = self.C.copy()
         for A in self.As:
             pmat += A
         # build variable dictionaries
@@ -459,13 +461,14 @@ class HomQCQP:
 
         return factor, r
 
-    def get_mr_completion(self, clique_mats, rank_tol=1e5, debug=False):
+    def get_mr_completion(self, clique_mats, var_list=None, rank_tol=1e5, debug=False):
         """Complete a positive semidefinite completable matrix using the
         minimum-rank completion as proposed in:
         Jiang, Xin et al. “Minimum-Rank Positive Semidefinite Matrix Completion with Chordal Patterns and Applications to Semidefinite Relaxations.”
 
         Args:
             clique_mats (list): list of nd-arrays representing the SDP solution (per clique)
+            var_list (list): list of keys corresponding to the desired variable ordering. If None, then the object var_list is used
             rank_tol (_type_, optional): Tolerance for determining rank. Defaults to 1e5.
         """
         r_max = 0  # max rank found
@@ -518,8 +521,10 @@ class HomQCQP:
                     factor_dict[key] = U_Q[inds, :]
 
         # Construct full factor
+        if var_list is None:
+            var_list = self.var_list
         Y = []
-        for varname in self.var_list:
+        for varname in var_list:
             Y.append(factor_dict[varname])
         Y = np.vstack(Y)
         return Y, ranks, factor_dict
