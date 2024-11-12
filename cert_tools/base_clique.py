@@ -81,7 +81,7 @@ class BaseClique(object):
             _type_: _description_
         """
         if type(var_list) is not list:
-            var_list = [var_list]
+            var_list = list(var_list)
         # Get index slices for the rows
         slices = []
         for varname in var_list:

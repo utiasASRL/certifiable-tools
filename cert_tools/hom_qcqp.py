@@ -1,3 +1,4 @@
+import random
 import warnings
 from time import time
 
@@ -64,7 +65,10 @@ class HomQCQP:
 
     def remove_dependent_constraints(self):
         """Remove dependent constraints from the list of constraints"""
-
+        if len(self.asg.vs) == 0:
+            warnings.warn("Aggregate sparsity graph not defined. Building now.")
+            # build aggregate sparsity graph
+            self.get_asg()
         # Get the matrix representation of the constraints
         As = [svec(A.get_matrix(self.var_sizes)) for A in self.As]
         # Get the rank of the constraints
@@ -142,7 +146,9 @@ class HomQCQP:
         # Metric: Cp^3  + Ck^3 - (Cp + Nk)^3
         return cp**3 + ck**3 > (cp + nk) ** 3
 
-    def clique_decomposition(self, elim_order="amd", merge_function=None):
+    def clique_decomposition(
+        self, elim_order="amd", clique_data=[], merge_function=None
+    ):
         """Uses CHOMPACK to get the maximal cliques and build the clique tree
         The clique objects are stored in a list. Each clique object stores information
         about its parents and children, as well as separators"""
@@ -150,33 +156,38 @@ class HomQCQP:
             warnings.warn("Aggregate sparsity graph not defined. Building now.")
             # build aggregate sparsity graph
             self.get_asg()
-        if elim_order == "amd":
-            p = amd.order
 
-        # Convert adjacency to sparsity pattern
-        nvars = len(self.var_sizes)
-        A = self.asg.get_adjacency_sparse() + sp.eye(nvars)
-        rows, cols = A.nonzero()
-        S = spmatrix(1.0, rows, cols, A.shape)
-        # get information from factorization
-        self.symb = chompack.symbolic(S, p=p, merge_function=merge_function)
-        # NOTE: reordered set to false so that everything is expressed in terms of the original variables.
-        cliques = self.symb.cliques()
-        sepsets = self.symb.separators()
-        parents = self.symb.parent()
-        residuals = self.symb.supernodes()
-        var_list_perm = [self.asg.vs["name"][p] for p in self.symb.p]
+        if len(clique_data) == 0:
+            if elim_order == "amd":
+                p = amd.order
+            # Convert adjacency to sparsity pattern
+            nvars = len(self.var_sizes)
+            A = self.asg.get_adjacency_sparse() + sp.eye(nvars)
+            rows, cols = A.nonzero()
+            S = spmatrix(1.0, rows, cols, A.shape)
+            # get information from factorization
+            self.symb = chompack.symbolic(S, p=p, merge_function=merge_function)
+            cliques = self.symb.cliques()
+            sepsets = self.symb.separators()
+            parents = self.symb.parent()
+            # Get variable list in permuted order (symbolic factorization reorders things)
+            var_list_perm = [self.asg.vs["name"][p] for p in self.symb.p]
+            # Convert indices into labels
+            for i, clique in enumerate(cliques):
+                cliques[i] = set([var_list_perm[v] for v in clique])
+                sepsets[i] = set([var_list_perm[v] for v in sepsets[i]])
+        else:
+            # Get information from input cliques
+            cliques, sepsets, parents = HomQCQP.process_clique_data(clique_data)
+
+        # Reset stored clique data
+        self.var_clique_map = {}
+        self.cliques = []
         # Define clique objects
         for i, clique in enumerate(cliques):
-            # separator as variables
-            sepset_vars = [var_list_perm[v] for v in sepsets[i]]
-            # Order the clique variable list so that the separators are first
-            # NOTE: This is used for minimum rank completion
-            varlist = sepsets[i] + residuals[i]
             # Store variable information for each clique
             clique_var_sizes = {}  # dict for storing variable sizes in a clique
-            for v in varlist:
-                varname = var_list_perm[v]
+            for varname in clique:
                 clique_var_sizes[varname] = self.var_sizes[varname]
                 # Update map between variables and cliques
                 if varname not in self.var_clique_map.keys():
@@ -187,10 +198,79 @@ class HomQCQP:
             clique_obj = BaseClique(
                 index=i,
                 var_sizes=clique_var_sizes,
-                separator=sepset_vars,
+                separator=set(sepsets[i]),
                 parent=parents[i],
             )
             self.cliques.append(clique_obj)
+
+    @staticmethod
+    def process_clique_data(clique_data):
+        """Process clique data. If the input data is a dictionary, it is assumed that the "cliques", "separators", and "parents" are defined as keys, each providing list. Ordering of these lists should be topological, meaning that any parent should be ordered after their child.
+        dictionaries then the parents and the separators are extracted. Otherwise the elements of the list must be sets containing the variable names of the variables in a given clique. In this case, a clique tree is built using a minimum spanning tree of the clique graph.
+
+        Args:
+            clique_data (list): list of sets of variable names representing cliques.
+            clique_data (dict): a dictionary of the clique data with keys
+        """
+        if isinstance(clique_data, dict):
+            clique_list = clique_data["cliques"]
+            separators = clique_data["separators"]
+            parents = clique_data["parents"]
+            # Check that parents are defined properly
+            for child_ind, parent_ind in enumerate(parents):
+                assert child_ind <= parent_ind, ValueError(
+                    f"Topological ordering violated: parent index {parent_ind} has lower order than child index {child_ind}"
+                )
+        elif isinstance(clique_data, list):
+            # build clique tree from clique list
+            cliques = clique_data
+            edges, sepsets, weights = [], [], []
+            for v1 in range(len(cliques) - 1):
+                for v2 in range(v1 + 1, len(cliques)):
+                    sepset = cliques[v1] & cliques[v2]
+                    weight = len(sepset)
+                    if weight > 0:
+                        edges.append((v1, v2))
+                        weights.append(-weight)
+                        sepsets.append(sepset)
+            # Create clique graph
+            ctree = Graph()
+            ctree.add_vertices(len(cliques))
+            ctree.add_edges(edges, attributes={"weight": weights, "sepset": sepsets})
+            # Get clique tree
+            ctree = ctree.spanning_tree(weights=ctree.es["weight"], return_tree=True)
+            # Recurse through clique tree and get parent information
+            clique_list = []
+            separators = []
+            parents = []
+
+            # Recursive function to process cliques
+            def process_cliques(curr_id, parent_id, sepset):
+                # Add Clique data
+                clique_list.append(cliques[curr_id])
+                parents.append(parent_id)
+                separators.append(sepset)
+                # process children
+                child_ids = ctree.neighbors(curr_id)
+                for child_id in child_ids:
+                    # get separator with child
+                    edge = ctree.es.select(_within=[curr_id, child_id])[0]
+                    sepset = edge["sepset"]
+                    # Remove edge and process child cliques
+                    edge.delete()
+                    process_cliques(child_id, curr_id, sepset)
+
+            # start at final clique and recursively process cliques
+            root_id = len(cliques) - 1
+            process_cliques(root_id, root_id, set())
+            # Reverse lists to maintain topological ordering
+            clique_list = clique_list[::-1]
+            separators = separators[::-1]
+            parents = parents[::-1]
+        else:
+            raise ValueError("Clique data must be dictionary or list.")
+
+        return clique_list, separators, parents
 
     def get_problem_matrices(self):
         """Get sparse, numerical form of objective and constraint matrices
@@ -429,7 +509,7 @@ class HomQCQP:
             vlabel.append(f"{clique.index}:{list(clique.var_list)}")
             if len(clique.separator) > 0:
                 ctree.add_edge(clique.parent, clique.index)
-                elabel.append(clique.separator)
+                elabel.append(list(clique.separator))
             else:
                 root = clique.index
 
@@ -445,7 +525,7 @@ class HomQCQP:
             fig, ax = plt.subplots()
             plot_options["target"] = ax
             plot_graph(ctree, **plot_options)
-            plt.title("Clique Tree")
+            ax.set_title("Clique Tree")
             plt.show(block=block)
 
     def get_cliques_from_sol(self, mat):
@@ -618,6 +698,7 @@ def plot_graph(graph, **kwargs):
             vertex_label=vertex_label,
             edge_width=edge_width,
             edge_color=edge_color,
+            edge_label=edge_label,
             margin=margin,
         )
         plt.show()

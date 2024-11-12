@@ -1,3 +1,4 @@
+import random
 import unittest
 
 import matplotlib.pyplot as plt
@@ -53,14 +54,35 @@ class TestHomQCQP(unittest.TestCase):
             problem.plot_asg()
 
     def test_clique_decomp(self, rm_homog=False, plot=False):
-        """Test solve of Decomposed SDP using interior point solver"""
+        """Test clique decomposition"""
+        # Automatic decomposition
+        self.run_clique_decomp(manual=0, rm_homog=rm_homog, plot=plot)
+        # Manual decomposition (cliques only)
+        self.run_clique_decomp(manual=1, rm_homog=rm_homog, plot=plot)
+        # Manual decomposition (full clique tree)
+        self.run_clique_decomp(manual=2, rm_homog=rm_homog, plot=plot)
+
+    def run_clique_decomp(self, nvars=5, manual=0, rm_homog=False, plot=False):
+        """Test clique decomposition"""
         # Test chain topology
-        nvars = 5
         problem = get_chain_rot_prob(N=nvars)
+        # Run decompostion
         problem.clique_decomposition()
+        if manual == 1:  # Run with cliques defined
+            clique_data = [set(clique.var_list) for clique in problem.cliques]
+            problem.clique_decomposition(clique_data=clique_data)
+        elif manual == 2:  # Run with clique tree data
+            clique_data = {}
+            clique_data["cliques"] = [
+                set(clique.var_list) for clique in problem.cliques
+            ]
+            clique_data["separators"] = [clique.separator for clique in problem.cliques]
+            clique_data["parents"] = [clique.parent for clique in problem.cliques]
+            problem.clique_decomposition(clique_data=clique_data)
+
         if plot:
-            problem.plot_asg()
-            problem.plot_ctree()
+            problem.plot_asg(block=False)
+            problem.plot_ctree(block=True)
         # Check number of cliques
         assert len(problem.cliques) == nvars - 1, ValueError(
             "Junction tree has wrong number of cliques"
@@ -77,7 +99,6 @@ class TestHomQCQP(unittest.TestCase):
 
         for clique in problem.cliques:
             parent = problem.cliques[clique.parent]
-
             vertices = list(parent.var_sizes.keys()) + list(clique.var_sizes.keys())
             assert set(clique.separator).issubset(vertices), ValueError(
                 "separator set should be in set of involved clique vertices"
@@ -94,6 +115,41 @@ class TestHomQCQP(unittest.TestCase):
             for i in problem.var_clique_map[varname]:
                 # check that var is actually in clique
                 assert varname in cliques[i].var_sizes.keys()
+
+        # Test manual clique definition
+        clique_data = {}
+        clique_data["cliques"] = [set(clique.var_list) for clique in problem.cliques]
+        clique_data["separators"] = [
+            set(clique.separator) for clique in problem.cliques
+        ]
+        clique_data["parents"] = [clique.parent for clique in problem.cliques]
+        clique_list, sepsets, parents = HomQCQP.process_clique_data(clique_data)
+        for iClq, clique in enumerate(problem.cliques):
+            assert clique_list[iClq] == set(clique.var_list), ValueError(
+                "Clique does not match"
+            )
+            assert parents[iClq] == clique.parent, ValueError("Parent does not match")
+            assert sepsets[iClq] == set(clique.separator), ValueError(
+                "Separator does not match"
+            )
+
+        # shuffle cliques and make sure that we still get a tree
+        clique_list = clique_data["cliques"]
+        random.shuffle(clique_list)
+        cliques, sepsets, parents = HomQCQP.process_clique_data(clique_data)
+        rootfound = False
+        for idx, clique in enumerate(clique_list):
+            if parents[idx] == idx:
+                if rootfound:
+                    raise ValueError("More than one root")
+                rootfound = True
+                assert len(sepsets[idx]) == 0, ValueError("root has sepset")
+            else:
+                parent = clique_list[parents[idx]]
+                vertices = parent | clique
+                assert set(sepsets[idx]).issubset(vertices), ValueError(
+                    "separator set should be in set of involved clique vertices"
+                )
 
     def test_consistency_constraints(self):
         """Test clique overlap consistency constraints"""
@@ -285,10 +341,10 @@ if __name__ == "__main__":
     test = TestHomQCQP()
     # test.test_solve()
     # test.test_get_asg(plot=True)
-    # test.test_clique_decomp(plot=False)
+    test.test_clique_decomp(plot=True)
     # test.test_consistency_constraints()
     # test.test_greedy_cover()
     # test.test_decompose_matrix()
-    test.test_solve_dsdp()
+    # test.test_solve_dsdp()
     # test.test_standard_form()
     # test.test_clarabel()
