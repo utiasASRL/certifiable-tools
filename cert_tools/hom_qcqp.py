@@ -603,18 +603,23 @@ class HomQCQP:
                 Yval = np.vstack([factor_dict[var] for var in clique.separator])
                 # Find the orthogonal transformation between cliques using the polar decomposition
                 Q, H = polar(V.T @ Yval)
-                U_Q = U @ Q
+
                 if debug:
                     V_Q = V @ Q
+                    U_Q = U @ Q
                     y = np.vstack([Yval, U_Q])
                     np.testing.assert_allclose(
                         y @ y.T, clique_mats[i], atol=1e-5, rtol=1e-4
                     )
-
+                # Retrieve "rotated" residuals
                 for key in clique.residual:
-                    # NOTE: Assumes that separator comes before residual in variable ordering
-                    inds = clique._get_indices(key) - (max(sep_inds) + 1)
-                    factor_dict[key] = U_Q[inds, :]
+                    inds = clique._get_indices(key)
+                    factor_dict[key] = factor[inds, :] @ Q
+
+        # Check for and fix inverted solution
+        if np.any(factor_dict[self.h] < 0):
+            for key, value in factor_dict.items():
+                factor_dict[key] = -value
 
         # Construct full factor
         if var_list is None:

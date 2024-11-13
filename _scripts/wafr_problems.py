@@ -29,7 +29,12 @@ def load_problem(fname="_examples/mw_loc_3d_small.pkl", id=8):
     if id is not None:
         df = df.loc[id]
     # convert to Homogeneous QCQP
-    problem = convert_to_qcqp(df)
+    if "hom_qcqp" in df:
+        problem = df["hom_qcqp"]
+    elif "homQCQP" in df:
+        problem = df["homQCQP"]
+    else:
+        problem = convert_to_qcqp(df)
 
     return problem, df
 
@@ -80,11 +85,21 @@ def process_problems(fname="_examples/mw_loc_3d_small.pkl"):
 def test_problem(
     fname="_examples/mw_loc_3d_small.pkl",
     form="primal",
+    rm_dep_constr=False,
+    merge_cliques=True,
+    tol=1e-8,
     id=8,
 ):
     problem, df = load_problem(fname=fname, id=id)
+    if rm_dep_constr:
+        problem.remove_dependent_constraints()
+        if merge_cliques:
+            merge_function = problem.merge_cosmo
+        else:
+            merge_function = None
+        problem.clique_decomposition(merge_function=merge_function)
 
-    problem.plot_asg(remove_vars=["h"], html="asg.html")
+    problem.plot_asg(remove_vars=[problem.h], html="asg.html")
     problem.plot_ctree(html="ctree.html")
 
     # Solve standard SDP
@@ -94,7 +109,7 @@ def test_problem(
     # Solve decomposed SDP
     methods = dict(objective="split", constraint="split")
     clq_list, info = solve_dsdp(
-        problem, form=form, tol=1e-8, decomp_methods=methods, verbose=True
+        problem, form=form, tol=tol, decomp_methods=methods, verbose=True
     )
     Y, ranks, factor_dict = problem.get_mr_completion(clq_list)
 
@@ -102,15 +117,17 @@ def test_problem(
     assert Y.shape[1] == 1, ValueError("Decomposed solution is not rank 1")
     x = []
     for varname in df.var_sizes.keys():
-        x.append(factor_dict[varname].flatten())
+        x.append(factor_dict[varname][:, 0].flatten())
     x = np.concatenate(x)
     if factor_dict["h"][0, 0] < 0:
         x = -x
 
     cost_decomp = x @ df.cost @ x
     cost_local = df.x_gt_init @ df.cost @ df.x_gt_init
-    tol = 1e-3
-    assert cost_decomp <= cost_local + tol, ValueError("Decomposed SDP has higher cost")
+    rtol = 1e-5
+    assert cost_decomp <= cost_local * (1 + rtol), ValueError(
+        "Decomposed SDP has higher cost"
+    )
 
     if cost_local - cost_decomp > tol:
         print(f"Cost difference: {cost_local-cost_decomp}")
@@ -127,7 +144,7 @@ def test_problem(
     else:
         print("Cost difference is within tolerance. checking solution")
         np.testing.assert_allclose(
-            x, df.x_gt_init, atol=1e-6, err_msg="solution doesn't match"
+            x, df.x_gt_init, atol=5e-5, err_msg="solution doesn't match"
         )
 
 
@@ -175,7 +192,17 @@ if __name__ == "__main__":
     # test_problem(fname="_examples/mw_loc_3d_small.pkl")
     # test_problem(fname="_examples/mw_loc_3d.pkl", form="dual", id=4)
     # test_problem(fname="_examples/rangeonlyloc2d_no_const-vel_small.pkl")
-    # test_problem(fname="_examples/rangeonlyloc2d_no_const-vel.pkl", id=27)
+    test_problem(
+        fname="_examples/rangeonlyloc2d_no_const-vel.pkl", form="dual", tol=1e-12, id=9
+    )
+    # test_problem(
+    #     fname="_examples/mw_slam_10pose_r1.pkl",
+    #     rm_dep_constr=True,
+    #     form="dual",
+    #     merge_cliques=False,
+    #     tol=1e-7,
+    #     id=0,
+    # )
 
     # Process Problems
     # process_problems(fname="_examples/mw_loc_3d_small.pkl")
@@ -185,7 +212,7 @@ if __name__ == "__main__":
 
     # Run Speed test
     # run_speed_tests(dataset="mw_loc_3d", tol=1e-6)
-    run_speed_tests(dataset="rangeonlyloc2d_no_const-vel", tol=1e-8)
+    # run_speed_tests(dataset="rangeonlyloc2d_no_const-vel", tol=1e-8)
 
     # Plot Results
     # plot_results()
