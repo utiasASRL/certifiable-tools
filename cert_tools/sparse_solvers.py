@@ -134,11 +134,11 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL, verbose=False, adjust=False):
 
 
 def sparse_to_fusion(mat: sp.coo_array):
-    if isinstance(mat, sp.coo_matrix):
+    if isinstance(mat, sp.coo_matrix) or isinstance(mat, sp.coo_array):
         mat_fu = fu.Matrix.sparse(
             mat.shape[0], mat.shape[1], mat.row, mat.col, mat.data
         )
-    elif isinstance(mat, sp.csc_matrix):
+    elif isinstance(mat, sp.csc_matrix) or isinstance(mat, sp.csc_array):
         rows, cols = mat.nonzero()
         mat_fu = fu.Matrix.sparse(mat.shape[0], mat.shape[1], rows, cols, mat.data)
     else:
@@ -175,6 +175,7 @@ def solve_clarabel(problem: HomQCQP, use_decomp=False):
 
 def solve_dsdp(
     problem: HomQCQP,
+    form="primal",
     reduce_constrs=None,
     verbose=False,
     tol=TOL,
@@ -189,7 +190,183 @@ def solve_dsdp(
         tol (float, optional): Tolerance for solver. Defaults to TOL.
         adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
     """
+    if form == "primal":
+        out = solve_dsdp_primal(
+            problem=problem,
+            reduce_constrs=reduce_constrs,
+            verbose=verbose,
+            tol=tol,
+            adjust=adjust,
+            decomp_methods=decomp_methods,
+        )
+    elif form == "dual":
+        out = solve_dsdp_dual(
+            problem=problem,
+            verbose=verbose,
+            tol=tol,
+            adjust=adjust,
+        )
+    return out
 
+
+def solve_dsdp_dual(
+    problem: HomQCQP,
+    verbose=False,
+    tol=TOL,
+    adjust=False,
+):
+    """Solve decomposed SDP corresponding to input problem
+
+    Args:
+        prob (HomQCQP): Homogenous QCQP Problem
+        verbose (bool, optional): If true, display solver output. Defaults to False.
+        tol (float, optional): Tolerance for solver. Defaults to TOL.
+        adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
+    """
+    # List of constraints with homogenizing constraint.
+    A_h = PolyMatrix()
+    A_h[problem.h, problem.h] = 1
+    As = problem.As + [A_h]
+
+    # Define problem model
+    M = fu.Model()
+
+    # CLIQUE VARIABLES
+    cliques = problem.cliques
+    zvars = [M.variable(fu.Domain.inPSDCone(c.size)) for c in cliques]
+
+    # LAGRANGE VARIABLES
+    y = [M.variable(fu.Domain.unbounded(1)) for i in range(len(As))]
+
+    # OBJECTIVE
+    if verbose:
+        print("Adding Objective")
+    M.objective(fu.ObjectiveSense.Minimize, y[-1])
+
+    # AFFINE CONSTRAINTS: C + sum(Ai*y_i) - sum(Z_k) = 0
+    # Get a list of edges in the aggregate sparsity pattern (including main diagonal)
+    if verbose:
+        print("Generating Affine Constraints")
+    edges = [e.tuple for e in problem.asg.es]
+    edges += [(v.index, v.index) for v in problem.asg.vs]
+    # Generate one matrix constraint per edge. This links the cliques to the
+    for edge_id in edges:
+        # Get variables in edge from graph
+        var0 = problem.asg.vs["name"][edge_id[0]]
+        var1 = problem.asg.vs["name"][edge_id[1]]
+        mat_list = []
+        # Get component of Cost matrix
+        C_mat = problem.C[var0, var1]
+        if not np.all(C_mat == 0):
+            c_mat = -C_mat.reshape(-1)
+        else:
+            c_mat = 0.0
+
+        # Get component of Constraint matrices
+        for i, A in enumerate(As):
+            A_mat = A[var0, var1]
+            if not np.all(A_mat == 0):
+                if not sp.issparse(A_mat):
+                    A_mat = sp.coo_array(A_mat)
+                a_mat = sparse_to_fusion(A_mat.reshape(-1, 1))
+                mat_list.append(fu.Expr.mul(a_mat, y[i]))
+
+        # Component of clique variables
+        for k, clique in enumerate(problem.cliques):
+            if var0 in clique.var_list and var1 in clique.var_list:
+                ind1 = clique._get_indices(var0)
+                ind2 = clique._get_indices(var1)
+                inds = []
+                for i in ind1:
+                    for j in ind2:
+                        inds.append([i, j])
+                mat_list.append(-zvars[k].pick(inds))
+
+        # Add the list together
+        matsum = fu.Expr.add(mat_list)
+        M.constraint(f"e_{var0}_{var1}", matsum, fu.Domain.equalsTo(c_mat))
+
+    # SOLVE
+    if verbose:
+        print("Starting problem solve")
+    M.setSolverParam("intpntSolveForm", "dual")
+    # record problem
+    if verbose:
+        M.writeTask("problem_dump_dual.ptf")
+        print("Starting Solve")
+    # adjust tolerances
+    adjust_tol_fusion(options_fusion, tol)
+    options_fusion["intpntCoTolRelGap"] = tol
+    for key, val in options_fusion.items():
+        M.setSolverParam(key, val)  # default 1e-8
+    if verbose:
+        M.setLogHandler(sys.stdout)
+    else:
+        f = open("mosek_output.tmp", "a+")
+        M.setLogHandler(f)
+
+    M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
+    T0 = time()
+    M.solve()
+    T1 = time()
+
+    # EXTRACT SOLN
+    if M.getProblemStatus() in [
+        fu.ProblemStatus.PrimalAndDualFeasible,
+        fu.ProblemStatus.Unknown,
+    ]:
+        # Get MOSEK cost
+        cost = M.primalObjValue()
+        if cost < 0:
+            print("cost is negative! sanity check:")
+        clq_list = [zvar.dual().reshape(zvar.shape) for zvar in zvars]
+        dual = [zvar.level().reshape(zvar.shape) for zvar in zvars]
+        mults = [y_i.level() for y_i in y]
+        info = {
+            "success": True,
+            "cost": cost,
+            "time": T1 - T0,
+            "msg": M.getProblemStatus(),
+            "dual": dual,
+            "mults": mults,
+        }
+    elif M.getProblemStatus() is fu.ProblemStatus.DualInfeasible:
+        clq_list = []
+        info = {
+            "success": False,
+            "cost": -np.inf,
+            "time": T1 - T0,
+            "msg": "dual infeasible",
+        }
+    else:
+        print("Unknown status:", M.getProblemStatus())
+        clq_list = []
+        info = {
+            "success": False,
+            "cost": -np.inf,
+            "time": T1 - T0,
+            "msg": M.getProblemStatus(),
+        }
+    return clq_list, info
+
+
+def solve_dsdp_primal(
+    problem: HomQCQP,
+    reduce_constrs=None,
+    verbose=False,
+    tol=TOL,
+    adjust=False,
+    decomp_methods=dict(objective="split", constraint="greedy-cover"),
+):
+    """Solve decomposed SDP corresponding to input problem
+
+    Args:
+        prob (HomQCQP): Homogenous QCQP Problem
+        verbose (bool, optional): If true, display solver output. Defaults to False.
+        tol (float, optional): Tolerance for solver. Defaults to TOL.
+        adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
+    """
+    T0 = time()
     # Define problem model
     M = fu.Model()
 
@@ -286,43 +463,32 @@ def solve_dsdp(
         M.setLogHandler(f)
 
     M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
-    T0 = time()
-    M.solve()
     T1 = time()
+    M.solve()
+    T2 = time()
+
+    # Store information
+    info = {
+        "success": False,
+        "cost": -np.inf,
+        "runtime": T2 - T1,
+        "preprocess_time": T1 - T0,
+        "msg": str(M.getProblemStatus()),
+    }
 
     # EXTRACT SOLN
-    if M.getProblemStatus() in [
-        fu.ProblemStatus.PrimalAndDualFeasible,
-        fu.ProblemStatus.Unknown,
-    ]:
+    status = M.getProblemStatus()
+    if status == fu.ProblemStatus.PrimalAndDualFeasible:
         # Get MOSEK cost
         cost = M.primalObjValue()
-        if cost < 0:
-            print("cost is negative! sanity check:")
         clq_list = [cvar.level().reshape(cvar.shape) for cvar in cvars]
-        info = {
-            "success": True,
-            "cost": cost,
-            "time": T1 - T0,
-            "msg": M.getProblemStatus(),
-        }
-    elif M.getProblemStatus() is fu.ProblemStatus.DualInfeasible:
-        clq_list = []
-        info = {
-            "success": False,
-            "cost": -np.inf,
-            "time": T1 - T0,
-            "msg": "dual infeasible",
-        }
+        dual = [cvar.dual().reshape(cvar.shape) for cvar in cvars]
+        info["success"] = True
+        info["dual"] = dual
+        info["cost"] = cost
     else:
-        print("Unknown status:", M.getProblemStatus())
-        clq_list = []
-        info = {
-            "success": False,
-            "cost": -np.inf,
-            "time": T1 - T0,
-            "msg": M.getProblemStatus(),
-        }
+        print("Solve Failed - Mosek Status: " + str(status))
+
     return clq_list, info
 
 

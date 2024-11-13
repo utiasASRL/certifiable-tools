@@ -239,11 +239,11 @@ class TestHomQCQP(unittest.TestCase):
                 err_msg="Clique decomposition then reassembly failed for objective",
             )
 
-    def test_solve_dsdp(self, rank1=False):
-        """Test solve of Decomposed SDP using interior point solver.
+    def test_solve_primal_dsdp(self, rank1=False):
+        """Test solve of Decomposed Primal SDP using interior point solver.
         Test minimum rank SDP completion."""
         # Test chain topology
-        nvars = 5
+        nvars = 10
         # If pose not locked we get a higher rank sdp
         if rank1:
             locked_pose = 0
@@ -266,7 +266,7 @@ class TestHomQCQP(unittest.TestCase):
                 err_msg="Decomposed and non-decomposed solutions differ",
             )
 
-        # Test PSD completion
+        # PSD COMPLETION TESTS
         # Perform completion
         (
             Y,
@@ -336,15 +336,44 @@ class TestHomQCQP(unittest.TestCase):
             err_msg="Clarabel and MOSEK solutions differ",
         )
 
+    def test_solve_dual_dsdp(self, rank1=False):
+        """Test solve of Decomposed Dual SDP using interior point solver.
+        Test minimum rank SDP completion."""
+        # Test chain topology
+        nvars = 10
+        # If pose not locked we get a higher rank sdp
+        if rank1:
+            locked_pose = 0
+        else:
+            locked_pose = -1
+        problem = get_chain_rot_prob(N=nvars, locked_pose=locked_pose)
+        problem.clique_decomposition()  # get cliques
+        # Solve decomposed problem (Interior Point Version)
+        c_list, info = solve_dsdp(problem, form="dual", verbose=True, tol=1e-8)
+        # check solutions
+
+        # Solve non-decomposed problem
+        X, info, time = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
+        # get cliques from non-decomposed solution
+        c_list_nd = problem.get_cliques_from_sol(X)
+        for c, c_nd in zip(c_list, c_list_nd):
+            np.testing.assert_allclose(
+                c,
+                c_nd,
+                atol=1e-6,
+                err_msg="Decomposed and non-decomposed solutions differ",
+            )
+
 
 if __name__ == "__main__":
     test = TestHomQCQP()
     # test.test_solve()
     # test.test_get_asg(plot=True)
-    test.test_clique_decomp(plot=True)
+    # test.test_clique_decomp(plot=True)
     # test.test_consistency_constraints()
     # test.test_greedy_cover()
     # test.test_decompose_matrix()
-    # test.test_solve_dsdp()
+    # test.test_solve_primal_dsdp()
+    test.test_solve_dual_dsdp()
     # test.test_standard_form()
     # test.test_clarabel()
