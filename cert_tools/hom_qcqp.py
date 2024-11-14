@@ -80,7 +80,7 @@ class HomQCQP:
 
         return bad_idx
 
-    def get_asg(self, rm_homog=False):
+    def get_asg(self, var_list=None, rm_homog=False):
         """Generate Aggregate Sparsity Graph for a given problem. Note that values
         of the matrices are irrelevant.
 
@@ -98,7 +98,13 @@ class HomQCQP:
         for A in self.As:
             pmat += A
         # build variable dictionaries
-        self.var_sizes = pmat.variable_dict_i.copy()
+        var_sizes = pmat.variable_dict_i.copy()
+        # If list is specified then align dictionary to list
+        if var_list is not None:
+            self.var_sizes = {key: var_sizes[key] for key in var_list}
+        else:
+            self.var_sizes = var_sizes
+        # Update indices
         self._update_variables()
 
         # generate edges and vertices
@@ -629,6 +635,45 @@ class HomQCQP:
             Y.append(factor_dict[varname])
         Y = np.vstack(Y)
         return Y, ranks, factor_dict
+
+    def get_dual_matrix(self, dual_cliques, var_list=None):
+        """Construct the dual (certificate) matrix based on the dual variables corresponding to the cliques.
+
+        Args:
+            dual_cliques (List): List of dual clique variables to be summed into dual certificate matrix
+            var_list (list, optional): List representing desired variable ordering. Warning: Using this option may result in slower runtime. Defaults to None.
+
+        Returns:
+            _type_: _description_
+        """
+        if var_list is None:
+            # Construct using HomQCQP variable ordering
+            # We can do this directly as a sparse matrix definition
+            H_mat = None
+            for k, clique in enumerate(self.cliques):
+                clique_vars = clique.var_list
+                row_inds = self._get_indices(clique_vars)
+                inds = np.meshgrid(row_inds, row_inds)
+                inds = tuple([ind.flatten() for ind in inds])
+                vals = dual_cliques[k].reshape(-1)
+                if H_mat is None:
+                    H_mat = sp.csr_array((vals, inds), shape=(self.dim, self.dim))
+                else:
+                    H_mat += sp.csr_array((vals, inds), shape=(self.dim, self.dim))
+        else:
+            # To use a different variable ordering we need to use polymatrix
+            H = PolyMatrix()
+            for k, clique in enumerate(self.cliques):
+                clique_vars = clique.var_list
+                for iVar0 in range(len(clique_vars)):
+                    for iVar1 in range(iVar0, len(clique_vars)):
+                        var0 = clique_vars[iVar0]
+                        var1 = clique_vars[iVar1]
+                        inds0 = clique._get_indices(var0)
+                        inds1 = clique._get_indices(var1)
+                        H[var0, var1] += dual_cliques[k][np.ix_(inds0, inds1)]
+            H_mat = H.get_matrix(variables=var_list)
+        return H_mat
 
     def _update_variables(self):
         "Loop through variable sizes and get starting indices"

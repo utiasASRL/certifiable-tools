@@ -350,10 +350,9 @@ class TestHomQCQP(unittest.TestCase):
         problem.clique_decomposition()  # get cliques
         # Solve decomposed problem (Interior Point Version)
         c_list, info = solve_dsdp(problem, form="dual", verbose=True, tol=1e-8)
-        # check solutions
 
         # Solve non-decomposed problem
-        X, info, time = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
+        X, _, time = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
         # get cliques from non-decomposed solution
         c_list_nd = problem.get_cliques_from_sol(X)
         for c, c_nd in zip(c_list, c_list_nd):
@@ -362,6 +361,39 @@ class TestHomQCQP(unittest.TestCase):
                 c_nd,
                 atol=1e-6,
                 err_msg="Decomposed and non-decomposed solutions differ",
+            )
+
+        # Test dual matrix recovery
+        for var_list in [problem.var_list, None]:
+            H = problem.get_dual_matrix(info["dual"], var_list=var_list)
+            # Test certificate against certificate built with multipliers
+            y = info["mults"]
+            A_h = PolyMatrix()
+            A_h[problem.h, problem.h] = 1
+            H2 = problem.C
+            for i, A in enumerate(problem.As + [A_h]):
+                H2 += y[i] * A
+            H2 = H2.get_matrix(problem.var_sizes)
+
+            np.testing.assert_allclose(
+                H.toarray(),
+                H2.toarray(),
+                atol=1e-8,
+                err_msg="Dual computed two ways failed",
+            )
+            # Test complementarity
+            np.testing.assert_allclose(
+                H @ X,
+                np.zeros(X.shape),
+                atol=1e-5,
+                err_msg="Primal should be in null space of dual",
+            )
+
+            np.testing.assert_allclose(
+                H2 @ X,
+                np.zeros(X.shape),
+                atol=1e-5,
+                err_msg="Primal should be in null space of dual",
             )
 
 
