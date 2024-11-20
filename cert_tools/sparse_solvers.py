@@ -261,7 +261,7 @@ def solve_dsdp_dual(
     H = fu.Expr.add(cert_mat_list)
 
     # AFFINE CONSTRAINTS:
-    # H_ij = C_ij + sum(Ai*y_i)_ij - sum(Z_k)_ij = 0
+    # H_ij - sum(Z_k)_ij = C_ij + sum(Ai*y_i)_ij - sum(Z_k)_ij = 0
     # Get a list of edges in the aggregate sparsity pattern (including main diagonal)
     if verbose:
         print("Generating Affine Constraints")
@@ -330,7 +330,7 @@ def solve_dsdp_dual(
         cost = M.primalObjValue()
         clq_list = [cvar.dual().reshape(cvar.shape) for cvar in cvars]
         dual = [cvar.level().reshape(cvar.shape) for cvar in cvars]
-        mults = [y_i.level() for y_i in y]
+        mults = [y_i.level()[0] for y_i in y]
         info["success"] = True
         info["dual"] = dual
         info["cost"] = cost

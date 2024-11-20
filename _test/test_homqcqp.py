@@ -370,11 +370,10 @@ class TestHomQCQP(unittest.TestCase):
             y = info["mults"]
             A_h = PolyMatrix()
             A_h[problem.h, problem.h] = 1
-            H2 = problem.C
+            H2 = problem.C.copy()
             for i, A in enumerate(problem.As + [A_h]):
                 H2 += y[i] * A
             H2 = H2.get_matrix(problem.var_sizes)
-
             np.testing.assert_allclose(
                 H.toarray(),
                 H2.toarray(),
