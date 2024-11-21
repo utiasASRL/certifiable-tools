@@ -1,5 +1,6 @@
 import sys
 from copy import deepcopy
+from time import time
 
 import casadi as cas
 import cvxpy as cp
@@ -7,6 +8,8 @@ import mosek
 import mosek.fusion as fu
 import numpy as np
 import scipy.sparse as sp
+
+from cert_tools import HomQCQP
 from cert_tools.fusion_tools import mat_fusion
 
 # General tolerance parameter for SDPs (see "adjust_tol" function for its exact effect)
@@ -573,10 +576,10 @@ def solve_feasibility_sdp(
     """Solve feasibility SDP using the MOSEK API.
 
     Args:
-        Q (_type_): Cost Matrix
-        Constraints (): List of tuples representing constraints. Each tuple, (A,b) is such that
+        Q: Cost Matrix
+        Constraints: List of tuples representing constraints. Each tuple, (A,b) is such that
                         tr(A @ X) == b.
-        x_cand (): Solution candidate.
+        x_cand: Solution candidate.
         adjust (tuple, optional): Adjustment tuple: (scale,offset) for final cost.
         verbose (bool, optional): If true, prints output to screen. Defaults to True.
 
@@ -812,6 +815,34 @@ def solve_lambda_cvxpy(
             X = constraints[0].dual_value
             lamda = y.value
     return X, lamda
+
+
+def solve_sdp_homqcqp(
+    problem: HomQCQP, method="sdp", solver="mosek", verbose=False, tol=1e-11
+):
+    """Solve non-chordal SDP for PGO problem without using ADMM"""
+
+    # Get matrices
+    obj, constrs = problem.get_problem_matrices()
+    # Select the solver
+    if solver == "mosek":
+        solver = solve_sdp_mosek
+    else:
+        raise ValueError("Solver not supported")
+    # Solve SDP
+    start_time = time()
+    if method == "sdp":
+        X, info = solver(
+            Q=obj, Constraints=constrs, adjust=False, verbose=verbose, tol=tol
+        )
+    elif method == "dsdp":
+        ValueError("Method not defined.")
+    else:
+        ValueError("Method not defined.")
+    # Get solution time.
+    solve_time = time() - start_time
+
+    return X, info, solve_time
 
 
 def solve_sdp(

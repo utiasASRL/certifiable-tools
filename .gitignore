@@ -10,6 +10,4 @@ __pycache__/
 *.egg-info/
 _plots/
 
-solve_cvxpy_*.ptf
-solve_mosek.ptf
-problem_dump.ptf
+*.ptf
