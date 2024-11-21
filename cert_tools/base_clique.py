@@ -17,11 +17,6 @@ class BaseClique(object):
         _type_: _description_
     """
 
-    @staticmethod
-    def get_overlap(cl, ck, h="h"):
-        "This function is now redundant"
-        return set(cl.var_dict.keys()).intersection(ck.var_dict.keys()).difference(h)
-
     def __init__(
         self,
         index,

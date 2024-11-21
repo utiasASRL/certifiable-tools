@@ -1,6 +1,4 @@
-import random
 import warnings
-from time import time
 
 import chompack
 import igraph as ig
@@ -15,10 +13,10 @@ from poly_matrix import PolyMatrix
 from scipy.linalg import polar
 
 from cert_tools.base_clique import BaseClique
-from cert_tools.linalg_tools import find_dependent_columns, smat, svec
+from cert_tools.linalg_tools import find_dependent_columns, svec
 
 
-class HomQCQP:
+class HomQCQP(object):
     """Abstract class used to represent a the SDP relaxation of a
     non-convex homogenized, quadratically constrainted quadratic problem
     The general form of the problem is as follows:
@@ -212,7 +210,7 @@ class HomQCQP:
     @staticmethod
     def process_clique_data(clique_data):
         """Process clique data. If the input data is a dictionary, it is assumed that the "cliques", "separators", and "parents" are defined as keys, each providing list. Ordering of these lists should be topological, meaning that any parent should be ordered after their child.
-        dictionaries then the parents and the separators are extracted. Otherwise the elements of the list must be sets containing the variable names of the variables in a given clique. In this case, a clique tree is built using a minimum spanning tree of the clique graph.
+        Otherwise the elements of the list must be sets containing the variable names of the variables in a given clique. In this case, a clique tree is built using a minimum spanning tree of the clique graph.
 
         Args:
             clique_data (list): list of sets of variable names representing cliques.
