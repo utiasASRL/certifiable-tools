@@ -1,4 +1,5 @@
 import warnings
+from collections import deque
 
 import chompack
 import igraph as ig
@@ -209,7 +210,7 @@ class HomQCQP(object):
 
     @staticmethod
     def process_clique_data(clique_data):
-        """Process clique data. If the input data is a dictionary, it is assumed that the "cliques", "separators", and "parents" are defined as keys, each providing list. Ordering of these lists should be topological, meaning that any parent should be ordered after their child.
+        """Process clique data. If the input data is a dictionary, it is assumed that the "cliques", "separators", and "parents" are defined as keys, each providing list. Ordering of these lists should be topological, meaning that any parent should be ordered after their child. "cliques" contains a list of sets of clique variables, "parents" indicates the index of the parent in the clique list, and "separators" is a list of the separator (intersection) between each clique and its parent.
         Otherwise the elements of the list must be sets containing the variable names of the variables in a given clique. In this case, a clique tree is built using a minimum spanning tree of the clique graph.
 
         Args:
@@ -237,40 +238,54 @@ class HomQCQP(object):
                         edges.append((v1, v2))
                         weights.append(-weight)
                         sepsets.append(sepset)
+            prcsd = [False] * len(weights)
             # Create clique graph
             ctree = Graph()
             ctree.add_vertices(len(cliques))
-            ctree.add_edges(edges, attributes={"weight": weights, "sepset": sepsets})
+            ctree.add_edges(
+                edges, attributes={"weight": weights, "sepset": sepsets, "prcsd": prcsd}
+            )
             # Get clique tree
             ctree = ctree.spanning_tree(weights=ctree.es["weight"], return_tree=True)
-            # Recurse through clique tree and get parent information
-            clique_list = []
-            separators = []
-            parents = []
-
-            # Recursive function to process cliques
-            def process_cliques(curr_id, parent_id, sepset):
-                # Add Clique data
-                clique_list.append(cliques[curr_id])
-                parents.append(parent_id)
-                separators.append(sepset)
+            # Process the cliques using a fifo queue
+            clique_queue = deque()  # Faster than a list for fifo queue
+            # add root to lists
+            root_id = len(cliques) - 1  # Rooted at final clique
+            clique_queue.appendleft(root_id)  # add root node to queue
+            clique_list = [cliques[root_id]]  # add root clique
+            separators = [{}]  # root separator is empty
+            parent_ids = [root_id]  # root parent is self.
+            clique_ids = [root_id]  # id
+            while len(clique_queue) > 0:
+                parent_id = clique_queue.pop()
                 # process children
-                child_ids = ctree.neighbors(curr_id)
+                child_ids = ctree.neighbors(parent_id)
                 for child_id in child_ids:
-                    # get separator with child
-                    edge = ctree.es.select(_within=[curr_id, child_id])[0]
-                    sepset = edge["sepset"]
-                    # Remove edge and process child cliques
+                    # Get associated edge and mark as processed
+                    edge = ctree.es.select(_within=[parent_id, child_id])[0]
+                    clique_list.append(cliques[child_id])
+                    separators.append(edge["sepset"])
+                    parent_ids.append(parent_id)  # Store index of parent in list
+                    clique_ids.append(child_id)
+                    # Add child to queue to be processed
+                    clique_queue.appendleft(child_id)
+                    # Remove edge from tree so that we don't reprocess the edge
                     edge.delete()
-                    process_cliques(child_id, curr_id, sepset)
 
-            # start at final clique and recursively process cliques
-            root_id = len(cliques) - 1
-            process_cliques(root_id, root_id, set())
-            # Reverse lists to maintain topological ordering
+            # Flip the order of the list so that children appear before parents, parent indices must also be inverted
             clique_list = clique_list[::-1]
             separators = separators[::-1]
-            parents = parents[::-1]
+            parent_ids = parent_ids[::-1]
+            clique_ids = clique_ids[::-1]
+            # retrieve indices of parents in list
+            parents = []
+            for i, parent_id in enumerate(parent_ids):
+                # this search should be short since we start at i
+                for j in range(i, len(clique_ids)):
+                    if parent_id == clique_ids[j]:
+                        parents.append(j)
+                        break
+
         else:
             raise ValueError("Clique data must be dictionary or list.")
 

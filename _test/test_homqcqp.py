@@ -123,24 +123,25 @@ class TestHomQCQP(unittest.TestCase):
                 "Separator does not match"
             )
 
-        # TODO(FD) this is not working currently -- should it?
         # Shuffle cliques and make sure that we still get a tree
         clique_list = clique_data["cliques"]
         random.shuffle(clique_list)
         cliques, sepsets, parents = HomQCQP.process_clique_data(clique_list)
         rootfound = False
-        for idx, clique in enumerate(clique_list):
+        for idx, clique in enumerate(cliques):
             if parents[idx] == idx:
                 if rootfound:
                     raise ValueError("More than one root")
                 rootfound = True
                 assert len(sepsets[idx]) == 0, ValueError("root has sepset")
             else:
-                parent = clique_list[parents[idx]]
-                vertices = parent | clique
-                assert set(sepsets[idx]).issubset(vertices), ValueError(
-                    "separator set should be in set of involved clique vertices"
+                parent = cliques[parents[idx]]
+                sepset_true = parent & clique
+                assert sepsets[idx] == sepset_true, ValueError(
+                    "separator set not correct intersection of cliques"
                 )
+        for i in range(len(parents) - 1):
+            assert parents[i] >= i, "Parents not set up correctly"
 
     def test_consistency_constraints(self):
         """Test clique overlap consistency constraints"""
@@ -391,7 +392,7 @@ if __name__ == "__main__":
     test = TestHomQCQP()
     # test.test_solve()
     # test.test_get_asg(plot=True)
-    test.test_clique_decomp(plot=True)
+    test.test_clique_decomp(plot=False)
     # test.test_consistency_constraints()
     # test.test_greedy_cover()
     # test.test_decompose_matrix()
