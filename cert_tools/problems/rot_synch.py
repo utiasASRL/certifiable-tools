@@ -4,14 +4,13 @@ from time import time
 import igraph as ig
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.sparse as sp
 from pandas import DataFrame
 from poly_matrix import PolyMatrix
 from pylgmath import so3op
 
 from cert_tools import HomQCQP
 from cert_tools.admm_clique import ADMMClique
-from cert_tools.base_clique import BaseClique
+from cert_tools.sdp_solvers import solve_sdp_cvxpy
 from cert_tools.sparse_solvers import solve_oneshot
 
 # Global Defaults
@@ -39,9 +38,6 @@ class RotSynchLoopProblem(HomQCQP):
         """
 
     def __init__(self, N=10, sigma=1e-3, loop_pose=3, locked_pose=0, seed=0):
-        # Call super
-        super().__init__()
-
         np.random.seed(seed)
         # generate ground truth poses
         aaxis_ab_rand = np.random.uniform(-np.pi / 2, np.pi / 2, size=(N, 3, 1))
@@ -51,14 +47,14 @@ class RotSynchLoopProblem(HomQCQP):
         for i in range(N):
             self.var_sizes[str(i)] = 9
         # Generate Measurements as a dictionary on tuples
-        self.loop_pose = str(loop_pose)  # Loop relinks to chain at this pose
-        self.locked_pose = str(locked_pose)  # Pose locked at this pose
+        self.loop_pose = loop_pose  # Loop relinks to chain at this pose
+        self.locked_pose = locked_pose  # Pose locked at this pose
         self.meas_dict = {}
         for i in range(0, N):
             R_pert = so3op.vec2rot(sigma * np.random.randn(3, 1))
             if i == N - 1:
-                if loop_pose > 0:
-                    j = loop_pose
+                if self.loop_pose > 0:
+                    j = self.loop_pose
                 else:
                     continue
             else:
@@ -128,8 +124,7 @@ class RotSynchLoopProblem(HomQCQP):
         """Get constraint that locks a particular pose to its ground truth value
         rather than adding a prior cost term. This should remove the gauge freedom
         from the problem, giving a rank-1 solution"""
-
-        r_gt = self.R_gt[int(index)].reshape((9, 1), order="F")
+        r_gt = self.R_gt[index].reshape((9, 1), order="F")
         constraints = []
         for k in range(9):
             A = PolyMatrix()
@@ -285,7 +280,7 @@ class RotSynchLoopProblem(HomQCQP):
                     admm_cliques[1].var_dict
                 )
                 # Solve Decomposed SDP
-                X_list_k, info = solve_chordal(
+                X_list_k, info = solve_oneshot(
                     junction_tree, use_fusion=True, tol=1e-8, verbose=False
                 )
                 # Retreive Solution
@@ -424,7 +419,7 @@ class RotSynchLoopProblem(HomQCQP):
             var2 = G.vs["name"][cliques[i][1]]
             clique_obj += [self.get_clique_obj(var1, var2, i)]
             for j in range(i + 1, len(cliques)):
-                # Get separator set for list
+                # Get seperator set for list
                 sepset = set(cliques[i]) & set(cliques[j])
                 if len(sepset) > 0:
                     junction.add_edge(i, j, weight=-len(sepset), sepset=sepset)
