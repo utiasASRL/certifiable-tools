@@ -31,7 +31,7 @@ class TestLinAlg(unittest.TestCase):
         # products should be equal
         prod_mat = np.trace(S1 @ S2)
         prod_vec = np.dot(s1, s2)
-        assert prod_mat == prod_vec, "PSD Inner product not equal"
+        assert abs(prod_mat - prod_vec) < 1e-10, "PSD Inner product not equal"
 
     def test_svec_sparse(self):
         # fix seed
@@ -59,7 +59,7 @@ class TestLinAlg(unittest.TestCase):
         # products should be equal
         prod_mat = np.trace(S1.toarray() @ S2.toarray())
         prod_vec = (s1 @ s2.T).toarray()
-        assert prod_mat == prod_vec, "PSD Inner product not equal"
+        assert abs(prod_mat - prod_vec) < 1e-10, "PSD Inner product not equal"
 
 
 if __name__ == "__main__":

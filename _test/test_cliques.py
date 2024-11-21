@@ -5,7 +5,6 @@ import numpy as np
 from poly_matrix import PolyMatrix
 
 from cert_tools import HomQCQP
-from cert_tools.base_clique import BaseClique
 
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
@@ -55,7 +54,7 @@ def test_decompositions():
 
     clique_data = {
         "cliques": [{"h", "x_1", "x_2"}, {"h", "x_2", "x_3"}, {"h", "x_3", "x_4"}],
-        "separators": [{"h", "x_2"}, {"h", "x_2", "x_3"}, {"h", "x_3"}],
+        "separators": [{"h", "x_2"}, {"h", "x_3"}, {}],
         "parents": [
             1,
             2,

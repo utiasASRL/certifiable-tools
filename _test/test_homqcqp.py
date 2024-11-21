@@ -135,20 +135,20 @@ class TestHomQCQP(unittest.TestCase):
         # Shuffle cliques and make sure that we still get a tree
         clique_list = clique_data["cliques"]
         random.shuffle(clique_list)
-        cliques, sepsets, parents = HomQCQP.process_clique_data(clique_data)
+        cliques, sepsets, parents = HomQCQP.process_clique_data(clique_list)
         rootfound = False
         for idx, clique in enumerate(clique_list):
             if parents[idx] == idx:
                 if rootfound:
                     raise ValueError("More than one root")
                 rootfound = True
-                # assert len(sepsets[idx]) == 0, ValueError("root has sepset")
+                assert len(sepsets[idx]) == 0, ValueError("root has sepset")
             else:
                 parent = clique_list[parents[idx]]
                 vertices = parent | clique
-                # assert set(sepsets[idx]).issubset(vertices), ValueError(
-                #     "separator set should be in set of involved clique vertices"
-                # )
+                assert set(sepsets[idx]).issubset(vertices), ValueError(
+                    "separator set should be in set of involved clique vertices"
+                )
 
     def test_consistency_constraints(self):
         """Test clique overlap consistency constraints"""
@@ -397,7 +397,7 @@ class TestHomQCQP(unittest.TestCase):
 
 if __name__ == "__main__":
     test = TestHomQCQP()
-    test.test_solve()
+    # test.test_solve()
     # test.test_get_asg(plot=True)
     test.test_clique_decomp(plot=True)
     # test.test_consistency_constraints()
