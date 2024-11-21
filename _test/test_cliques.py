@@ -52,14 +52,11 @@ def test_decompositions():
     for var_list, clique in zip(clique_list, problem.cliques):
         assert set(clique.var_list).difference(var_list) == set()
 
+    # parent of 0 is 1, parent of 1 is 2, parent of 2 is itself (it's the root)
     clique_data = {
         "cliques": [{"h", "x_1", "x_2"}, {"h", "x_2", "x_3"}, {"h", "x_3", "x_4"}],
         "separators": [{"h", "x_2"}, {"h", "x_3"}, {}],
-        "parents": [
-            1,
-            2,
-            2,
-        ],  # parent of 0 is 1, parent of 1 is 2, parent of 2 is itself (it's the root)
+        "parents": [1, 2, 2],
     }
     problem.clique_decomposition(clique_data=clique_data)
     test_cost(problem.cliques, C_gt)
