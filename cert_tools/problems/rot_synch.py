@@ -12,6 +12,7 @@ from pylgmath import so3op
 from cert_tools import HomQCQP
 from cert_tools.admm_clique import ADMMClique
 from cert_tools.base_clique import BaseClique
+from cert_tools.sdp_solvers import solve_sdp_cvxpy
 from cert_tools.sparse_solvers import solve_oneshot
 
 # Global Defaults
@@ -284,7 +285,7 @@ class RotSynchLoopProblem(HomQCQP):
                     admm_cliques[1].var_dict
                 )
                 # Solve Decomposed SDP
-                X_list_k, info = solve_chordal(
+                X_list_k, info = solve_oneshot(
                     junction_tree, use_fusion=True, tol=1e-8, verbose=False
                 )
                 # Retreive Solution
