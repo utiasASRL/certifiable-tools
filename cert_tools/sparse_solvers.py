@@ -1,11 +1,21 @@
 import itertools
+import random
 import sys
+from time import time
 
+import clarabel
 import cvxpy as cp
-import mosek.fusion as fu
+import matplotlib.pyplot as plt
+import mosek.fusion.pythonic as fu
 import numpy as np
+import scipy.sparse as sp
+from igraph import Graph
+from poly_matrix import PolyMatrix
+
 from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
+from cert_tools.hom_qcqp import HomQCQP
+from cert_tools.linalg_tools import smat, svec
 from cert_tools.sdp_solvers import (
     adjust_tol,
     adjust_tol_fusion,
@@ -123,15 +133,385 @@ def solve_oneshot_dual_cvxpy(clique_list, tol=TOL, verbose=False, adjust=False):
     return X_k_list, info
 
 
-def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=False):
+def sparse_to_fusion(mat: sp.coo_array):
+    if isinstance(mat, sp.coo_matrix) or isinstance(mat, sp.coo_array):
+        mat_fu = fu.Matrix.sparse(
+            mat.shape[0], mat.shape[1], mat.row, mat.col, mat.data
+        )
+    elif isinstance(mat, sp.csc_matrix) or isinstance(mat, sp.csc_array):
+        rows, cols = mat.nonzero()
+        mat_fu = fu.Matrix.sparse(mat.shape[0], mat.shape[1], rows, cols, mat.data)
+    else:
+        raise ValueError("Matrix type not supported")
+    return mat_fu
+
+
+def solve_clarabel(problem: HomQCQP, use_decomp=False):
+    """Use Clarabel to solve Homogenized SDP"""
+    # Get problem data
+    P, q, A, b = problem.get_standard_form()
+    A = sp.csc_matrix(A)
+    # Define cones
+    cones = [clarabel.PSDTriangleConeT(problem.dim)]
+    # settings
+    settings = clarabel.DefaultSettings()
+    # loosen tolerances
+    tol = 1e-8
+    settings.tol_gap_abs = tol
+    settings.tol_gap_rel = tol
+    settings.tol_feas = tol
+    settings.tol_infeas_abs = tol
+    settings.tol_infeas_rel = tol
+    settings.tol_ktratio = tol * 1e2
+
+    # set up problem
+    solver = clarabel.DefaultSolver(P, q, A, b, cones, settings)
+    # solve
+    solution = solver.solve()
+    # retrieve solution
+    X = smat(solution.z)
+    return X
+
+
+def solve_dsdp(
+    problem: HomQCQP,
+    form="primal",
+    reduce_constrs=None,
+    verbose=False,
+    tol=TOL,
+    adjust=False,
+    decomp_methods=dict(objective="split", constraint="greedy-cover"),
+):
+    """Solve decomposed SDP corresponding to input problem
+
+    Args:
+        prob (HomQCQP): Homogenous QCQP Problem
+        verbose (bool, optional): If true, display solver output. Defaults to False.
+        tol (float, optional): Tolerance for solver. Defaults to TOL.
+        adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
     """
-    clique_list is a list of objects inheriting from BaseClique.
+    if form == "primal":
+        out = solve_dsdp_primal(
+            problem=problem,
+            reduce_constrs=reduce_constrs,
+            verbose=verbose,
+            tol=tol,
+            adjust=adjust,
+            decomp_methods=decomp_methods,
+        )
+    elif form == "dual":
+        out = solve_dsdp_dual(
+            problem=problem,
+            verbose=verbose,
+            tol=tol,
+            adjust=adjust,
+        )
+    return out
+
+
+def solve_dsdp_dual(
+    problem: HomQCQP,
+    verbose=False,
+    tol=TOL,
+    adjust=False,
+):
+    """Solve decomposed SDP corresponding to input problem
+
+    Args:
+        prob (HomQCQP): Homogenous QCQP Problem
+        verbose (bool, optional): If true, display solver output. Defaults to False.
+        tol (float, optional): Tolerance for solver. Defaults to TOL.
+        adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
+    """
+    T0 = time()
+    # List of constraints with homogenizing constraint.
+    A_h = PolyMatrix()
+    A_h[problem.h, problem.h] = 1
+    As = problem.As + [A_h]
+
+    # Define problem model
+    M = fu.Model()
+
+    # CLIQUE VARIABLES
+    cliques = problem.cliques
+    cvars = [M.variable(fu.Domain.inPSDCone(c.size)) for c in cliques]
+
+    # LAGRANGE VARIABLES
+    y = [M.variable(f"y{i}") for i in range(len(As))]
+
+    # OBJECTIVE
+    if verbose:
+        print("Adding Objective")
+    M.objective(fu.ObjectiveSense.Minimize, y[-1])
+
+    # CONSTRUCT CERTIFICATE
+    if verbose:
+        print("Building Certificate Matrix")
+    cert_mat_list = []
+    # get constant cost matrix
+    C_mat = problem.C.get_matrix(problem.var_sizes)
+    C_fusion = fu.Expr.constTerm(sparse_to_fusion(C_mat))
+    cert_mat_list.append(C_fusion)
+    # get constraint-multiplier products
+    for i, A in enumerate(As):
+        A_mat = A.get_matrix(problem.var_sizes)
+        A_fusion = sparse_to_fusion(A_mat)
+        cert_mat_list.append(fu.Expr.mul(A_fusion, y[i]))
+    # sum into certificate
+    H = fu.Expr.add(cert_mat_list)
+
+    # AFFINE CONSTRAINTS:
+    # H_ij - sum(Z_k)_ij = C_ij + sum(Ai*y_i)_ij - sum(Z_k)_ij = 0
+    # Get a list of edges in the aggregate sparsity pattern (including main diagonal)
+    if verbose:
+        print("Generating Affine Constraints")
+    edges = [e.tuple for e in problem.asg.es]
+    edges += [(v.index, v.index) for v in problem.asg.vs]
+
+    # Generate one matrix constraint per edge. This links the cliques to the
+    for edge_id in edges:
+        # Get variables in edge from graph
+        var0 = problem.asg.vs["name"][edge_id[0]]
+        var1 = problem.asg.vs["name"][edge_id[1]]
+        # Get component of certificate matrix
+        row_inds = problem._get_indices(var0)
+        col_inds = problem._get_indices(var1)
+        inds = get_block_inds(row_inds, col_inds, var0 == var1)
+        sum_list = [H.pick(inds)]
+        # Find the cliques that are involved with these variables
+        clique_inds = problem.var_clique_map[var0] & problem.var_clique_map[var1]
+        cliques = [problem.cliques[i] for i in clique_inds]
+        # get components of clique variables
+        for clique in cliques:
+            if var0 in clique.var_list and var1 in clique.var_list:
+                row_inds = clique._get_indices(var0)
+                col_inds = clique._get_indices(var1)
+                inds = get_block_inds(row_inds, col_inds, var0 == var1)
+                sum_list.append(-cvars[clique.index].pick(inds))
+        # Add the list together
+        matsumvec = fu.Expr.add(sum_list)
+        M.constraint(f"e_{var0}_{var1}", matsumvec, fu.Domain.equalsTo(0.0))
+
+    # SOLVE
+    M.setSolverParam("intpntSolveForm", "dual")
+    # record problem
+    if verbose:
+        M.writeTask("problem_dump_dual.ptf")
+        print("Starting Solve")
+    # adjust tolerances
+    adjust_tol_fusion(options_fusion, tol)
+    options_fusion["intpntCoTolRelGap"] = tol
+    for key, val in options_fusion.items():
+        M.setSolverParam(key, val)  # default 1e-8
+    if verbose:
+        M.setLogHandler(sys.stdout)
+    else:
+        f = open("mosek_output.tmp", "a+")
+        M.setLogHandler(f)
+
+    M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
+    T1 = time()
+    M.solve()
+    T2 = time()
+
+    # Store information
+    info = {
+        "success": False,
+        "cost": -np.inf,
+        "runtime": T2 - T1,
+        "preprocess_time": T1 - T0,
+        "msg": str(M.getProblemStatus()),
+    }
+
+    # EXTRACT SOLN
+    status = M.getProblemStatus()
+    if status == fu.ProblemStatus.PrimalAndDualFeasible:
+        # Get MOSEK cost
+        cost = M.primalObjValue()
+        clq_list = [cvar.dual().reshape(cvar.shape) for cvar in cvars]
+        dual = [cvar.level().reshape(cvar.shape) for cvar in cvars]
+        mults = [y_i.level()[0] for y_i in y]
+        info["success"] = True
+        info["dual"] = dual
+        info["cost"] = cost
+        info["mults"] = mults
+    else:
+        print("Solve Failed - Mosek Status: " + str(status))
+    return clq_list, info
+
+
+def get_block_inds(row_inds, col_inds, triu=False):
+    """Helper function for getting a grid of indices based on row and column indices. Only selects upper triangle if triu is set to true"""
+    inds = []
+    for row in range(len(row_inds)):
+        if triu:
+            colstart = row
+        else:
+            colstart = 0
+        for col in range(colstart, len(col_inds)):
+            inds.append([row_inds[row], col_inds[col]])
+    return np.array(inds)
+
+
+def solve_dsdp_primal(
+    problem: HomQCQP,
+    reduce_constrs=None,
+    verbose=False,
+    tol=TOL,
+    adjust=False,
+    decomp_methods=dict(objective="split", constraint="greedy-cover"),
+):
+    """Solve decomposed SDP corresponding to input problem
+
+    Args:
+        prob (HomQCQP): Homogenous QCQP Problem
+        verbose (bool, optional): If true, display solver output. Defaults to False.
+        tol (float, optional): Tolerance for solver. Defaults to TOL.
+        adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
+    """
+    T0 = time()
+    # Define problem model
+    M = fu.Model()
+
+    # CLIQUE VARIABLES
+    cliques = problem.cliques
+    cvars = [M.variable(fu.Domain.inPSDCone(c.size)) for c in cliques]
+
+    def get_decomp_fusion_expr(pmat_in, decomp_method="split"):
+        """decompose PolyMatrix and convert to fusion expression"""
+        # decompose matrix
+        mat_decomp = problem.decompose_matrix(pmat_in, decomp_method)
+        # add clique components to fusion expression
+        expr_sum_list = []
+        for k, pmat in mat_decomp.items():
+            clique = cliques[k]
+            mat_k = pmat.get_matrix(variables=clique.var_sizes)
+            mat_k_fusion = sparse_to_fusion(mat_k)
+            expr_sum_list.append(fu.Expr.dot(mat_k_fusion, cvars[k]))
+        expr = fu.Expr.add(expr_sum_list)
+        return expr
+
+    # OBJECTIVE
+    if verbose:
+        print("Adding Objective")
+    obj_expr = get_decomp_fusion_expr(
+        problem.C, decomp_method=decomp_methods["objective"]
+    )
+    M.objective(fu.ObjectiveSense.Minimize, obj_expr)
+
+    # HOMOGENIZING CONSTRAINT
+    A_h = PolyMatrix()
+    A_h[problem.h, problem.h] = 1
+    constr_expr_h = get_decomp_fusion_expr(A_h)
+    M.constraint(
+        "homog",
+        constr_expr_h,
+        fu.Domain.equalsTo(1.0),
+    )
+
+    # AFFINE CONSTRAINTS
+    if verbose:
+        print("Adding Affine Constraints")
+    for iCnstr, A in enumerate(problem.As):
+        constr_expr = get_decomp_fusion_expr(
+            A, decomp_method=decomp_methods["constraint"]
+        )
+        M.constraint(
+            "c_" + str(iCnstr),
+            constr_expr,
+            fu.Domain.equalsTo(0.0),
+        )
+
+    # CLIQUE CONSISTENCY EQUALITIES
+    if verbose:
+        print("Generating overlap consistency constraints")
+    clq_constrs = problem.get_consistency_constraints()
+    # TEST reduce number of clique
+    if reduce_constrs is not None:
+        n_constrs = int(reduce_constrs * len(clq_constrs))
+        clq_constrs = random.sample(clq_constrs, n_constrs)
+    if verbose:
+        print("Adding overlap consistency constraints to problem")
+    cnt = 0
+    for k, l, A_k, A_l in clq_constrs:
+        # Convert sparse array to fusion sparse matrix
+        A_k_fusion = sparse_to_fusion(A_k)
+        A_l_fusion = sparse_to_fusion(A_l)
+        # Create constraint
+        expr = fu.Expr.dot(A_k_fusion, cvars[k]) + fu.Expr.dot(A_l_fusion, cvars[l])
+        M.constraint(
+            "ovrlap_" + str(k) + "_" + str(l) + "_" + str(cnt),
+            expr,
+            fu.Domain.equalsTo(0.0),
+        )
+        cnt += 1
+
+    # SOLVE
+    if verbose:
+        print("Starting problem solve")
+    M.setSolverParam("intpntSolveForm", "dual")
+    # record problem
+    if verbose:
+        M.writeTask("problem_dump.ptf")
+        print("Starting Solve")
+    # adjust tolerances
+    adjust_tol_fusion(options_fusion, tol)
+    options_fusion["intpntCoTolRelGap"] = tol
+    for key, val in options_fusion.items():
+        M.setSolverParam(key, val)  # default 1e-8
+    if verbose:
+        M.setLogHandler(sys.stdout)
+    else:
+        f = open("mosek_output.tmp", "a+")
+        M.setLogHandler(f)
+
+    M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
+    T1 = time()
+    M.solve()
+    T2 = time()
+
+    # Store information
+    info = {
+        "success": False,
+        "cost": -np.inf,
+        "runtime": T2 - T1,
+        "preprocess_time": T1 - T0,
+        "msg": str(M.getProblemStatus()),
+    }
+
+    # EXTRACT SOLN
+    status = M.getProblemStatus()
+    if status == fu.ProblemStatus.PrimalAndDualFeasible:
+        # Get MOSEK cost
+        cost = M.primalObjValue()
+        clq_list = [cvar.level().reshape(cvar.shape) for cvar in cvars]
+        dual = [cvar.dual().reshape(cvar.shape) for cvar in cvars]
+        info["success"] = True
+        info["dual"] = dual
+        info["cost"] = cost
+    else:
+        print("Solve Failed - Mosek Status: " + str(status))
+
+    return clq_list, info
+
+
+def print_tuples(rows, cols, vals):
+    for i in range(len(rows)):
+        print(f"({rows[i]},{cols[i]},{vals[i]})")
+
+
+def solve_oneshot_primal_fusion(junction_tree, verbose=False, tol=TOL, adjust=False):
+    """
+    junction_tree: a Graph structure that corresponds to the junction tree
+    of the factor graph for the problem
     """
     if adjust:
         from cert_tools.sdp_solvers import adjust_Q
 
         raise ValueError("adjust_Q does not work when dealing with cliques")
 
+    # Get list of clique objects
+    clique_list = junction_tree.vs["clique_obj"]
     assert isinstance(clique_list[0], BaseClique)
 
     X_dim = clique_list[0].X_dim
@@ -167,11 +547,12 @@ def solve_oneshot_primal_fusion(clique_list, verbose=False, tol=TOL, adjust=Fals
                 if b == 1:
                     A_0_constraints.append(con)
 
-        # for cl, ck in itertools.permutations(clique_list, 2):
-        # for cl, ck in itertools.combinations(clique_list, 2):
-        for cl, ck in zip(clique_list[:-1], clique_list[1:]):
-            overlap = BaseClique.get_overlap(cl, ck, h=cl.hom)
-            for l in overlap:
+        # Loop through edges in the junction tree
+        for iEdge, edge in enumerate(junction_tree.get_edgelist()):
+            # Get cliques associated with edge
+            cl = junction_tree.vs["clique_obj"][edge[0]]
+            ck = junction_tree.vs["clique_obj"][edge[1]]
+            for l in junction_tree.es["sepset"][iEdge]:
                 for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
                     # cl.X_var[rl[0], rl[1]] == ck.X[rk[0], rk[1]])
                     left_start = [rl[0][0], rl[1][0]]
@@ -286,12 +667,17 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
 
 
 def solve_oneshot(
-    clique_list, use_primal=True, use_fusion=False, verbose=False, tol=TOL
+    junction_tree=None,
+    clique_list=None,
+    use_primal=True,
+    use_fusion=False,
+    verbose=False,
+    tol=TOL,
 ):
     if not use_primal:
         print("Defaulting to primal because dual cliques not implemented yet.")
     if use_fusion:
-        return solve_oneshot_primal_fusion(clique_list, verbose=verbose, tol=tol)
+        return solve_oneshot_primal_fusion(junction_tree, verbose=verbose, tol=tol)
     else:
         return solve_oneshot_primal_cvxpy(clique_list, verbose=verbose, tol=tol)
     # return solve_oneshot_dual_cvxpy(
