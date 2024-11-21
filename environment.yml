@@ -19,12 +19,8 @@ dependencies:
     - mosek
     - tbb=2020.2 # sparseqr conflict
     - casadi>=3.6.3
+    - scikit-sparse>=0.4.14
 
     - pip:
-      - sparseqr
-      - cholmod
-      - chompack
-      - gurobipy
-      - quadprog
-      - cvxopt
+      - -r requirements.txt
       - -e .  

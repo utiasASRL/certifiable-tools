@@ -12,3 +12,4 @@ _plots/
 
 solve_cvxpy_*.ptf
 solve_mosek.ptf
+problem_dump.ptf
