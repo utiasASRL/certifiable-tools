@@ -1,15 +1,16 @@
-import itertools
 import os
 
 import numpy as np
-from poly_matrix import PolyMatrix
-
 from cert_tools import HomQCQP
+from cert_tools.test_tools import constraints_test, cost_test, get_chain_rot_prob
+
+from poly_matrix import PolyMatrix
 
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
 
 def generate_random_matrix(seed=0):
+    """Creates random block-tridiagonal arrowhead matrix"""
     np.random.seed(seed)
     dim_x = 2
     X = PolyMatrix()
@@ -24,23 +25,40 @@ def generate_random_matrix(seed=0):
     return X
 
 
-def test_decompositions():
-    def test_cost(cliques, C_gt):
-        C = PolyMatrix()
-        mat_decomp = problem.decompose_matrix(problem.C, method="split")
-        for clique in cliques:
-            C += mat_decomp[clique.index]
-        np.testing.assert_allclose(C.get_matrix_dense(variables), C_gt)
+def test_symmetric():
+    """Making sure that setting symmetric to True after the fact doesn't break anything.
+    This test could probably go inside poly_matrix."""
+    X_poly = generate_random_matrix()
+    X_sparse = X_poly.get_matrix()
+
+    X_poly_test, __ = PolyMatrix.init_from_sparse(X_sparse, X_poly.variable_dict_i)
+    X_poly_test.symmetric = True
+    for key_i in X_poly.variable_dict_i:
+        for key_j in X_poly.adjacency_j[key_i]:
+            np.testing.assert_allclose(X_poly_test[key_i, key_j], X_poly[key_i, key_j])
+
+    X_poly_test, __ = PolyMatrix.init_from_sparse(X_sparse, X_poly.variable_dict_i)
+    for key_i in X_poly.variable_dict_i:
+        for key_j in X_poly.adjacency_j[key_i]:
+            np.testing.assert_allclose(X_poly_test[key_i, key_j], X_poly[key_i, key_j])
+
+
+def test_constraint_decomposition():
+
+    problem = get_chain_rot_prob()
+    problem.clique_decomposition()
+    constraints_test(problem)
+
+
+def test_cost_decomposition():
 
     problem = HomQCQP()
     problem.C = generate_random_matrix()
     problem.As = []
-    variables = problem.C.get_variables()
-    C_gt = problem.C.get_matrix_dense(variables)
 
     # will create a clique decomposition that is not always the same
     problem.clique_decomposition()
-    test_cost(problem.cliques, C_gt)
+    cost_test(problem)
 
     clique_list = [
         {"h", "x_1", "x_2"},
@@ -48,7 +66,7 @@ def test_decompositions():
         {"h", "x_3", "x_4"},
     ]
     problem.clique_decomposition(clique_data=clique_list)
-    test_cost(problem.cliques, C_gt)
+    cost_test(problem)
     for var_list, clique in zip(clique_list, problem.cliques):
         assert set(clique.var_list).difference(var_list) == set()
 
@@ -59,11 +77,13 @@ def test_decompositions():
         "parents": [1, 2, 2],
     }
     problem.clique_decomposition(clique_data=clique_data)
-    test_cost(problem.cliques, C_gt)
+    cost_test(problem)
     for var_list, clique in zip(clique_list, problem.cliques):
         assert set(clique.var_list).difference(var_list) == set()
 
 
 if __name__ == "__main__":
-    test_decompositions()
+    test_symmetric()
+    test_constraint_decomposition()
+    test_cost_decomposition()
     print("all tests passed.")

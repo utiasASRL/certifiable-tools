@@ -2,14 +2,14 @@ import random
 import unittest
 
 import numpy as np
-from poly_matrix import PolyMatrix
-from utils import get_chain_rot_prob, get_loop_rot_prob
-
 from cert_tools import HomQCQP
 from cert_tools.hom_qcqp import greedy_cover
 from cert_tools.linalg_tools import svec
 from cert_tools.sdp_solvers import solve_sdp_homqcqp
 from cert_tools.sparse_solvers import solve_clarabel, solve_dsdp
+from cert_tools.test_tools import get_chain_rot_prob, get_loop_rot_prob
+
+from poly_matrix import PolyMatrix
 
 
 class TestHomQCQP(unittest.TestCase):

@@ -1,11 +1,34 @@
 import numpy as np
-from poly_matrix import PolyMatrix
+from cert_tools import HomQCQP
 from pylgmath import so3op
 
-from cert_tools import HomQCQP
+from poly_matrix import PolyMatrix
 
 # Global Defaults
 ER_MIN = 1e6
+
+
+def cost_test(problem):
+    variables = problem.C.get_variables()
+    C = PolyMatrix()
+    mat_decomp = problem.decompose_matrix(problem.C, method="split")
+    for mat in mat_decomp.values():
+        C += mat
+    np.testing.assert_allclose(
+        C.get_matrix_dense(variables), problem.C.get_matrix_dense(variables)
+    )
+
+
+def constraints_test(problem):
+    for A_gt in problem.As:
+        variables = A_gt.get_variables()
+        A = PolyMatrix()
+        mat_decomp = problem.decompose_matrix(A_gt, method="split")
+        for mat in mat_decomp.values():
+            A += mat
+        np.testing.assert_allclose(
+            A.get_matrix_dense(variables), A_gt.get_matrix_dense(variables)
+        )
 
 
 class RotSynchLoopProblem(HomQCQP):
