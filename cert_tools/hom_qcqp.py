@@ -8,13 +8,13 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import scipy.sparse as sp
-from cvxopt import amd, spmatrix
-from igraph import Graph
-from poly_matrix import PolyMatrix
-from scipy.linalg import polar
-
 from cert_tools.base_clique import BaseClique
 from cert_tools.linalg_tools import find_dependent_columns, svec
+from cvxopt import amd, spmatrix
+from igraph import Graph
+from scipy.linalg import polar
+
+from poly_matrix import PolyMatrix
 
 
 class HomQCQP(object):
@@ -43,6 +43,24 @@ class HomQCQP(object):
         self.order = []  # Elimination ordering
         self.var_clique_map = {}  # Variable to clique mapping (maps to set)
         self.h = homog_var  # Homogenizing variable name
+
+    @staticmethod
+    def init_from_lifter(lifter):
+        problem = HomQCQP()
+        problem.C = lifter.get_Q_from_y(lifter.y_, output_poly=True)
+
+        A_sparse_list = lifter.get_A_learned_simple()
+        A_poly_list = []
+        for A in A_sparse_list:
+            A_poly, __ = PolyMatrix.init_from_sparse(A, lifter.var_dict)
+            A_poly.symmetric = True
+            A_poly_list.append(A_poly)
+        problem.As = A_poly_list
+
+        # TODO(FD) not sure if we should do this here or wait.
+        # problem.get_asg() # to suppress warning in clique_decomposition
+        # problem.clique_decomposition()
+        return problem
 
     def define_objective(self, *args, **kwargs) -> PolyMatrix:
         """Function should define the cost matrix for the problem
@@ -389,6 +407,11 @@ class HomQCQP(object):
         """Decompose a matrix according to clique decomposition. Returns a dictionary with the key being the clique number and the value being a PolyMatrix that contains decomposed matrix on that clique."""
         assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
         assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")
+
+        if not len(self.var_clique_map):
+            raise ValueError(
+                "var_clique_map is empty. Did you run clique_decomposition?"
+            )
         dmat = {}  # defined decomposed matrix dictionary
         # Loop through elements of polymatrix and gather information about cliques and edges
         edges = []
