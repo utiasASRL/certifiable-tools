@@ -505,7 +505,7 @@ def print_tuples(rows, cols, vals):
 
 def solve_oneshot_primal_fusion(problem: HomQCQP, verbose=False, tol=TOL, adjust=False):
     """
-    junction_tree: a Graph structure that corresponds to the junction tree
+    problem: a Graph structure that corresponds to the junction tree
     of the factor graph for the problem
     """
     if adjust:

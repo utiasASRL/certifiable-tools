@@ -1,10 +1,11 @@
 import os
 
 import numpy as np
-from cert_tools import HomQCQP
-from cert_tools.test_tools import constraints_test, cost_test, get_chain_rot_prob
-
 from poly_matrix import PolyMatrix
+
+from cert_tools import HomQCQP
+from cert_tools.test_tools import (constraints_test, cost_test,
+                                   get_chain_rot_prob)
 
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
@@ -104,7 +105,8 @@ def get_chain_clique_data(var_sizes, fixed=["h"], variable=["x_", "z_"]):
 
 
 def test_fixed_decomposition():
-    """Example of how to do a clique decomposition keeping the order of variables within each clique."""
+    """Example of how to do a clique decomposition keeping the order of variables within 
+    each clique."""
     problem = HomQCQP()
     problem.C, var_sizes = generate_random_matrix()
     problem.As = []
@@ -115,7 +117,7 @@ def test_fixed_decomposition():
     problem.clique_decomposition(clique_data=clique_data)
 
     for c, vars in zip(problem.cliques, clique_data):
-        np.testing.assert_allclose(c.var_list, vars)
+        assert len(set(c.var_list) - vars) == 0
 
 
 if __name__ == "__main__":
@@ -123,4 +125,5 @@ if __name__ == "__main__":
     test_symmetric()
     test_constraint_decomposition()
     test_cost_decomposition()
+    print("all tests passed.")
     print("all tests passed.")

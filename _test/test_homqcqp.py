@@ -2,6 +2,8 @@ import random
 import unittest
 
 import numpy as np
+#import pytest
+
 from cert_tools import HomQCQP
 from cert_tools.hom_qcqp import greedy_cover
 from cert_tools.linalg_tools import svec
@@ -203,10 +205,14 @@ class TestHomQCQP(unittest.TestCase):
         problem.clique_decomposition()  # get clique decomposition
         C = problem.C
 
-        # args
         self.assertRaises(ValueError, problem.decompose_matrix, C, method="banana")
+        # with pytest.raises(ValueError):
+        #    problem.decompose_matrix(C, method="banana")
+
         A = np.zeros((4, 4))
         self.assertRaises(AssertionError, problem.decompose_matrix, A)
+        # with pytest.raises(AssertionError):
+        #     problem.decompose_matrix(A)
 
         # functionality
         for method in ["split", "first", "greedy-cover"]:
@@ -341,7 +347,7 @@ class TestHomQCQP(unittest.TestCase):
         problem = get_chain_rot_prob(N=nvars, locked_pose=locked_pose)
         problem.clique_decomposition()  # get cliques
         # Solve decomposed problem (Interior Point Version)
-        c_list, info = solve_dsdp(problem, form="dual", verbose=True, tol=1e-8)
+        c_list, info = solve_dsdp(problem, use_primal=False, verbose=True, tol=1e-8)
 
         # Solve non-decomposed problem
         X, _, time = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
