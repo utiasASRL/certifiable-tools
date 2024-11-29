@@ -48,6 +48,7 @@ class HomQCQP(object):
     def init_from_lifter(lifter):
         problem = HomQCQP()
         problem.C = lifter.get_Q_from_y(lifter.y_, output_poly=True)
+        problem.var_sizes = lifter.var_dict
 
         A_sparse_list = lifter.get_A_learned_simple()
         A_poly_list = []
@@ -58,7 +59,7 @@ class HomQCQP(object):
         problem.As = A_poly_list
 
         # TODO(FD) not sure if we should do this here or wait.
-        # problem.get_asg() # to suppress warning in clique_decomposition
+        # problem.get_asg(lifter.var_dict) # to suppress warning in clique_decomposition
         # problem.clique_decomposition()
         return problem
 
@@ -174,7 +175,14 @@ class HomQCQP(object):
     ):
         """Uses CHOMPACK to get the maximal cliques and build the clique tree
         The clique objects are stored in a list. Each clique object stores information
-        about its parents and children, as well as separators"""
+        about its parents and children, as well as separators
+
+        Args:
+            elim_order: currently, can choose from "amd" or None (no reordering).
+            clique_data (list): optional, can pass the fixed order to be used
+
+        """
+
         if len(self.asg.vs) == 0:
             warnings.warn("Aggregate sparsity graph not defined. Building now.")
             # build aggregate sparsity graph
@@ -183,6 +191,11 @@ class HomQCQP(object):
         if len(clique_data) == 0:
             if elim_order == "amd":
                 p = amd.order
+            elif elim_order is None:
+                p = list(range(len(self.var_sizes)))
+            else:
+                raise ValueError(elim_order)
+
             # Convert adjacency to sparsity pattern
             nvars = len(self.var_sizes)
             A = self.asg.get_adjacency_sparse() + sp.eye(nvars)
