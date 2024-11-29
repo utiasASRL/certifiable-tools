@@ -9,19 +9,19 @@ import matplotlib.pyplot as plt
 import mosek.fusion.pythonic as fu
 import numpy as np
 import scipy.sparse as sp
-from igraph import Graph
-from poly_matrix import PolyMatrix
-
 from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
 from cert_tools.hom_qcqp import HomQCQP
-from cert_tools.linalg_tools import smat, svec
+from cert_tools.linalg_tools import smat
 from cert_tools.sdp_solvers import (
     adjust_tol,
     adjust_tol_fusion,
     options_cvxpy,
     options_fusion,
 )
+from igraph import Graph
+
+from poly_matrix import PolyMatrix
 
 CONSTRAIN_ALL_OVERLAP = False
 
@@ -175,7 +175,7 @@ def solve_clarabel(problem: HomQCQP, use_decomp=False):
 
 def solve_dsdp(
     problem: HomQCQP,
-    form="primal",
+    use_primal=True,
     reduce_constrs=None,
     verbose=False,
     tol=TOL,
@@ -190,7 +190,7 @@ def solve_dsdp(
         tol (float, optional): Tolerance for solver. Defaults to TOL.
         adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
     """
-    if form == "primal":
+    if use_primal:
         out = solve_dsdp_primal(
             problem=problem,
             reduce_constrs=reduce_constrs,
@@ -199,7 +199,7 @@ def solve_dsdp(
             adjust=adjust,
             decomp_methods=decomp_methods,
         )
-    elif form == "dual":
+    else:
         out = solve_dsdp_dual(
             problem=problem,
             verbose=verbose,
@@ -223,6 +223,9 @@ def solve_dsdp_dual(
         tol (float, optional): Tolerance for solver. Defaults to TOL.
         adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
     """
+    if adjust:
+        print("Warning: adjust currently has no effect.")
+
     T0 = time()
     # List of constraints with homogenizing constraint.
     A_h = PolyMatrix()
@@ -500,7 +503,7 @@ def print_tuples(rows, cols, vals):
         print(f"({rows[i]},{cols[i]},{vals[i]})")
 
 
-def solve_oneshot_primal_fusion(junction_tree, verbose=False, tol=TOL, adjust=False):
+def solve_oneshot_primal_fusion(problem: HomQCQP, verbose=False, tol=TOL, adjust=False):
     """
     junction_tree: a Graph structure that corresponds to the junction tree
     of the factor graph for the problem
@@ -511,7 +514,7 @@ def solve_oneshot_primal_fusion(junction_tree, verbose=False, tol=TOL, adjust=Fa
         raise ValueError("adjust_Q does not work when dealing with cliques")
 
     # Get list of clique objects
-    clique_list = junction_tree.vs["clique_obj"]
+    clique_list = problem.vs["clique_obj"]
     assert isinstance(clique_list[0], BaseClique)
 
     X_dim = clique_list[0].X_dim
@@ -548,11 +551,11 @@ def solve_oneshot_primal_fusion(junction_tree, verbose=False, tol=TOL, adjust=Fa
                     A_0_constraints.append(con)
 
         # Loop through edges in the junction tree
-        for iEdge, edge in enumerate(junction_tree.get_edgelist()):
+        for iEdge, edge in enumerate(problem.get_edgelist()):
             # Get cliques associated with edge
-            cl = junction_tree.vs["clique_obj"][edge[0]]
-            ck = junction_tree.vs["clique_obj"][edge[1]]
-            for l in junction_tree.es["sepset"][iEdge]:
+            cl = problem.vs["clique_obj"][edge[0]]
+            ck = problem.vs["clique_obj"][edge[1]]
+            for l in problem.es["sepset"][iEdge]:
                 for rl, rk in zip(cl.get_ranges(l), ck.get_ranges(l)):
                     # cl.X_var[rl[0], rl[1]] == ck.X[rk[0], rk[1]])
                     left_start = [rl[0][0], rl[1][0]]
@@ -667,8 +670,7 @@ def solve_oneshot_primal_cvxpy(clique_list, verbose=False, tol=TOL):
 
 
 def solve_oneshot(
-    junction_tree=None,
-    clique_list=None,
+    problem: HomQCQP,
     use_primal=True,
     use_fusion=False,
     verbose=False,
@@ -677,9 +679,9 @@ def solve_oneshot(
     if not use_primal:
         print("Defaulting to primal because dual cliques not implemented yet.")
     if use_fusion:
-        return solve_oneshot_primal_fusion(junction_tree, verbose=verbose, tol=tol)
+        return solve_oneshot_primal_fusion(problem, verbose=verbose, tol=tol)
     else:
-        return solve_oneshot_primal_cvxpy(clique_list, verbose=verbose, tol=tol)
+        return solve_oneshot_primal_cvxpy(problem, verbose=verbose, tol=tol)
     # return solve_oneshot_dual_cvxpy(
     #        clique_list, verbose=verbose, tol=tol, adjust=adjust
     #    )
