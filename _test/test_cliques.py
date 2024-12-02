@@ -4,8 +4,8 @@ import numpy as np
 from poly_matrix import PolyMatrix
 
 from cert_tools import HomQCQP
-from cert_tools.test_tools import (constraints_test, cost_test,
-                                   get_chain_rot_prob)
+from cert_tools.base_clique import get_chain_clique_data
+from cert_tools.test_tools import constraints_test, cost_test, get_chain_rot_prob
 
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
@@ -48,7 +48,6 @@ def test_symmetric():
 
 
 def test_constraint_decomposition():
-
     problem = get_chain_rot_prob()
     problem.clique_decomposition()
     constraints_test(problem)
@@ -86,26 +85,8 @@ def test_cost_decomposition():
         assert set(clique.var_list).difference(var_list) == set()
 
 
-def get_chain_clique_data(var_sizes, fixed=["h"], variable=["x_", "z_"]):
-    clique_data = []
-    indices = [
-        int(v.split(variable[0])[1].strip("_")) for v in var_sizes if variable[0] in v
-    ]
-    # debug start
-    if len(variable) > 1:
-        for v in variable:
-            for i in indices:
-                assert f"{v}{i}" in var_sizes
-    # debug end
-    for i, j in zip(indices[:-1], indices[1:]):
-        clique_data.append(
-            set(fixed + [f"{v}{i}" for v in variable] + [f"{v}{j}" for v in variable])
-        )
-    return clique_data
-
-
 def test_fixed_decomposition():
-    """Example of how to do a clique decomposition keeping the order of variables within 
+    """Example of how to do a clique decomposition keeping the order of variables within
     each clique."""
     problem = HomQCQP()
     problem.C, var_sizes = generate_random_matrix()

@@ -4,6 +4,24 @@ from poly_matrix import PolyMatrix
 OVERLAP_ALL = False
 
 
+def get_chain_clique_data(var_sizes, fixed=["h"], variable=["x_", "z_"]):
+    clique_data = []
+    indices = [
+        int(v.split(variable[0])[1].strip("_")) for v in var_sizes if variable[0] in v
+    ]
+    # debug start
+    if len(variable) > 1:
+        for v in variable:
+            for i in indices:
+                assert f"{v}{i}" in var_sizes
+    # debug end
+    for i, j in zip(indices[:-1], indices[1:]):
+        clique_data.append(
+            set(fixed + [f"{v}{i}" for v in variable] + [f"{v}{j}" for v in variable])
+        )
+    return clique_data
+
+
 class BaseClique(object):
     """Base class used to represent a clique in the aggregate sparsity
     graph (ASG). Used to store useful information about the clique, namely

@@ -8,13 +8,13 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import scipy.sparse as sp
-from cert_tools.base_clique import BaseClique
-from cert_tools.linalg_tools import find_dependent_columns, svec
 from cvxopt import amd, spmatrix
 from igraph import Graph
+from poly_matrix import PolyMatrix
 from scipy.linalg import polar
 
-from poly_matrix import PolyMatrix
+from cert_tools.base_clique import BaseClique
+from cert_tools.linalg_tools import find_dependent_columns, svec
 
 
 class HomQCQP(object):
@@ -322,6 +322,20 @@ class HomQCQP(object):
 
         return clique_list, separators, parents
 
+    def get_admm_cliques(self):
+        from cert_tools.admm_clique import ADMMClique
+
+        admm_cliques = []
+        for clique in self.cliques:
+            admm_cliques.append(ADMMClique.init_from_clique(clique))
+
+    def get_homog_constraint(self, var_sizes=None):
+        if var_sizes is None:
+            var_sizes = self.var_sizes
+        Ah = PolyMatrix()
+        Ah[self.h, self.h] = 1
+        return (Ah.get_matrix(var_sizes), 1.0)
+
     def get_problem_matrices(self):
         """Get sparse, numerical form of objective and constraint matrices
         for use in optimization"""
@@ -330,10 +344,7 @@ class HomQCQP(object):
         # Define other constraints
         constraints = [(A.get_matrix(self.var_sizes), 0.0) for A in self.As]
         # define homogenizing constraint
-        Ah = PolyMatrix()
-        Ah[self.h, self.h] = 1
-        homog_constraint = (Ah.get_matrix(self.var_sizes), 1.0)
-        constraints.append(homog_constraint)
+        constraints.append(self.get_homog_constraint())
         return cost, constraints
 
     def get_standard_form(self, vec_order="C"):
@@ -417,7 +428,14 @@ class HomQCQP(object):
         return eq_list
 
     def decompose_matrix(self, pmat: PolyMatrix, method="split"):
-        """Decompose a matrix according to clique decomposition. Returns a dictionary with the key being the clique number and the value being a PolyMatrix that contains decomposed matrix on that clique."""
+        """Decompose a matrix according to clique decomposition.
+
+        Returns a dictionary with the key being the clique number and the value being a
+        PolyMatrix that contains decomposed matrix on that clique.
+
+        Args:
+            method (str): "split" means equal split between overlapping, "first" means first takes all, "greedy-cover" uses a smart algorithm to split. 
+        """
         assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
         assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")
 

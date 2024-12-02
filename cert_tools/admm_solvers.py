@@ -6,6 +6,7 @@ from multiprocessing import Pipe, Process
 import cvxpy as cp
 import mosek.fusion as fu
 import numpy as np
+
 from cert_tools.admm_clique import ADMMClique, update_rho
 from cert_tools.fusion_tools import mat_fusion, read_costs_from_mosek
 from cert_tools.sdp_solvers import (
@@ -28,8 +29,6 @@ MU_RHO = 10.0  # how much dual and primal residual may get unbalanced.
 TAU_RHO = 2.0  # how much to change rho in each iteration.
 EPS_ABS = 0.0  # set to 0 to use relative only
 EPS_REL = 1e-10
-INDIVIDUAL_RHO = False  # use different rho for each clique
-VECTOR_RHO = False  # use different rho for each error term.
 UPDATE_RHO = True  # if False, never update rho at all
 
 # Stop ADMM if the last N_ADMM iterations don't have significant change in cost.
@@ -53,10 +52,14 @@ def initialize_admm(clique_list, X0=None, rho_start=None):
         clique.rho_k = rho_start
         clique.counter = 0
         clique.status = 0
-        if X0 is not None:
-            clique.z_new = deepcopy(clique.F @ X0[k].flatten())
-        else:
-            clique.z_new = np.zeros(clique.F.shape[0])
+        if clique.G_dict is not None:
+            if X0 is not None:
+                other = np.vstack(
+                    [Gi @ X0[vi].reshape(-1, 1) for vi, Gi in clique.G_dict.items()]
+                )
+                clique.z_new = clique.G @ other
+            else:
+                clique.z_new = np.zeros(clique.F.shape[0])
 
 
 def check_convergence(clique_list, primal_err, dual_err):
@@ -78,24 +81,26 @@ def check_convergence(clique_list, primal_err, dual_err):
 
 def update_z(clique_list):
     """Average the overlapping areas of X_new for consensus (stored in Z_new)."""
-    for i, c in enumerate(clique_list):
-        this = c.X_new.flatten()
-        left = clique_list[i - 1].X_new.flatten() if i > 0 else None
-        right = clique_list[i + 1].X_new.flatten() if i < len(clique_list) - 1 else None
+    for c in clique_list:
 
         c.z_prev = deepcopy(c.z_new)
+        other_contributions = np.hstack(
+            [Gi @ clique_list[vi].X_new.flatten() for vi, Gi in c.G_dict.items()]
+        )
+        c.z_new = 0.5 * (c.F @ c.X_new.flatten() - other_contributions)
+
         # for each Z, average over the neighboring cliques.
-        if i == 0:
-            c.z_new = 0.5 * (c.F_right @ this + c.F_left @ right)
-        elif i == len(clique_list) - 1:
-            c.z_new = 0.5 * (c.F_right @ left + c.F_left @ this)
-        else:
-            c.z_new = 0.5 * np.hstack(
-                [
-                    c.F_right @ left + c.F_left @ this,
-                    c.F_right @ this + c.F_left @ right,
-                ]
-            )
+        # if i == 0:
+        #    c.z_new = 0.5 * (c.F_right @ this + c.F_left @ right)
+        # elif i == len(clique_list) - 1:
+        #    c.z_new = 0.5 * (c.F_right @ left + c.F_left @ this)
+        # else:
+        #    c.z_new = 0.5 * np.hstack(
+        #        [
+        #            c.F_right @ left + c.F_left @ this,
+        #            c.F_right @ this + c.F_left @ right,
+        #        ]
+        #    )
         assert c.z_new.shape == c.z_prev.shape
 
 
@@ -103,8 +108,7 @@ def update_sigmas(clique_list):
     """Update sigmas (dual variables) and residual terms."""
     for clique in clique_list:
         assert isinstance(clique, ADMMClique)
-        g = clique.z_new
-        clique.primal_res_k = clique.F @ clique.X_new.flatten() - g
+        clique.primal_res_k = clique.F @ clique.X_new.flatten() - clique.z_new
         clique.dual_res_k = clique.rho_k * (clique.z_new - clique.z_prev)
         clique.sigmas += clique.rho_k * clique.primal_res_k
 
@@ -176,14 +180,8 @@ def solve_inner_sdp_fusion(
             scale = 1.0
         if F is not None:
             assert g is not None
-            if F.shape[1] == Q.shape[0]:
-                err = fu.Expr.sub(
-                    fu.Expr.mul(F, X.slice([0, 0], [Q.shape[0], 1])),
-                    fu.Matrix.dense(g.value[:, None]),
-                )
-            else:
-                F_fu = mat_fusion(F)
-                err = fu.Expr.sub(fu.Expr.mul(F_fu, fu.Expr.flatten(X)), g)
+            F_fu = mat_fusion(F)
+            err = fu.Expr.sub(fu.Expr.mul(F_fu, fu.Expr.flatten(X)), g)
 
             # doesn't work unforuntately:
             # Expr.mul(0.5 * rho, Expr.sum(Expr.mulElm(err, err))),
@@ -218,7 +216,7 @@ def solve_inner_sdp_fusion(
                 fu.Domain.equalsTo(0.0),
             )
         else:
-            M.objective(fu.ObjectiveSense.Minimize, fu.Expr.dot(Q_here, X))
+            M.objective(fu.ObjectiveSense.Minimize, fu.Expr.dot(mat_fusion(Q_here), X))
 
         adjust_tol_fusion(options_fusion, tol)
         options_fusion["intpntCoTolRelGap"] = tol * 10
@@ -253,16 +251,15 @@ def solve_inner_sdp(
     s.t. <Ai, X> = bi
          X >= 0
 
-    where e(X) = F @ vec(X) - b
+    where e(X) = F @ vec(X) - g
     """
     if adjust:
         print("Warning: adjusting Q is currently not fully working for inner sdp")
 
     if use_fusion:
-        Constraints = list(zip(clique.A_list, clique.b_list))
         return solve_inner_sdp_fusion(
             clique.Q,
-            Constraints,
+            clique.Constraints,
             clique.F,
             clique.g,
             clique.sigmas,
@@ -305,20 +302,14 @@ def solve_alternating(
     maxiter=MAXITER,
     mu_rho=MU_RHO,
     tau_rho=TAU_RHO,
-    individual_rho=INDIVIDUAL_RHO,
-    vector_rho=VECTOR_RHO,
 ):
     """Use ADMM to solve decomposed SDP, but without using parallelism."""
-    assert not (vector_rho and not individual_rho), "incompatible combination"
     if sigmas is not None:
         for k, sigma in sigmas.items():
             clique_list[k].sigmas = sigma
 
     for c in clique_list:
-        if vector_rho:
-            c.rho_k = np.full(c.F.shape[0], rho_start).astype(float)
-        else:
-            c.rho_k = rho_start
+        c.rho_k = rho_start
 
     # rho_k = rho_start
     info_here = {"success": False, "msg": "did not converge.", "stop": False}
@@ -333,9 +324,7 @@ def solve_alternating(
         # ADMM step 1: update X
         for k, clique in enumerate(clique_list):
             assert isinstance(clique, ADMMClique)  # for debugging only
-            # update g with solved value from previous iteration
-            clique.g = clique_list[k].z_new
-            assert clique.g is not None
+            clique.g = clique.z_new
 
             X, info = solve_inner_sdp(
                 clique,
@@ -366,15 +355,11 @@ def solve_alternating(
 
         # update rho
         if UPDATE_RHO:
-            if individual_rho:
-                for c in clique_list:
-                    c.update_rho(mu_rho=mu_rho, tau_rho=tau_rho)
-            else:
-                rho_new = update_rho(
-                    clique_list[0].rho_k, dual_err, primal_err, mu=MU_RHO, tau=TAU_RHO
-                )
-                for c in clique_list:
-                    c.rho_k = rho_new
+            rho_new = update_rho(
+                clique_list[0].rho_k, dual_err, primal_err, mu=mu_rho, tau=tau_rho
+            )
+            for c in clique_list:
+                c.rho_k = rho_new
 
         info_here["cost"] = cost_original
         cost_history.append(cost_original)
@@ -407,6 +392,8 @@ def solve_parallel(
     maxiter=MAXITER,
     use_fusion=False,
     verbose=False,
+    mu_rho=MU_RHO,
+    tau_rho=TAU_RHO,
 ):
     """Use ADMM to solve decomposed SDP, with simple parallelism."""
 
@@ -496,17 +483,11 @@ def solve_parallel(
 
         # Intermediate steps: update rho and check convergence
         if UPDATE_RHO:
-            if INDIVIDUAL_RHO:
-                for c in clique_list:
-                    c.update_rho(
-                        mu_rho=MU_RHO, tau_rho=TAU_RHO, individual_rho=INDIVIDUAL_RHO
-                    )
-            else:
-                rho_new = update_rho(
-                    clique_list[0].rho_k, dual_err, primal_err, mu=MU_RHO, tau=TAU_RHO
-                )
-                for c in clique_list:
-                    c.rho_k = rho_new
+            rho_new = update_rho(
+                clique_list[0].rho_k, dual_err, primal_err, mu=mu_rho, tau=tau_rho
+            )
+            for c in clique_list:
+                c.rho_k = rho_new
         cost_original = np.sum(
             [np.trace(clique.X_new @ clique.Q) for clique in clique_list]
         )

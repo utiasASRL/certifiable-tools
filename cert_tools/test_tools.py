@@ -1,14 +1,14 @@
 import numpy as np
-from cert_tools import HomQCQP
+from poly_matrix import PolyMatrix
 from pylgmath import so3op
 
-from poly_matrix import PolyMatrix
+from cert_tools import HomQCQP
 
 # Global Defaults
 ER_MIN = 1e6
 
 
-def cost_test(problem):
+def cost_test(problem: HomQCQP):
     variables = problem.C.get_variables()
     C = PolyMatrix()
     mat_decomp = problem.decompose_matrix(problem.C, method="split")
@@ -19,8 +19,9 @@ def cost_test(problem):
     )
 
 
-def constraints_test(problem):
+def constraints_test(problem: HomQCQP):
     for A_gt in problem.As:
+        assert isinstance(A_gt, PolyMatrix)
         variables = A_gt.get_variables()
         A = PolyMatrix()
         mat_decomp = problem.decompose_matrix(A_gt, method="split")

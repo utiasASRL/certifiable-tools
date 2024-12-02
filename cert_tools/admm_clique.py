@@ -5,6 +5,8 @@ import numpy as np
 import scipy.sparse as sp
 
 from cert_tools.base_clique import BaseClique
+from cert_tools.hom_qcqp import HomQCQP
+from cert_tools.linalg_tools import svec
 from cert_tools.sdp_solvers import adjust_Q
 
 CONSTRAIN_ALL_OVERLAP = False
@@ -46,34 +48,20 @@ class ADMMClique(BaseClique):
     def __init__(
         self,
         Q,
-        A_list: list,
-        b_list: list,
+        Constraints: list,
         var_dict: dict,
         index,
         X: np.ndarray = None,
-        N: int = 0,
-        hom="l",
-        x_dim: int = 0,
-        base_size: int = 1,
+        hom="h",
     ):
-        super().__init__(
-            Q=Q,
-            A_list=A_list,
-            b_list=b_list,
-            var_size=var_dict,
-            X=X,
-            index=index,
-            hom=hom,
-        )
-        self.x_dim = x_dim
-        # usually, this corresponds to just the homogenization, which is shared.
-        # for the robust lifters and stereo, it also comprises the pose.
-        self.base_size = base_size
-        self.constrain_all = CONSTRAIN_ALL_OVERLAP
-        if self.constrain_all:
-            self.num_overlap = x_dim**2 + x_dim
-        else:
-            self.num_overlap = x_dim
+        self.Q = Q
+        self.Constraints = Constraints
+
+        self.X_dim = Q.get_shape()[0]
+        self.var_size = var_dict
+        self.X = X
+        self.index = index
+        self.hom = hom
         self.status = 0
 
         self.X_var = cp.Variable((self.X_dim, self.X_dim), PSD=True)
@@ -81,171 +69,81 @@ class ADMMClique(BaseClique):
         self.z_new = None
         self.z_prev = None
 
-        self.g = None
-
-        assert N > 0, "must give total number of nodes N"
-        try:
-            self.F = self.generate_F(N=N)
-            self.E = self.get_E(N=N)
-        except:
-            self.E = None
-
-    def get_E(self, N):
-        """Create the indexing matrix that picks the k-th out of N cliques.
-
-        For our example, this matrix is of the form:
-
-             k-th block
-                  |
-                  v
-         | 1     0 0     |
-         | 0 ... 1 0 ... |
-         | 0 ... 0 1 ... |
-
+    @staticmethod
+    def create_admm_cliques_from_problem(problem: HomQCQP, variable=["x_", "z_"]):
         """
-        data = np.ones(self.X_dim)
-        rows = range(self.X_dim)
-        columns = [0] + list(
-            range(
-                self.base_size + self.index * self.x_dim,
-                self.base_size + self.index * self.x_dim + 2 * self.x_dim,
+        Generate the cliques to be used in ADMM.
+
+        The generated F and G matrices are the vectorized versions of the consistency constraints.
+        They are such that F @ this.flatten() + G @ other.flatten() == 0, where other is the stack
+        of all flattened cliques at the indices given in variables_FG.
+        """
+        from cert_tools.base_clique import get_chain_clique_data
+
+        clique_data = get_chain_clique_data(
+            problem.var_sizes, fixed=["h"], variable=variable
+        )
+        problem.clique_decomposition(clique_data=clique_data)
+
+        eq_list = problem.get_consistency_constraints()
+
+        Q_dict = problem.decompose_matrix(problem.C, method="split")
+        A_dict_list = [problem.decompose_matrix(A, method="first") for A in problem.As]
+        admm_cliques = []
+        for clique in problem.cliques:
+            Constraints = [problem.get_homog_constraint(clique.var_sizes)]
+            for A_dict in A_dict_list:
+                if clique.index in A_dict.keys():
+                    Constraints.append(
+                        (A_dict[clique.index].get_matrix(clique.var_sizes), 0.0)
+                    )
+            admm_clique = ADMMClique(
+                Q=Q_dict[clique.index].get_matrix(clique.var_sizes),
+                Constraints=Constraints,
+                var_dict=clique.var_sizes,
+                index=clique.index,
+                hom="h",
+                N=len(clique_data),
             )
-        )
-        shape = self.X_dim, 1 + N * self.x_dim
-        return sp.coo_matrix((data, [rows, columns]), shape=shape)
 
-    def get_B_list_right(self):
-        B_list = []
-        B = np.zeros((self.X_dim, self.X_dim))
-        B[0, 0] = 1.0
-        # B_list.append(B)
-        for i, j in itertools.combinations_with_replacement(range(self.x_dim), 2):
-            B = np.zeros((self.X_dim, self.X_dim))
-            B[self.base_size + self.x_dim + i, self.base_size + self.x_dim + j] = 1.0
-            B[self.base_size + self.x_dim + j, self.base_size + self.x_dim + i] = 1.0
-            B_list.append(B)
-        for i in range(self.x_dim):
-            B = np.zeros((self.X_dim, self.X_dim))
-            B[0, self.base_size + self.x_dim + i] = 1.0
-            B[self.base_size + self.x_dim + i, 0] = 1.0
-            B_list.append(B)
-        return B_list
+            # find all overlapping constraints involving this clique
+            # <Ak, Xk> + <Al, Xl> = 0
+            # F @ vech(Xk) + G @ vech(Xl) = 0
+            F = dict()
+            G = dict()
+            for k, l, Ak, Al in eq_list:
+                if k == clique.index:
+                    if l in F:
+                        # TODO(FD) we currently need to use the full matrix and not just the upper half
+                        # because it's not trivial to extract the upper half of a matrix in the Fusion API.
+                        # We might change that later.
+                        F[l] = sp.vstack([F[l], Ak.reshape(1, -1)])
+                        G[l] = sp.vstack([G[l], Al.reshape(1, -1)])
+                    else:
+                        F[l] = Ak.reshape(1, -1)
+                        G[l] = Al.reshape(1, -1)
+                # TODO(FD) I am not 100% this is needed. For dSDP this would be counting constraints double.
+                # But it seems like for ADMM it is required, because for example, the first clique in a chain
+                # would otherwise not be linked to any other cliques through consensus constraints.
+                elif l == clique.index:
+                    if k in F:
+                        F[k] = sp.vstack([F[k], Al.reshape(1, -1)])
+                        G[k] = sp.vstack([G[k], Ak.reshape(1, -1)])
+                    else:
+                        F[k] = Al.reshape(1, -1)
+                        G[k] = Ak.reshape(1, -1)
 
-    def get_B_list_left(self):
-        B_list = []
-        B = np.zeros((self.X_dim, self.X_dim))
-        B[0, 0] = -1.0
-        # B_list.append(B)
-        for i, j in itertools.combinations_with_replacement(range(self.x_dim), 2):
-            B = np.zeros((self.X_dim, self.X_dim))
-            B[self.base_size + i, self.base_size + j] = -1.0
-            B[self.base_size + j, self.base_size + i] = -1.0
-            B_list.append(B)
-        for i in range(self.x_dim):
-            B = np.zeros((self.X_dim, self.X_dim))
-            B[0, self.base_size + i] = -1.0
-            B[self.base_size + i, 0] = -1.0
-            B_list.append(B)
-        return B_list
-
-    def generate_g(self, left=None, right=None):
-        """Generate vector for overlap constraints: F @ X.flatten() - g = 0"""
-        vec_all = None
-        if left is not None:
-            vec_all = self.F_right @ left.flatten()
-        if right is not None:
-            vec_new = self.F_left @ right.flatten()
-            if isinstance(right, np.ndarray):
-                vec_all = (
-                    np.hstack([vec_all, vec_new]) if vec_all is not None else vec_new
-                )
-            elif isinstance(right, cp.Variable):
-                vec_all = (
-                    cp.hstack([vec_all, vec_new]) if vec_all is not None else vec_new
-                )
-            else:
-                raise TypeError("unexpected type")
-        return vec_all
-
-    def generate_F(self, N):
-        """Generate matrix for overlap constraints: F @ X.flatten() - g = 0"""
-        self.F_right = self.F_oneside(*self.get_slices_right())
-        self.F_left = self.F_oneside(*self.get_slices_left())
-        if self.index == 0:
-            self.F = self.F_right
-        elif self.index == N - 1:
-            self.F = self.F_left
-        else:
-            self.F = sp.vstack([self.F_left, self.F_right])
-        self.sigmas = np.zeros(self.F.shape[0])
-
-    def F_oneside(self, starts, ends):
-        """Picks the right node of the clique."""
-        n_constraints = sum(
-            (end[0] - start[0]) * (end[1] - start[1])
-            for start, end in zip(starts, ends)
-        )
-        assert n_constraints == self.num_overlap
-        counter = 0
-        i_list = []
-        j_list = []
-        data = []  # for testing only
-        for start, end in zip(starts, ends):
-            for i in range(start[0], end[0]):
-                for j in range(start[1], end[1]):
-                    i_list.append(counter)
-                    j_list.append(i * self.X_dim + j)
-                    counter += 1
-                    if self.X is not None:
-                        data.append(self.X[i, j])
-        assert counter == n_constraints
-        F_oneside = sp.csr_array(
-            ([1] * len(i_list), (i_list, j_list)),
-            shape=(n_constraints, self.X_var.size),
-        )
-        if self.X is not None:
-            np.testing.assert_allclose(F_oneside @ self.X.flatten(), data)
-        return F_oneside
-
-    def generate_overlap_slices(self, N):
-        if self.index > 0:  # the RIGHT side of the left node is overlapping
-            self.left_slice_start, self.left_slice_end = self.get_slices_right()
-        else:
-            self.left_slice_start = self.left_slice_end = [[0, 0]]
-        if self.index < N - 1:  # the LEFT side of the right node is overlapping
-            self.right_slice_start, self.right_slice_end = self.get_slices_left()
-        else:
-            self.right_slice_start = self.right_slice_end = [[0, 0]]
-
-    def get_slices_right(self):
-        """Picks the right part of a node"""
-        left_slice_start = [[0, self.base_size + self.x_dim]]  # i_start, i_end
-        left_slice_end = [[1, self.base_size + 2 * self.x_dim]]
-        if self.constrain_all:
-            left_slice_start += [
-                [self.base_size + self.x_dim, self.base_size + self.x_dim]
-            ]
-            left_slice_end += [
-                [self.base_size + 2 * self.x_dim, self.base_size + 2 * self.x_dim]
-            ]
-        return left_slice_start, left_slice_end
-
-    def get_slices_left(self):
-        """Picks the left part of a node"""
-        right_slice_start = [[0, self.base_size]]
-        right_slice_end = [[1, self.base_size + self.x_dim]]
-        if self.constrain_all:
-            right_slice_start += [[self.base_size, self.base_size]]
-            right_slice_end += [
-                [self.base_size + self.x_dim, self.base_size + self.x_dim]
-            ]
-        return right_slice_start, right_slice_end
+            admm_clique.F = sp.vstack(F.values()) if len(F) else None
+            admm_clique.G_dict = G
+            admm_clique.sigmas = np.zeros(admm_clique.F.shape[0]) if len(F) else None
+            admm_cliques.append(admm_clique)
+        return admm_cliques
 
     def current_error(self):
-        return np.sum(np.abs(self.F @ self.X_new - self.g))
+        return np.sum(np.abs(self.F @ self.X_new - self.z_new))
 
     def get_constraints_cvxpy(self, X):
-        return [cp.trace(A_k @ X) == b_k for A_k, b_k in zip(self.A_list, self.b_list)]
+        return [cp.trace(A_k @ X) == b_k for A_k, b_k in zip(self.Constraints)]
 
     def get_objective_cvxpy(self, X, rho_k, adjust=False, scale_method="fro"):
         if adjust:
