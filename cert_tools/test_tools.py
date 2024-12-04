@@ -218,13 +218,6 @@ class RotSynchLoopProblem(HomQCQP):
                 constraints.append(A)
         return constraints
 
-    @staticmethod
-    def get_homog_constraint():
-        """generate homogenizing constraint"""
-        A = PolyMatrix()
-        A["h", "h"] = 1
-        return [(A, 1.0)]
-
     def convert_sdp_to_rot(self, X, er_min=ER_MIN):
         """
         Converts a solution matrix to a list of rotations.

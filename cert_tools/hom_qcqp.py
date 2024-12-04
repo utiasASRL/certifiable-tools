@@ -322,6 +322,13 @@ class HomQCQP(object):
 
         return clique_list, separators, parents
 
+    def get_X0(self, X):
+        X0 = {}
+        X_poly, __ = PolyMatrix.init_from_sparse(X, var_dict=self.var_sizes)
+        for clique in self.cliques:
+            X0[clique.index] = X_poly.get_matrix_dense(clique.var_sizes)
+        return X0
+
     def get_admm_cliques(self):
         from cert_tools.admm_clique import ADMMClique
 
@@ -334,7 +341,7 @@ class HomQCQP(object):
             var_sizes = self.var_sizes
         Ah = PolyMatrix()
         Ah[self.h, self.h] = 1
-        return (Ah.get_matrix(var_sizes), 1.0)
+        return (Ah.get_matrix_sparse(var_sizes), 1.0)
 
     def get_problem_matrices(self):
         """Get sparse, numerical form of objective and constraint matrices
@@ -434,7 +441,7 @@ class HomQCQP(object):
         PolyMatrix that contains decomposed matrix on that clique.
 
         Args:
-            method (str): "split" means equal split between overlapping, "first" means first takes all, "greedy-cover" uses a smart algorithm to split. 
+            method (str): "split" means equal split between overlapping, "first" means first takes all, "greedy-cover" uses a smart algorithm to split.
         """
         assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
         assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")

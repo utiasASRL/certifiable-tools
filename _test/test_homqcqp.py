@@ -2,7 +2,7 @@ import random
 import unittest
 
 import numpy as np
-#import pytest
+from poly_matrix import PolyMatrix
 
 from cert_tools import HomQCQP
 from cert_tools.hom_qcqp import greedy_cover
@@ -11,7 +11,7 @@ from cert_tools.sdp_solvers import solve_sdp_homqcqp
 from cert_tools.sparse_solvers import solve_clarabel, solve_dsdp
 from cert_tools.test_tools import get_chain_rot_prob, get_loop_rot_prob
 
-from poly_matrix import PolyMatrix
+# import pytest
 
 
 class TestHomQCQP(unittest.TestCase):
@@ -398,11 +398,11 @@ if __name__ == "__main__":
     test = TestHomQCQP()
     # test.test_solve()
     # test.test_get_asg(plot=True)
-    test.test_clique_decomp(plot=False)
+    # test.test_clique_decomp(plot=False)
     # test.test_consistency_constraints()
     # test.test_greedy_cover()
     # test.test_decompose_matrix()
     # test.test_solve_primal_dsdp()
     # test.test_solve_dual_dsdp()
-    # test.test_standard_form()
+    test.test_standard_form()
     # test.test_clarabel()
