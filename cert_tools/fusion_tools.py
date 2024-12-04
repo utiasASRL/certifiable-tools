@@ -21,6 +21,13 @@ def get_slice(X: Matrix, i: int):
     return X.slice([i, 0, 0], [i + 1, X_dim, X_dim]).reshape([X_dim, X_dim])
 
 
+def svec_fusion(X):
+    """Not working"""
+    N = X.numRows()
+    assert isinstance(X, Matrix)
+    return [X.index(i, j) for (i, j) in zip(*np.triu_indices(N))]
+
+
 # TODO(FD) not used anymore as now we are setting accSolutionStatus to Anything.
 # Before, this was used to read from UNKNOWN problem status.
 def read_costs_from_mosek(fname):
