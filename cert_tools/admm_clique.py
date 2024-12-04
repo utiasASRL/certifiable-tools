@@ -1,12 +1,9 @@
-import itertools
-
 import cvxpy as cp
 import numpy as np
 import scipy.sparse as sp
 
 from cert_tools.base_clique import BaseClique
 from cert_tools.hom_qcqp import HomQCQP
-from cert_tools.linalg_tools import svec
 from cert_tools.sdp_solvers import adjust_Q
 
 CONSTRAIN_ALL_OVERLAP = False
@@ -103,39 +100,40 @@ class ADMMClique(BaseClique):
                 var_dict=clique.var_sizes,
                 index=clique.index,
                 hom="h",
-                N=len(clique_data),
             )
 
             # find all overlapping constraints involving this clique
             # <Ak, Xk> + <Al, Xl> = 0
             # F @ vech(Xk) + G @ vech(Xl) = 0
-            F = dict()
-            G = dict()
+            F_dict = dict()
+            G_dict = dict()
             for k, l, Ak, Al in eq_list:
                 if k == clique.index:
-                    if l in F:
+                    if l in F_dict:
                         # TODO(FD) we currently need to use the full matrix and not just the upper half
                         # because it's not trivial to extract the upper half of a matrix in the Fusion API.
                         # We might change that later.
-                        F[l] = sp.vstack([F[l], Ak.reshape(1, -1)])
-                        G[l] = sp.vstack([G[l], Al.reshape(1, -1)])
+                        F_dict[l] = sp.vstack([F_dict[l], Ak.reshape(1, -1)])
+                        G_dict[l] = sp.vstack([G_dict[l], Al.reshape(1, -1)])
                     else:
-                        F[l] = Ak.reshape(1, -1)
-                        G[l] = Al.reshape(1, -1)
+                        F_dict[l] = Ak.reshape(1, -1)
+                        G_dict[l] = Al.reshape(1, -1)
                 # TODO(FD) I am not 100% this is needed. For dSDP this would be counting constraints double.
                 # But it seems like for ADMM it is required, because for example, the first clique in a chain
                 # would otherwise not be linked to any other cliques through consensus constraints.
                 elif l == clique.index:
-                    if k in F:
-                        F[k] = sp.vstack([F[k], Al.reshape(1, -1)])
-                        G[k] = sp.vstack([G[k], Ak.reshape(1, -1)])
+                    if k in F_dict:
+                        F_dict[k] = sp.vstack([F_dict[k], Al.reshape(1, -1)])
+                        G_dict[k] = sp.vstack([G_dict[k], Ak.reshape(1, -1)])
                     else:
-                        F[k] = Al.reshape(1, -1)
-                        G[k] = Ak.reshape(1, -1)
+                        F_dict[k] = Al.reshape(1, -1)
+                        G_dict[k] = Ak.reshape(1, -1)
 
-            admm_clique.F = sp.vstack(F.values()) if len(F) else None
-            admm_clique.G_dict = G
-            admm_clique.sigmas = np.zeros(admm_clique.F.shape[0]) if len(F) else None
+            admm_clique.F = sp.vstack(F_dict.values()) if len(F_dict) else None
+            admm_clique.G_dict = G_dict
+            admm_clique.sigmas = (
+                np.zeros(admm_clique.F.shape[0]) if len(F_dict) else None
+            )
             admm_cliques.append(admm_clique)
         return admm_cliques
 

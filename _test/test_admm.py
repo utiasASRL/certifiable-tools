@@ -41,9 +41,8 @@ from poly_matrix import PolyMatrix
 from cert_tools.admm_clique import ADMMClique
 from cert_tools.admm_solvers import solve_alternating
 from cert_tools.hom_qcqp import HomQCQP
-from cert_tools.linalg_tools import rank_project, svec
+from cert_tools.linalg_tools import rank_project
 from cert_tools.sdp_solvers import solve_sdp
-from cert_tools.test_tools import get_chain_rot_prob
 
 
 def create_admm_test_problem():
@@ -75,6 +74,12 @@ def create_admm_test_problem():
            [0 0 0 0 0]
            [0 1 0 0 0]
          < [0 0-1 0 0], X_i > = 0   i = 1, 2, 3
+           [0 0 0 0 0] 
+           [0 0 0 0 0]
+
+           [0 1-1 0 0]
+           [0 0 0 0 0]
+         < [0 0 0 0 0], X_i > = 0   i = 1, 2, 3
            [0 0 0 0 0] 
            [0 0 0 0 0]
     """
@@ -109,7 +114,6 @@ def test_consistency():
     Q, Constraints = problem.get_problem_matrices()
     X, *_ = solve_sdp(Q, Constraints)
     X_poly, __ = PolyMatrix.init_from_sparse(X, var_dict=problem.var_sizes)
-
     for clique in admm_cliques:
         clique.X = X_poly.get_matrix_dense(clique.var_size)
 
@@ -126,12 +130,9 @@ def test_consistency():
 
 
 def test_problem():
-
     problem = create_admm_test_problem()
     Q, Constraints = problem.get_problem_matrices()
     X, *_ = solve_sdp(Q, Constraints)
-    print(X)
-    plt.matshow(X)
     x, info_rank = rank_project(X)
     np.testing.assert_allclose(
         x.flatten(), [1.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 0.0, 0.0], atol=1e-5
@@ -179,16 +180,46 @@ def plot_admm():
     return
 
 
+def test_update_z():
+    from cert_tools.admm_solvers import initialize_admm, update_g
+
+    """ If the variables are already consistent, then update_z should have no effect. """
+    problem = create_admm_test_problem()
+    admm_cliques = ADMMClique.create_admm_cliques_from_problem(problem, variable=["x_"])
+
+    x = np.array([1.0, 1, 1, 2, 2, 3, 3, 0, 0])
+    X = np.outer(x, x)
+    X0 = problem.get_X0(X)
+    for clique in admm_cliques:
+        clique.X_new = X0[clique.index]
+
+    initialize_admm(admm_cliques, X0=X0)
+    update_g(admm_cliques)
+    for clique in admm_cliques:
+        np.testing.assert_allclose(clique.g_prev, clique.g)
+    print("test passed")
+
+
 def test_admm():
     problem = create_admm_test_problem()
+    admm_cliques = ADMMClique.create_admm_cliques_from_problem(problem, variable=["x_"])
 
+    # get the one-shot SDP solution
     Q, Constraints = problem.get_problem_matrices()
     X, info_SDP = solve_sdp(Q, Constraints)
     print("cost SDP", info_SDP["cost"])
 
-    admm_cliques = ADMMClique.create_admm_cliques_from_problem(problem, variable=["x_"])
-    solution, info = solve_alternating(admm_cliques, verbose=True, maxiter=10)
-    print("cost ADMM", info["cost"])
+    # create initialization
+    X0 = problem.get_X0(X)
+
+    # get the ADMM solution
+    X_list, info = solve_alternating(
+        admm_cliques, verbose=True, maxiter=100, X0=X0, adjust=False
+    )
+
+    # TODO(FD): very inaccurate -- is this normal?
+    x_minrank, *_ = problem.get_mr_completion(X_list, rank_tol=10)
+    np.testing.assert_allclose(x_minrank[:, 0], [1, 1, 1, 2, 2, 3, 3, 0, 0], atol=0.1)
 
 
 def notest_fusion():
@@ -206,6 +237,7 @@ def notest_fusion():
 
 if __name__ == "__main__":
     # plot_admm()
-    # test_consistency()
+    test_problem()
+    test_consistency()
+    test_update_z()
     test_admm()
-    # test_problem()
