@@ -118,6 +118,7 @@ def get_subgradient(Q, A_list, a):
 def solve_low_rank_sdp(
     Q,
     Constraints,
+    IneqConstraints=[],
     rank=1,
     x_cand=None,
     adjust=(1, 0),
@@ -127,6 +128,9 @@ def solve_low_rank_sdp(
 ):
     """Use the factorization proposed by Burer and Monteiro to solve a
     fixed rank SDP.
+
+    IneqConstraints: (A, bl, br) s.t. bl <= Y'A'Y <= br
+
     """
     # Get problem dimensions
     n = Q.shape[0]
@@ -134,26 +138,37 @@ def solve_low_rank_sdp(
     Y = cas.SX.sym("Y", n, rank)
     # Define cost
     f = cas.trace(Y.T @ Q @ Y)
-    # Define constraints
-    g_lhs = []
+
+    # Define equality constraints
+    g = []
     g_rhs = []
-    for A, b in Constraints:
-        g_lhs += [cas.trace(Y.T @ A @ Y)]
+    g_lhs = []
+    for i, (A, b) in enumerate(Constraints):
+        # Limit the number of constraints used to the degrees of freedom
+        if limit_constraints and i > rank * n:
+            continue
+        g += [cas.trace(Y.T @ A @ Y)]
+        g_lhs += [b]
         g_rhs += [b]
-    # Limit the number of constraints used to the degrees of freedom
-    if limit_constraints and len(g_lhs) > rank * n:
-        g_lhs = g_lhs[: rank * n]
-        g_rhs = g_rhs[: rank * n]
+
+    # Define inequality constraints
+    for i, (A, bl, br) in enumerate(IneqConstraints):
+        g += [cas.trace(Y.T @ A @ Y)]
+        g_lhs += [bl]
+        g_rhs += [br]
+
     # Concatenate
+    g = cas.vertcat(*g)
     g_lhs = cas.vertcat(*g_lhs)
     g_rhs = cas.vertcat(*g_rhs)
+
     # Define Low Rank NLP
-    nlp = {"x": Y.reshape((-1, 1)), "f": f, "g": g_lhs}
+    nlp = {"x": Y.reshape((-1, 1)), "f": f, "g": g}
     options["ipopt.print_level"] = int(verbose)
     options["print_time"] = int(verbose)
     S = cas.nlpsol("S", "ipopt", nlp, options)
     # Run Program
-    sol_input = dict(lbg=g_rhs, ubg=g_rhs)
+    sol_input = dict(lbg=g_lhs, ubg=g_rhs)
     if x_cand is not None:
         sol_input["x0"] = x_cand.reshape((-1, 1))
     r = S(**sol_input)
@@ -173,13 +188,14 @@ def solve_low_rank_sdp(
         H = H + A * mults[i, 0]
 
     # Return
-    info = {"X": X_opt, "H": H, "cost": cost}
+    info = {"X": X_opt, "H": H, "cost": cost, "Y": Y_opt}
     return Y_opt, info
 
 
 def solve_sdp_mosek(
     Q,
     Constraints,
+    IneqConstraints=[],
     adjust=ADJUST,
     primal=PRIMAL,
     tol=TOL,
@@ -192,6 +208,8 @@ def solve_sdp_mosek(
         Q: Cost matrix
         Constraints: List of tuples representing constraints. Each tuple, (A,b) is such that
                         tr(A @ X) == b
+        IneqConstraints: List of tuples representing inequality constraints. Each tuple, (A,bl, br) is such that
+                        bl <= tr(A @ X) <= br
         adjust (bool, optional): Whether or not to rescale and shift Q for better conditioning.
         verbose (bool, optional): If true, prints output to screen. Defaults to True.
 
@@ -231,12 +249,16 @@ def solve_sdp_mosek(
         )
         # problem params
         dim = Q_here.shape[0]
-        numcon = len(Constraints)
+        numcon = len(Constraints) + len(IneqConstraints)
+
         # append vars,constr
         task.appendbarvars([dim])
         task.appendcons(numcon)
+
         # bound keys
         bkc = mosek.boundkey.fx
+        bkr = mosek.boundkey.ra
+
         # Cost matrix
         Q_l = sp.tril(Q_here, format="csr")
         rows, cols = Q_l.nonzero()
@@ -244,23 +266,39 @@ def solve_sdp_mosek(
         assert not np.any(np.isinf(vals)), ValueError("Cost matrix has inf vals")
         symq = task.appendsparsesymmat(dim, rows.astype(int), cols.astype(int), vals)
         task.putbarcj(0, [symq], [1.0])
+
         # Input the objective sense (minimize/maximize)
         task.putobjsense(mosek.objsense.minimize)
-        # Add constraints
+
+        # Add equality constraints
         cnt = 0
         for A, b in Constraints:
             # Generate matrix
             A_l = sp.tril(A, format="csr")
             rows, cols = A_l.nonzero()
-            vals = A_l[rows, cols].tolist()[0]
+            vals = np.array(A_l[rows, cols]).flatten()
             syma = task.appendsparsesymmat(dim, rows, cols, vals)
             # Add constraint matrix
             task.putbaraij(cnt, 0, [syma], [1.0])
             # Set bound (equality)
             task.putconbound(cnt, bkc, b, b)
             cnt += 1
+
+        # Add inequality constraints
+        for A, bl, br in IneqConstraints:
+            A_l = sp.tril(A, format="csr")
+            rows, cols = A_l.nonzero()
+            vals = np.array(A_l[rows, cols]).flatten()
+            syma = task.appendsparsesymmat(dim, rows, cols, vals)
+            # Add constraint matrix
+            task.putbaraij(cnt, 0, [syma], [1.0])
+            # Set bound (equality)
+            task.putconbound(cnt, bkr, bl, br)
+            cnt += 1
+
         # Store problem
         task.writedata("solve_mosek.ptf")
+
         # Solve the problem and print summary
         task.optimize()
         task.solutionsummary(mosek.streamtype.msg)
