@@ -8,13 +8,15 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import scipy.sparse as sp
+from cert_tools.base_clique import BaseClique, get_chain_clique_data
+from cert_tools.linalg_tools import find_dependent_columns, svec
 from cvxopt import amd, spmatrix
 from igraph import Graph
-from poly_matrix import PolyMatrix
 from scipy.linalg import polar
 
-from cert_tools.base_clique import BaseClique
-from cert_tools.linalg_tools import find_dependent_columns, svec
+from poly_matrix import PolyMatrix
+
+CONSTRAIN_ONLY_H_ROW = True
 
 
 class HomQCQP(object):
@@ -45,22 +47,31 @@ class HomQCQP(object):
         self.h = homog_var  # Homogenizing variable name
 
     @staticmethod
-    def init_from_lifter(lifter):
+    def init_from_lifter(lifter, learned=False):
+        from lifters.state_lifter import StateLifter
+
+        assert isinstance(lifter, StateLifter)
         problem = HomQCQP()
         problem.C = lifter.get_Q_from_y(lifter.y_, output_poly=True)
         problem.var_sizes = lifter.var_dict
 
-        A_sparse_list = lifter.get_A_learned_simple()
-        A_poly_list = []
-        for A in A_sparse_list:
-            A_poly, __ = PolyMatrix.init_from_sparse(A, lifter.var_dict)
-            A_poly.symmetric = True
-            A_poly_list.append(A_poly)
+        if learned:
+            A_poly_list = lifter.get_A_learned_simple(output_poly=True)
+        else:
+            # does not output the homogeneous constraint.
+            A_poly_list = lifter.get_A_known(output_poly=True)
+        lifter.test_constraints(
+            [A.get_matrix_sparse(problem.var_sizes) for A in A_poly_list]
+        )
+
         problem.As = A_poly_list
+        problem.get_asg(lifter.var_dict)  # to suppress warning in clique_decomposition
 
         # TODO(FD) not sure if we should do this here or wait.
-        # problem.get_asg(lifter.var_dict) # to suppress warning in clique_decomposition
-        # problem.clique_decomposition()
+        clique_data = get_chain_clique_data(
+            problem.var_sizes, variable=lifter.VARIABLES
+        )
+        problem.clique_decomposition(clique_data=clique_data)
         return problem
 
     def define_objective(self, *args, **kwargs) -> PolyMatrix:
@@ -441,7 +452,7 @@ class HomQCQP(object):
         PolyMatrix that contains decomposed matrix on that clique.
 
         Args:
-            method (str): "split" means equal split between overlapping, "first" means first takes all, "greedy-cover" uses a smart algorithm to split.
+            method (str): "split" means equal split between overlapping, "greedy-cover" uses a smart algorithm to split.
         """
         assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
         assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")
@@ -477,9 +488,9 @@ class HomQCQP(object):
         for edge in edges:
             cliques = edge_clique_map[edge] & valid_cliques
             # Define weighting based on method
-            if method in ["split"]:
+            if method == "split":
                 alpha = np.ones(len(cliques)) / len(cliques)
-            elif method in ["first", "greedy-cover"]:
+            elif method == "greedy-cover":
                 alpha = np.zeros(len(cliques))
                 alpha[0] = 1.0
             else:
