@@ -8,6 +8,30 @@ from cert_tools import HomQCQP
 ER_MIN = 1e6
 
 
+def cost_test(problem: HomQCQP):
+    variables = problem.C.get_variables()
+    C = PolyMatrix()
+    mat_decomp = problem.decompose_matrix(problem.C, method="split")
+    for mat in mat_decomp.values():
+        C += mat
+    np.testing.assert_allclose(
+        C.get_matrix_dense(variables), problem.C.get_matrix_dense(variables)
+    )
+
+
+def constraints_test(problem: HomQCQP):
+    for A_gt in problem.As:
+        assert isinstance(A_gt, PolyMatrix)
+        variables = A_gt.get_variables()
+        A = PolyMatrix()
+        mat_decomp = problem.decompose_matrix(A_gt, method="split")
+        for mat in mat_decomp.values():
+            A += mat
+        np.testing.assert_allclose(
+            A.get_matrix_dense(variables), A_gt.get_matrix_dense(variables)
+        )
+
+
 class RotSynchLoopProblem(HomQCQP):
     """Class to generate and solve a rotation synchronization problem with loop
     constraints. The problem is generated with ground truth rotations and noisy
@@ -193,13 +217,6 @@ class RotSynchLoopProblem(HomQCQP):
                 A[index, index] = np.diag(c_col - c_row)
                 constraints.append(A)
         return constraints
-
-    @staticmethod
-    def get_homog_constraint():
-        """generate homogenizing constraint"""
-        A = PolyMatrix()
-        A["h", "h"] = 1
-        return [(A, 1.0)]
 
     def convert_sdp_to_rot(self, X, er_min=ER_MIN):
         """
