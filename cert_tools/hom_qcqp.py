@@ -484,6 +484,31 @@ class HomQCQP(object):
 
         return eq_list
 
+    def assign_matrix(self, pmat: PolyMatrix):
+        """Assign a matrix to the clique that it corresponds to.
+
+        Returns the index of the clique that this matrix applies to.
+        """
+        assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
+        assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")
+
+        if not len(self.var_clique_map):
+            raise ValueError(
+                "var_clique_map is empty. Did you run clique_decomposition?"
+            )
+
+        involved_variables = set(pmat.get_variables())
+        valid_cliques = []
+        for clique in self.cliques:
+            if involved_variables.issubset(clique.var_list):
+                valid_cliques.append(clique.index)
+
+        if not len(valid_cliques):
+            raise ValueError(
+                f"Error assigning constraint to a single clique: {len(valid_cliques)} matches"
+            )
+        return valid_cliques
+
     def decompose_matrix(self, pmat: PolyMatrix, method="split"):
         """Decompose a matrix according to clique decomposition.
 
