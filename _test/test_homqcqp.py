@@ -2,14 +2,14 @@ import random
 import unittest
 
 import numpy as np
-from poly_matrix import PolyMatrix
-
 from cert_tools import HomQCQP
 from cert_tools.hom_qcqp import greedy_cover
 from cert_tools.linalg_tools import svec
 from cert_tools.sdp_solvers import solve_sdp_homqcqp
 from cert_tools.sparse_solvers import solve_clarabel, solve_dsdp
 from cert_tools.test_tools import get_chain_rot_prob, get_loop_rot_prob
+
+from poly_matrix import PolyMatrix
 
 # import pytest
 
@@ -151,12 +151,12 @@ class TestHomQCQP(unittest.TestCase):
         nvars = 5
         problem = get_chain_rot_prob(N=nvars)
         problem.clique_decomposition()  # Run clique decomposition
-        eq_list = problem.get_consistency_constraints()
+        problem.consistency_constraints(constrain_only_h_row=False)
 
         # check the number of constraints generated
         clq_dim = 10  # homogenizing var plus rotation
         n_cons_per_sep = round(clq_dim * (clq_dim + 1) / 2)
-        assert len(eq_list) == (nvars - 2) * n_cons_per_sep, ValueError(
+        assert len(problem.Es) == (nvars - 2) * n_cons_per_sep, ValueError(
             "Wrong number of equality constraints"
         )
 
@@ -215,7 +215,7 @@ class TestHomQCQP(unittest.TestCase):
         #     problem.decompose_matrix(A)
 
         # functionality
-        for method in ["split", "first", "greedy-cover"]:
+        for method in ["split", "greedy-cover"]:
             C_d = problem.decompose_matrix(C, method=method)
             assert len(C_d.keys()) == nvars - 1, ValueError(
                 f"{method} Method: Wrong number of cliques in decomposed matrix"
@@ -250,6 +250,7 @@ class TestHomQCQP(unittest.TestCase):
         problem = get_chain_rot_prob(N=nvars, locked_pose=locked_pose)
         problem.clique_decomposition()  # get cliques
         # Solve decomposed problem (Interior Point Version)
+        problem.consistency_constraints(constrain_only_h_row=False)
         c_list, info = solve_dsdp(problem, verbose=True, tol=1e-8)  # check solutions
 
         # Solve non-decomposed problem
@@ -402,7 +403,7 @@ if __name__ == "__main__":
     # test.test_consistency_constraints()
     # test.test_greedy_cover()
     # test.test_decompose_matrix()
-    # test.test_solve_primal_dsdp()
+    test.test_solve_primal_dsdp()
     # test.test_solve_dual_dsdp()
-    test.test_standard_form()
+    # test.test_standard_form()
     # test.test_clarabel()

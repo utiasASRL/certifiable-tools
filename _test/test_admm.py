@@ -167,11 +167,11 @@ def plot_admm():
         A_dicts.append(A_dict)
     plt.close("all")
 
-    eq_list = problem.get_consistency_constraints()
-    assert len(eq_list) == 2 * 6
+    problem.consistency_constraints()
+    assert len(problem.Es) == 2 * 6
     counter = {(1, 0): 0, (2, 1): 0}
     plots = {(1, 0): plt.subplots(2, 6)[1], (2, 1): plt.subplots(2, 6)[1]}
-    for k, l, Ak, Al in eq_list:
+    for k, l, Ak, Al in problem.Es:
         # Ak.matshow(ax=plots[(k, l)][0, counter[(k, l)]])
         # Al.matshow(ax=plots[(k, l)][1, counter[(k, l)]])
         plots[(k, l)][0, counter[(k, l)]].matshow(Ak.toarray())

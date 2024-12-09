@@ -40,6 +40,7 @@ class HomQCQP(object):
         self.dim = 0  # total size of variables
         self.C = None  # cost matrix
         self.As = None  # list of constraints
+        self.Es = None  # list of consistency constraints
         self.asg = Graph()  # Aggregate sparsity graph
         self.cliques = []  # List of clique objects
         self.order = []  # Elimination ordering
@@ -391,7 +392,7 @@ class HomQCQP(object):
         b = svec(C.toarray(), vec_order)
         return P, q, A, b
 
-    def get_consistency_constraints(self):
+    def consistency_constraints(self, constrain_only_h_row=CONSTRAIN_ONLY_H_ROW):
         """Return a list of constraints that enforce equalities between
         clique variables. List consist of 4-tuples: (k, l, A_k, A_l)
         where k and l are the indices of the cliques for which the equality is
@@ -403,7 +404,7 @@ class HomQCQP(object):
         PolyMatrix module.
         """
         # Lopp through edges in the junction tree
-        eq_list = []
+        self.Es = []
         for l, clique_l in enumerate(self.cliques):
             # Get parent clique object and separator set
             k = clique_l.parent
@@ -418,7 +419,7 @@ class HomQCQP(object):
             size_l = clique_l.size
 
             # Define constraint matrices only in one row
-            if CONSTRAIN_ONLY_H_ROW:
+            if constrain_only_h_row:
                 assert "h" in sepset
 
                 hom_k = int(clique_k._get_indices(var_list="h"))
@@ -442,7 +443,7 @@ class HomQCQP(object):
                         (-vals, (rows_l, cols_l)),
                         (size_l, size_l),
                     )
-                    eq_list.append((k, l, A_k, A_l))
+                    self.Es.append((k, l, A_k, A_l))
 
                 A_k = sp.coo_matrix(
                     ([1.0], ([hom_k], [hom_k])),
@@ -452,7 +453,7 @@ class HomQCQP(object):
                     ([-1.0], ([hom_l], [hom_l])),
                     (size_l, size_l),
                 )
-                eq_list.append((k, l, A_k, A_l))
+                self.Es.append((k, l, A_k, A_l))
                 continue
 
             # Define sparse constraint matrices for each element in the seperator overlap
@@ -480,9 +481,7 @@ class HomQCQP(object):
                         (vals_l, (rows_l, cols_l)),
                         (size_l, size_l),
                     )
-                    eq_list.append((k, l, A_k, A_l))
-
-        return eq_list
+                    self.Es.append((k, l, A_k, A_l))
 
     def assign_matrix(self, pmat: PolyMatrix):
         """Assign a matrix to the clique that it corresponds to.

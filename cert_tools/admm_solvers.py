@@ -4,9 +4,9 @@ from copy import deepcopy
 from multiprocessing import Pipe, Process
 
 import cvxpy as cp
+import matplotlib.pylab as plt  # for debugging
 import mosek.fusion as fu
 import numpy as np
-
 from cert_tools.admm_clique import ADMMClique, update_rho
 from cert_tools.fusion_tools import mat_fusion, read_costs_from_mosek
 from cert_tools.sdp_solvers import (
@@ -229,6 +229,9 @@ def solve_inner_sdp_fusion(
                 "cost": cost,
                 "msg": f"solved with status {M.getProblemStatus()}",
             }
+        else:
+            raise ValueError(f"Problem status is: {M.getProblemStatus()}")
+
     return X, info
 
 
@@ -251,7 +254,7 @@ def solve_inner_sdp(
 
     if use_fusion:
         # for debugging only
-        err = clique.F @ clique.X.flatten() + clique.g
+        # err = clique.F @ clique.X.flatten() + clique.g
         # print(f"current error: {err}")
 
         return solve_inner_sdp_fusion(

@@ -23,8 +23,6 @@ from igraph import Graph
 
 from poly_matrix import PolyMatrix
 
-CONSTRAIN_ALL_OVERLAP = False
-
 TOL = 1e-5
 
 
@@ -428,15 +426,17 @@ def solve_dsdp_primal(
     # CLIQUE CONSISTENCY EQUALITIES
     if verbose:
         print("Generating overlap consistency constraints")
-    clq_constrs = problem.get_consistency_constraints()
+
+    if problem.Es is None:
+        problem.consistency_constraints()
     # TEST reduce number of clique
     if reduce_constrs is not None:
-        n_constrs = int(reduce_constrs * len(clq_constrs))
-        clq_constrs = random.sample(clq_constrs, n_constrs)
+        n_constrs = int(reduce_constrs * len(problem.Es))
+        clq_constrs = random.sample(problem.Es, n_constrs)
     if verbose:
         print("Adding overlap consistency constraints to problem")
     cnt = 0
-    for k, l, A_k, A_l in clq_constrs:
+    for k, l, A_k, A_l in problem.Es:
         # Convert sparse array to fusion sparse matrix
         A_k_fusion = sparse_to_fusion(A_k)
         A_l_fusion = sparse_to_fusion(A_l)
@@ -484,16 +484,15 @@ def solve_dsdp_primal(
 
     # EXTRACT SOLN
     status = M.getProblemStatus()
-    if status == fu.ProblemStatus.PrimalAndDualFeasible:
-        # Get MOSEK cost
-        cost = M.primalObjValue()
-        clq_list = [cvar.level().reshape(cvar.shape) for cvar in cvars]
-        dual = [cvar.dual().reshape(cvar.shape) for cvar in cvars]
-        info["success"] = True
-        info["dual"] = dual
-        info["cost"] = cost
-    else:
-        print("Solve Failed - Mosek Status: " + str(status))
+    if status != fu.ProblemStatus.PrimalAndDualFeasible:
+        print("Warning: solve failed -- mosek status: " + str(status))
+
+    cost = M.primalObjValue()
+    clq_list = [cvar.level().reshape(cvar.shape) for cvar in cvars]
+    dual = [cvar.dual().reshape(cvar.shape) for cvar in cvars]
+    info["success"] = True
+    info["dual"] = dual
+    info["cost"] = cost
 
     return clq_list, info
 

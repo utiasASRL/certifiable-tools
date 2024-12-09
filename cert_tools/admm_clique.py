@@ -1,7 +1,6 @@
 import cvxpy as cp
 import numpy as np
 import scipy.sparse as sp
-
 from cert_tools.base_clique import BaseClique
 from cert_tools.hom_qcqp import HomQCQP
 from cert_tools.sdp_solvers import adjust_Q
@@ -81,19 +80,17 @@ class ADMMClique(BaseClique):
             problem.var_sizes, fixed=["h"], variable=variable
         )
         problem.clique_decomposition(clique_data=clique_data)
-
-        eq_list = problem.get_consistency_constraints()
+        problem.consistency_constraints()
 
         Q_dict = problem.decompose_matrix(problem.C, method="split")
-        A_dict_list = [problem.decompose_matrix(A, method="first") for A in problem.As]
+        A_dict_list = [(problem.assign_matrix(A), A) for A in problem.As]
+        # A_dict_list = [problem.decompose_matrix(A, method="first") for A in problem.As]
         admm_cliques = []
         for clique in problem.cliques:
             Constraints = [problem.get_homog_constraint(clique.var_sizes)]
-            for A_dict in A_dict_list:
-                if clique.index in A_dict.keys():
-                    Constraints.append(
-                        (A_dict[clique.index].get_matrix(clique.var_sizes), 0.0)
-                    )
+            for idx, A in A_dict_list:
+                if clique.index in idx:
+                    Constraints.append((A.get_matrix(clique.var_sizes), 0.0))
             admm_clique = ADMMClique(
                 Q=Q_dict[clique.index].get_matrix(clique.var_sizes),
                 Constraints=Constraints,
@@ -107,7 +104,7 @@ class ADMMClique(BaseClique):
             # F @ vech(Xk) + G @ vech(Xl) = 0
             F_dict = dict()
             G_dict = dict()
-            for k, l, Ak, Al in eq_list:
+            for k, l, Ak, Al in problem.Es:
                 if k == clique.index:
                     if l in F_dict:
                         # TODO(FD) we currently need to use the full matrix and not just the upper half
