@@ -416,6 +416,45 @@ class HomQCQP(object):
             indices_l = clique_l._get_indices(var_list=sepset)
             size_k = clique_k.size
             size_l = clique_l.size
+
+            # Define constraint matrices only in one row
+            if CONSTRAIN_ONLY_H_ROW:
+                assert "h" in sepset
+
+                hom_k = int(clique_k._get_indices(var_list="h"))
+                hom_l = int(clique_l._get_indices(var_list="h"))
+                vals = np.ones(2)
+                for i_k, i_l in zip(indices_k, indices_l):
+                    if i_k == hom_k:
+                        assert i_l == hom_l
+                        continue
+
+                    rows_k = np.r_[hom_k, i_k]
+                    cols_k = np.r_[i_k, hom_k]
+                    A_k = sp.coo_matrix(
+                        (vals, (rows_k, cols_k)),
+                        (size_k, size_k),
+                    )
+
+                    rows_l = np.r_[hom_l, i_l]
+                    cols_l = np.r_[i_l, hom_l]
+                    A_l = sp.coo_matrix(
+                        (-vals, (rows_l, cols_l)),
+                        (size_l, size_l),
+                    )
+                    eq_list.append((k, l, A_k, A_l))
+
+                A_k = sp.coo_matrix(
+                    ([1.0], ([hom_k], [hom_k])),
+                    (size_k, size_k),
+                )
+                A_l = sp.coo_matrix(
+                    ([-1.0], ([hom_l], [hom_l])),
+                    (size_l, size_l),
+                )
+                eq_list.append((k, l, A_k, A_l))
+                continue
+
             # Define sparse constraint matrices for each element in the seperator overlap
             for i in range(len(indices_k)):
                 for j in range(i, len(indices_k)):
