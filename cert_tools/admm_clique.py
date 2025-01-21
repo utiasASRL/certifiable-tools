@@ -80,7 +80,7 @@ class ADMMClique(BaseClique):
             problem.var_sizes, fixed=["h"], variable=variable
         )
         problem.clique_decomposition(clique_data=clique_data)
-        problem.consistency_constraints()
+        problem.consistency_constraints(constrain_only_h_row=False)
 
         Q_dict = problem.decompose_matrix(problem.C, method="split")
         A_dict_list = [(problem.assign_matrix(A), A) for A in problem.As]
