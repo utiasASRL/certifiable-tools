@@ -120,7 +120,7 @@ def solve_low_rank_sdp(
     Constraints,
     IneqConstraints=[],
     rank=1,
-    x_cand=None,
+    Y_0=None,
     adjust=(1, 0),
     options={},
     limit_constraints=False,
@@ -134,10 +134,13 @@ def solve_low_rank_sdp(
     """
     # Get problem dimensions
     n = Q.shape[0]
+    if Y_0 is not None:
+        rank = Y_0.shape[1]
     # Define variable
     Y = cas.SX.sym("Y", n, rank)
+    X = cas.mtimes(Y, Y.T)
     # Define cost
-    f = cas.trace(Y.T @ Q @ Y)
+    f = cas.trace(cas.mtimes(Q, X))
 
     # Define equality constraints
     g = []
@@ -147,13 +150,13 @@ def solve_low_rank_sdp(
         # Limit the number of constraints used to the degrees of freedom
         if limit_constraints and i > rank * n:
             continue
-        g += [cas.trace(Y.T @ A @ Y)]
-        g_lhs += [b]
-        g_rhs += [b]
+        g += [cas.trace(cas.mtimes(A, X)) - b]
+        g_lhs += [0]
+        g_rhs += [0]
 
     # Define inequality constraints
     for i, (A, bl, br) in enumerate(IneqConstraints):
-        g += [cas.trace(Y.T @ A @ Y)]
+        g += [cas.trace(cas.mtimes(A, X))]
         g_lhs += [bl]
         g_rhs += [br]
 
@@ -163,24 +166,22 @@ def solve_low_rank_sdp(
     g_rhs = cas.vertcat(*g_rhs)
 
     # Define Low Rank NLP
-    nlp = {"x": Y.reshape((-1, 1)), "f": f, "g": g}
-    options["ipopt.print_level"] = int(verbose)
-    options["print_time"] = int(verbose)
-    S = cas.nlpsol("S", "ipopt", nlp, options)
+    nlp = {"x": cas.vec(Y), "f": f, "g": g}
+    # Set up options
+    low_rank_sdp_opt = cas.nlpsol("low_rank_sdp_opt", "ipopt", nlp, options)
     # Run Program
-    sol_input = dict(lbg=g_lhs, ubg=g_rhs)
-    if x_cand is not None:
-        sol_input["x0"] = x_cand.reshape((-1, 1))
-    r = S(**sol_input)
-    Y_opt = r["x"]
+    opt_input = dict(lbg=0, ubg=0)
+    if Y_0 is not None:
+        opt_input["x0"] = cas.vec(Y_0)
+    sol = low_rank_sdp_opt(**opt_input)
     # Reshape and generate SDP solution
-    Y_opt = np.array(Y_opt).reshape((n, rank), order="F")
+    Y_opt = np.array(cas.reshape(sol["x"], n, rank))
     X_opt = Y_opt @ Y_opt.T
     # Get cost
     scale, offset = adjust
     cost = np.trace(Q @ X_opt) * scale + offset
     # Construct certificate
-    mults = np.array(r["lam_g"])
+    mults = np.array(sol["lam_g"])
     H = Q
     for i, (A, b) in enumerate(Constraints):
         if limit_constraints and i >= n * rank:
@@ -188,7 +189,7 @@ def solve_low_rank_sdp(
         H = H + A * mults[i, 0]
 
     # Return
-    info = {"X": X_opt, "H": H, "cost": cost, "Y": Y_opt}
+    info = dict(X=X_opt, H=H, mults=mults, cost=cost, Y=Y_opt)
     return Y_opt, info
 
 
