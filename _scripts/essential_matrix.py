@@ -3,13 +3,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import sdprlayers.utils.ess_mat_utils as utils
 import torch
-from diffcp.cones import unvec_symm, vec_symm
 from poly_matrix import PolyMatrix
 from sdprlayers import SDPEssMatEst
 from sdprlayers.utils.camera_model import CameraModel
-from sdprlayers.utils.lie_algebra import se3_exp, so3_exp, so3_log, so3_wedge
+from sdprlayers.utils.lie_algebra import so3_exp, so3_log, so3_wedge
 
-from cert_tools.linalg_tools import get_nullspace
+from cert_tools.rank_reduction import rank_reduction, rank_reduction_logdet
 from cert_tools.sdp_solvers import (
     solve_low_rank_sdp,
     solve_sdp_fusion,
@@ -29,14 +28,14 @@ class EssMatProblem:
         torch.autograd.set_detect_anomaly(True)
         set_seed(seed)
         # Offset distance
-        dist = 3
-        # Generate problem data
+        dist = 4
+        # Get problem setup
         ts_ts_s, Rs_ts, keys_3d_s = utils.get_gt_setup(
             N_map=n_points,
             N_batch=n_batch,
-            traj_type="circle",
-            offs=np.array([[0, 0, dist]]).T,
-            lm_bound=dist * 0.3,
+            traj_type="clusters",
+            offs=dist,
+            lm_bound=dist * 0.7,
         )
         # Define Camera
         # self.camera = CameraModel(800, 800, 0.0, 0.0, 0.0)
@@ -254,70 +253,6 @@ def check_feasibility(X, p_opt, C, constraints, tol=1e-3):
     return viol
 
 
-def rank_reduction(Constraints, X_hr, rank_tol=1e-6, eig_tol=1e-9, max_iter=None):
-    """Algorithm that searches for a low rank solution to the SDP problem, given an existing high rank solution.
-    Based on the algorithm proposed in "Low-Rank Semidefinite Programming:Theory and Applications by Lemon et al.
-    """
-    # LOW RANK FACTORIZATION
-    # get eigenspace
-    vals, vecs = np.linalg.eigh(X_hr)
-    # remove zero eigenspace
-    r = np.sum(vals > rank_tol)
-    n = X_hr.shape[0]
-    V = vecs[:, (n - r) :] * np.sqrt(vals[(n - r) :])
-    # GET NULLSPACE MATRIX
-    Av = compute_Av(Constraints, V)
-
-    # REDUCE RANK
-    dim_null = 1
-    n_iter = 0
-    while dim_null > 0 and (max_iter is None or n_iter < max_iter):
-        # Compute null space
-        # NOTE: This could be made faster by just computing a single right singular vector in the null space. No need to compute the entire space.
-        basis, info = get_nullspace(Av, method="svd", tolerance=rank_tol)
-        dim_null = basis.shape[0]
-        if dim_null == 0:
-            break
-        # Get nullspace vector corresponding to the lowest gain eigenvalue
-        Delta = unvec_symm(basis[-1], dim=V.shape[1])
-        # Compute Eigenspace of Delta
-        lambdas, Q = np.linalg.eigh(Delta)
-        max_lambda = lambdas[-1]
-        # Compute reduced lambdas
-        lambdas_red = 1 - lambdas / max_lambda
-        # Check which eigenvalues are still nonzero
-        inds = lambdas_red > eig_tol
-        # Get update matrix
-        Q_tilde = Q[:, inds] * np.sqrt(lambdas_red[inds])
-        # Update Nullspace matrix
-        Av = update_Av(Av, Q_tilde, dim=r)
-        # Update Factor
-        V = V @ Q_tilde
-        r = V.shape[1]
-        n_iter += 1
-
-    return V
-
-
-def compute_Av(Constraints, V):
-    """Function to compute the matrix whose nullspace characterizes the optimal solution."""
-    Av = []
-    for A, b in Constraints:
-        Av.append(vec_symm(V.T @ A @ V))
-    Av = np.stack(Av)
-    return Av
-
-
-def update_Av(Av, Q_tilde, dim):
-    """Update the nullspace matrix. Updating this way is cheaper than reproducing the matrix, because it is performed in the lower dimension."""
-    Av_updated = []
-    for i, row in enumerate(Av):
-        A = unvec_symm(row, dim=dim)
-        Av_updated.append(vec_symm(Q_tilde.T @ A @ Q_tilde))
-    Av_updated = np.stack(Av_updated)
-    return Av_updated
-
-
 def test_rank_reduction():
     # Create problem
     prob = EssMatProblem(n_batch=1, n_points=50, tol=1e-12)
@@ -328,7 +263,9 @@ def test_rank_reduction():
     # Optimal Solution
     p_opt = np.trace(C @ X_hr)
     # Get low rank solution
-    V = rank_reduction(Constraints, X_hr, rank_tol=1e-2)
+    # V = rank_reduction(Constraints, X_hr, rank_tol=1e-6)
+    V = rank_reduction_logdet(Constraints, X_hr, max_iter=100, verbose=True)
+
     if V[0, 0] < 0:
         V = -V
     X_lr_new = V @ V.T
