@@ -2,6 +2,7 @@ import casadi as cas
 import matplotlib.pyplot as plt
 import numpy as np
 from diffcp.cones import unvec_symm, vec_symm
+from scipy.sparse.linalg import svds
 
 from cert_tools.linalg_tools import get_nullspace
 from cert_tools.sdp_solvers import solve_sdp_fusion
@@ -14,13 +15,14 @@ def rank_reduction(
     null_tol=1e-6,
     eig_tol=1e-9,
     null_method="svd",
+    targ_rank=None,
     max_iter=None,
     verbose=False,
 ):
     """Algorithm that searches for a low rank solution to the SDP problem, given an existing high rank solution.
     Based on the algorithm proposed in "Low-Rank Semidefinite Programming:Theory and Applications by Lemon et al.
-    
-    
+
+
     """
     # Get initial low rank factor
     V, r = get_low_rank_factor(X_hr, rank_tol)
@@ -30,19 +32,18 @@ def rank_reduction(
     Av = get_constraint_op(Constraints, V)
 
     # REDUCE RANK
-    dim_null = 1
     n_iter = 0
-    while dim_null > 0 and (max_iter is None or n_iter < max_iter):
+    while (max_iter is None or n_iter < max_iter) and (
+        targ_rank is None or r > targ_rank
+    ):
         # Compute null space
-        # NOTE: This could be made faster by just computing a single right singular vector in the null space. No need to compute the entire space.
-        basis, info = get_nullspace(Av, method=null_method, tolerance=null_tol)
-        dim_null = basis.shape[0]
-        if dim_null == 0:
+        vec, s_min = get_min_sing_vec(Av, method=null_method)
+        if targ_rank is None and s_min > null_tol:
             if verbose:
                 print("Null space has no dimension. Exiting.")
             break
-        # Get nullspace vector corresponding to the lowest gain eigenvalue
-        Delta = unvec_symm(basis[-1], dim=V.shape[1])
+        # Get basis vector corresponding to the lowest gain eigenvalue (closest to nullspace)
+        Delta = unvec_symm(vec, dim=V.shape[1])
         # Compute Eigenspace of Delta
         lambdas, Q = np.linalg.eigh(Delta)
         # find max magnitude eigenvalue
@@ -63,7 +64,7 @@ def rank_reduction(
         n_iter += 1
 
         if verbose:
-            print(f"iter: {n_iter}, dim null: {dim_null}, rank: {r}")
+            print(f"iter: {n_iter}, min s-value: {s_min}, rank: {r}")
 
     return V
 
@@ -123,16 +124,35 @@ def rank_reduction_logdet(
     return Y
 
 
-def get_low_rank_factor(X, rank_tol=1e-6):
+def get_min_sing_vec(A, method="svd"):
+    """Get vector associated with minimum singular value."""
+    if method == "svds":
+        # Get minimum singular vector
+        # NOTE: This method is fraught with numerical issues, but should be faster than computing all of the singular values
+        s_min, vec = svds(A, k=1, which="SM")
+
+    elif method == "svd":
+        # Get all singular vectors (descending order)
+        U, S, Vh = np.linalg.svd(A)
+        s_min = S[-1]
+        vec = Vh[-1, :]
+    else:
+        raise ValueError("Singular vector method unknown")
+
+    return vec, s_min
+
+
+def get_low_rank_factor(X, rank_tol=1e-6, rank=None):
     """Get the low rank factorization of PSD matrix X. Tolerance is relative"""
     # get eigenspace
     vals, vecs = np.linalg.eigh(X)
     # remove zero eigenspace
     val_max = np.max(vals)
-    r = np.sum(vals > rank_tol * val_max)
+    if rank is None:
+        rank = np.sum(vals > rank_tol * val_max)
     n = X.shape[0]
-    V = vecs[:, (n - r) :] * np.sqrt(vals[(n - r) :])
-    return V, r
+    V = vecs[:, (n - rank) :] * np.sqrt(vals[(n - rank) :])
+    return V, rank
 
 
 def get_reduced_constraints(Constraints, V):
