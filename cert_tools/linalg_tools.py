@@ -155,9 +155,6 @@ def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False, debug=False
 def get_nullspace(A_dense, method=METHOD, tolerance=NULL_THRESH):
     info = {}
 
-    if method != "qrp":
-        print("Warning: method other than qrp is not recommended.")
-
     if method == "svd":
         U, S, Vh = np.linalg.svd(
             A_dense

@@ -7,12 +7,25 @@ from cert_tools.linalg_tools import get_nullspace
 from cert_tools.sdp_solvers import solve_sdp_fusion
 
 
-def rank_reduction(Constraints, X_hr, rank_tol=1e-6, eig_tol=1e-9, max_iter=None):
+def rank_reduction(
+    Constraints,
+    X_hr,
+    rank_tol=1e-6,
+    null_tol=1e-6,
+    eig_tol=1e-9,
+    null_method="svd",
+    max_iter=None,
+    verbose=False,
+):
     """Algorithm that searches for a low rank solution to the SDP problem, given an existing high rank solution.
     Based on the algorithm proposed in "Low-Rank Semidefinite Programming:Theory and Applications by Lemon et al.
+    
+    
     """
     # Get initial low rank factor
     V, r = get_low_rank_factor(X_hr, rank_tol)
+    if verbose:
+        print(f"Initial rank of solution: {r}")
     # Get constraint operator matrix
     Av = get_constraint_op(Constraints, V)
 
@@ -22,17 +35,22 @@ def rank_reduction(Constraints, X_hr, rank_tol=1e-6, eig_tol=1e-9, max_iter=None
     while dim_null > 0 and (max_iter is None or n_iter < max_iter):
         # Compute null space
         # NOTE: This could be made faster by just computing a single right singular vector in the null space. No need to compute the entire space.
-        basis, info = get_nullspace(Av, method="svd", tolerance=rank_tol)
+        basis, info = get_nullspace(Av, method=null_method, tolerance=null_tol)
         dim_null = basis.shape[0]
         if dim_null == 0:
+            if verbose:
+                print("Null space has no dimension. Exiting.")
             break
         # Get nullspace vector corresponding to the lowest gain eigenvalue
         Delta = unvec_symm(basis[-1], dim=V.shape[1])
         # Compute Eigenspace of Delta
         lambdas, Q = np.linalg.eigh(Delta)
-        max_lambda = lambdas[-1]
+        # find max magnitude eigenvalue
+        indmax = np.argmax(np.abs(lambdas))
+        max_lambda = lambdas[indmax]
         # Compute reduced lambdas
-        lambdas_red = 1 - lambdas / max_lambda
+        alpha = -1 / max_lambda
+        lambdas_red = 1 + alpha * lambdas
         # Check which eigenvalues are still nonzero
         inds = lambdas_red > eig_tol
         # Get update matrix
@@ -43,6 +61,9 @@ def rank_reduction(Constraints, X_hr, rank_tol=1e-6, eig_tol=1e-9, max_iter=None
         V = V @ Q_tilde
         r = V.shape[1]
         n_iter += 1
+
+        if verbose:
+            print(f"iter: {n_iter}, dim null: {dim_null}, rank: {r}")
 
     return V
 
@@ -103,10 +124,12 @@ def rank_reduction_logdet(
 
 
 def get_low_rank_factor(X, rank_tol=1e-6):
+    """Get the low rank factorization of PSD matrix X. Tolerance is relative"""
     # get eigenspace
     vals, vecs = np.linalg.eigh(X)
     # remove zero eigenspace
-    r = np.sum(vals > rank_tol)
+    val_max = np.max(vals)
+    r = np.sum(vals > rank_tol * val_max)
     n = X.shape[0]
     V = vecs[:, (n - r) :] * np.sqrt(vals[(n - r) :])
     return V, r

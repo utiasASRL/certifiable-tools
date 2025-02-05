@@ -780,6 +780,7 @@ def solve_lambda_cvxpy(
     tol=LAMBDA_TOL,
     verbose=False,
     fixed_epsilon=EPSILON,
+    single_affine=True,
     options=options_cvxpy,
 ):
     """Determine lambda (the importance of each constraint) with an SDP.
@@ -798,7 +799,7 @@ def solve_lambda_cvxpy(
         raise NotImplementedError("primal form not implemented yet")
     else:  # Dual
         """
-        max | y |
+        min | y |
         s.t. H := Q + sum(Ai * yi for all i) >> 0
              H xhat == 0
         """
@@ -831,11 +832,17 @@ def solve_lambda_cvxpy(
 
         constraints = [H >> 0]  # >> 0 denotes positive SEMI-definite
 
+        # Define affine expression
+        if single_affine:  # single expression
+            aff_expr = xhat.T @ H @ xhat
+        else:  # vector of expressions
+            aff_expr = H @ xhat
+
         if (fixed_epsilon is not None and epsilon != 0) or (fixed_epsilon is None):
-            constraints += [H @ xhat <= epsilon]
-            constraints += [H @ xhat >= -epsilon]
+            constraints += [aff_expr <= epsilon]
+            constraints += [aff_expr >= -epsilon]
         elif fixed_epsilon is not None:
-            constraints += [H @ xhat == 0]
+            constraints += [aff_expr == 0]
 
         if k > 0:
             constraints += [u >= 0]
@@ -846,6 +853,7 @@ def solve_lambda_cvxpy(
         except Exception:
             X = None
             lamda = None
+            H = None
         else:
             if fixed_epsilon is None:
                 print("solve_lamda: epsilon is", epsilon.value)
@@ -853,11 +861,17 @@ def solve_lambda_cvxpy(
                 print("solve_lamda: epsilon is", epsilon)
             X = constraints[0].dual_value
             lamda = y.value
-    return X, lamda
+            H = H.value
+    return X, lamda, H
 
 
 def solve_sdp_homqcqp(
-    problem: HomQCQP, method="sdp", solver="mosek", verbose=False, tol=1e-11
+    problem: HomQCQP,
+    method="sdp",
+    solver="mosek",
+    adjust=False,
+    verbose=False,
+    tol=1e-11,
 ):
     """Solve non-chordal SDP for PGO problem without using ADMM"""
 
@@ -872,7 +886,7 @@ def solve_sdp_homqcqp(
     start_time = time()
     if method == "sdp":
         X, info = solver(
-            Q=obj, Constraints=constrs, adjust=False, verbose=verbose, tol=tol
+            Q=obj, Constraints=constrs, adjust=adjust, verbose=verbose, tol=tol
         )
     elif method == "dsdp":
         ValueError("Method not defined.")
