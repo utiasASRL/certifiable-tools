@@ -24,9 +24,6 @@ jobs:
         echo $CONDA/bin >> $GITHUB_PATH
     - name: Install dependencies
       run: |
-        # Make mamba the default solver to resolve dependencies, because conda's default is slow.
-        conda install -n base conda-libmamba-solver
-        conda config --set solver libmamba        
         conda env update --file environment.yml --name base
         
     - name: Lint with flake8
