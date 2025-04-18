@@ -450,6 +450,7 @@ def solve_sdp_cvxpy(
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
     As, b = zip(*Constraints)
+    info = {}
 
     if primal:
         """
@@ -512,7 +513,6 @@ def solve_sdp_cvxpy(
             constraints.append(u >= 0)
 
         cprob = cp.Problem(objective, constraints)
-        info = {}
 
         try:
             cprob.solve(
@@ -560,7 +560,6 @@ def solve_sdp_cvxpy(
             [yvals[i] * Ai for (i, Ai) in enumerate(As)]
             + [-u[i] * Bi for (i, Bi) in enumerate(B_list)]
         )
-        H = H.value
         yvals[0] = yvals[0] * scale + offset
         # H *= scale
         # H[0, 0] += offset
