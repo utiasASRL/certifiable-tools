@@ -80,6 +80,9 @@ def adjust_Q(Q, scale=True, offset=True, scale_method=SCALE_METHOD):
     """
     ii, jj = (Q == Q.max()).nonzero()
     if (ii[0], jj[0]) != (0, 0) or (len(ii) > 1):
+        print(
+            "Warning: maximum is not at 0, 0, so adjust_Q is not as effective as we want."
+        )
         pass
 
     Q_mat = deepcopy(Q)
@@ -485,6 +488,7 @@ def solve_sdp_cvxpy(
     Q_here, scale, offset = adjust_Q(Q) if adjust else (Q, 1.0, 0.0)
 
     As, b = zip(*Constraints)
+    info = {}
 
     if primal:
         """
@@ -547,6 +551,7 @@ def solve_sdp_cvxpy(
             constraints.append(u >= 0)
 
         cprob = cp.Problem(objective, constraints)
+
         try:
             cprob.solve(
                 solver="MOSEK",
@@ -576,6 +581,7 @@ def solve_sdp_cvxpy(
                                 f"Warning: is constraint {i} active? (mu={mu[i]:.4e}):"
                             )
                             print(np.trace(B_list[i] @ X))
+                    info["mu"] = mu
                 msg = "converged"
             else:
                 cost = None
@@ -596,7 +602,7 @@ def solve_sdp_cvxpy(
         # H *= scale
         # H[0, 0] += offset
 
-    info = {"H": H, "yvals": yvals, "cost": cost, "msg": msg}
+    info.update({"H": H, "yvals": yvals, "cost": cost, "msg": msg})
     return X, info
 
 
