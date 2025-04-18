@@ -558,7 +558,7 @@ def solve_sdp_cvxpy(
 
         H = Q_here - cp.sum(
             [yvals[i] * Ai for (i, Ai) in enumerate(As)]
-            + [-u[i] * Bi for (i, Bi) in enumerate(B_list)]
+            + [-u[i].value * Bi for (i, Bi) in enumerate(B_list)]
         )
         yvals[0] = yvals[0] * scale + offset
         # H *= scale
