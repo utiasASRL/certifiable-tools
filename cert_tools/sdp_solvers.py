@@ -543,18 +543,18 @@ def solve_sdp_cvxpy(
                 H = Q_here - LHS.value
                 yvals = [x.value for x in y]
 
-                # sanity check for inequality constraints.
-                # we want them to be inactive!!!
                 if len(B_list):
                     mu = np.array([ui.value for ui in u])
-                    i_nnz = np.where(mu > 1e-10)[0]
-                    if len(i_nnz):
-                        for i in i_nnz:
-                            print(
-                                f"Warning: is constraint {i} active? (mu={mu[i]:.4e}):"
-                            )
-                            print(np.trace(B_list[i] @ X))
                     info["mu"] = mu
+                # sanity check for inequality constraints.
+                # we want them to be inactive!!!
+                #    i_nnz = np.where(mu > 1e-10)[0]
+                #    if len(i_nnz):
+                #        for i in i_nnz:
+                #            print(
+                #                f"Warning: is constraint {i} active? (mu={mu[i]:.4e}):"
+                #            )
+                #            print(np.trace(B_list[i] @ X))
                 msg = "converged"
             else:
                 cost = None
