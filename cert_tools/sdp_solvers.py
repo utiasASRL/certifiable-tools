@@ -183,6 +183,7 @@ def solve_low_rank_sdp(
 def solve_sdp_mosek(
     Q,
     Constraints,
+    B_list=[],
     adjust=ADJUST,
     primal=PRIMAL,
     tol=TOL,
@@ -234,12 +235,10 @@ def solve_sdp_mosek(
         )
         # problem params
         dim = Q_here.shape[0]
-        numcon = len(Constraints)
+        numcon = len(Constraints) + len(B_list)
         # append vars,constr
         task.appendbarvars([dim])
         task.appendcons(numcon)
-        # bound keys
-        bkc = mosek.boundkey.fx
         # Cost matrix
         Q_l = sp.tril(Q_here, format="csr")
         rows, cols = Q_l.nonzero()
@@ -260,7 +259,19 @@ def solve_sdp_mosek(
             # Add constraint matrix
             task.putbaraij(cnt, 0, [syma], [1.0])
             # Set bound (equality)
-            task.putconbound(cnt, bkc, b, b)
+            task.putconbound(cnt, mosek.boundkey.fx, b, b)
+            cnt += 1
+
+        for B in B_list:
+            # Generate matrix
+            B_l = sp.tril(B, format="csr")
+            rows, cols = B_l.nonzero()
+            vals = B_l[rows, cols].tolist()[0]
+            syma = task.appendsparsesymmat(dim, rows, cols, vals)
+            # Add constraint matrix
+            task.putbaraij(cnt, 0, [syma], [1.0])
+            # Set bound (inequality)
+            task.putconbound(cnt, mosek.boundkey.up, -1e16, 0)
             cnt += 1
         # Store problem
         task.writedata("solve_mosek.ptf")
@@ -829,7 +840,12 @@ def solve_sdp_homqcqp(
     """Solve non-chordal SDP for PGO problem without using ADMM"""
 
     # Get matrices
-    obj, constrs = problem.get_problem_matrices()
+    try:
+        obj, constrs, B_list = problem.get_problem_matrices()
+    except:
+        obj, constrs = problem.get_problem_matrices()
+        B_list = []
+
     # Select the solver
     if solver == "mosek":
         solver = solve_sdp_mosek
@@ -839,7 +855,12 @@ def solve_sdp_homqcqp(
     start_time = time()
     if method == "sdp":
         X, info = solver(
-            Q=obj, Constraints=constrs, adjust=False, verbose=verbose, tol=tol
+            Q=obj,
+            Constraints=constrs,
+            B_list=B_list,
+            adjust=False,
+            verbose=verbose,
+            tol=tol,
         )
     elif method == "dsdp":
         ValueError("Method not defined.")
@@ -847,8 +868,8 @@ def solve_sdp_homqcqp(
         ValueError("Method not defined.")
     # Get solution time.
     solve_time = time() - start_time
-
-    return X, info, solve_time
+    info["solve_time"] = solve_time
+    return X, info
 
 
 def solve_sdp(

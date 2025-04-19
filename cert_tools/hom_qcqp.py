@@ -17,6 +17,21 @@ from cert_tools.base_clique import BaseClique
 from cert_tools.linalg_tools import find_dependent_columns, svec
 
 
+def infer_var_list(clique_data):
+    """ Infer the variable list from clique data to fix the order. """
+    if isinstance(clique_data, list):
+        var_list = []
+        var_list_quick_lookup = {}
+        for c in clique_data:
+            for ci in c:
+                if ci not in var_list_quick_lookup:
+                    var_list.append(ci)
+                    var_list_quick_lookup[ci] = 1
+        return var_list
+    else:
+        return None
+
+
 class HomQCQP(object):
     """Abstract class used to represent a the SDP relaxation of a
     non-convex homogenized, quadratically constrainted quadratic problem
@@ -37,12 +52,21 @@ class HomQCQP(object):
         self.var_list = []  # List of variables
         self.dim = 0  # total size of variables
         self.C = None  # cost matrix
-        self.As = None  # list of constraints
+        self.As = None  # list of equality constraints
+        self.Bs = []  # list of inequality constraints
         self.asg = Graph()  # Aggregate sparsity graph
         self.cliques = []  # List of clique objects
         self.order = []  # Elimination ordering
         self.var_clique_map = {}  # Variable to clique mapping (maps to set)
         self.h = homog_var  # Homogenizing variable name
+
+    @staticmethod
+    def create_from_matrices(C, A_list, B_list):
+        homQCQP = HomQCQP(homog_var="h")
+        homQCQP.C = C
+        homQCQP.As = A_list
+        homQCQP.Bs = B_list
+        return homQCQP
 
     def define_objective(self, *args, **kwargs) -> PolyMatrix:
         """Function should define the cost matrix for the problem
@@ -160,7 +184,10 @@ class HomQCQP(object):
         if len(self.asg.vs) == 0:
             warnings.warn("Aggregate sparsity graph not defined. Building now.")
             # build aggregate sparsity graph
-            self.get_asg()
+            var_list = None
+            if len(clique_data):
+                var_list = infer_var_list(clique_data)
+            self.get_asg(var_list=var_list)
 
         if len(clique_data) == 0:
             if elim_order == "amd":
@@ -214,7 +241,7 @@ class HomQCQP(object):
         Otherwise the elements of the list must be sets containing the variable names of the variables in a given clique. In this case, a clique tree is built using a minimum spanning tree of the clique graph.
 
         Args:
-            clique_data (list): list of sets of variable names representing cliques.
+            clique_data (list): list of collections of variable names representing cliques. Use a list for each clique group if you care about the order. Use a set if the order does not matter.
             clique_data (dict): a dictionary of the clique data with keys
         """
         if isinstance(clique_data, dict):
@@ -232,7 +259,10 @@ class HomQCQP(object):
             edges, sepsets, weights = [], [], []
             for v1 in range(len(cliques) - 1):
                 for v2 in range(v1 + 1, len(cliques)):
-                    sepset = cliques[v1] & cliques[v2]
+                    if isinstance(cliques[v1], set):
+                        sepset = cliques[v1] & cliques[v2]
+                    else:
+                        sepset = [c for c in cliques[v2] if c in cliques[v1]]
                     weight = len(sepset)
                     if weight > 0:
                         edges.append((v1, v2))
@@ -303,6 +333,11 @@ class HomQCQP(object):
         Ah[self.h, self.h] = 1
         homog_constraint = (Ah.get_matrix(self.var_sizes), 1.0)
         constraints.append(homog_constraint)
+
+        # for backward compatibility, only returning B_list if needed.
+        if len(self.Bs):
+            B_list = [B.get_matrix(self.var_sizes) for B in self.Bs]
+            return cost, constraints, B_list
         return cost, constraints
 
     def get_standard_form(self, vec_order="C"):
@@ -387,8 +422,10 @@ class HomQCQP(object):
 
     def decompose_matrix(self, pmat: PolyMatrix, method="split"):
         """Decompose a matrix according to clique decomposition. Returns a dictionary with the key being the clique number and the value being a PolyMatrix that contains decomposed matrix on that clique."""
-        assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
-        assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")
+        assert isinstance(pmat, PolyMatrix), "Input should be a PolyMatrix"
+        assert pmat.symmetric, "PolyMatrix input should be symmetric"
+        assert len(self.var_clique_map), "Need to first populate var_clique_map!"
+
         dmat = {}  # defined decomposed matrix dictionary
         # Loop through elements of polymatrix and gather information about cliques and edges
         edges = []
