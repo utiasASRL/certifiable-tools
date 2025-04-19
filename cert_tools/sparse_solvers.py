@@ -409,17 +409,30 @@ def solve_dsdp_primal(
         fu.Domain.equalsTo(1.0),
     )
 
-    # AFFINE CONSTRAINTS
+    # EQUALITY CONSTRAINTS
     if verbose:
-        print("Adding Affine Constraints")
+        print("Adding affine equality constraints")
     for iCnstr, A in enumerate(problem.As):
         constr_expr = get_decomp_fusion_expr(
             A, decomp_method=decomp_methods["constraint"]
         )
         M.constraint(
-            "c_" + str(iCnstr),
+            "eq_" + str(iCnstr),
             constr_expr,
             fu.Domain.equalsTo(0.0),
+        )
+
+    # INEQUALITY CONSTRAINTS
+    if verbose:
+        print("Adding affine inequality constraints")
+    for iCnstr, B in enumerate(problem.Bs):
+        constr_expr = get_decomp_fusion_expr(
+            B, decomp_method=decomp_methods["constraint"]
+        )
+        M.constraint(
+            "ineq_" + str(iCnstr),
+            constr_expr,
+            fu.Domain.lessThan(0.0),
         )
 
     # CLIQUE CONSISTENCY EQUALITIES
