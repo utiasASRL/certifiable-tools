@@ -18,7 +18,7 @@ from cert_tools.linalg_tools import find_dependent_columns, svec
 
 
 def infer_var_list(clique_data):
-    """ Infer the variable list from clique data to fix the order. """
+    """Infer the variable list from clique data to fix the order."""
     if isinstance(clique_data, list):
         var_list = []
         var_list_quick_lookup = {}
@@ -61,8 +61,8 @@ class HomQCQP(object):
         self.h = homog_var  # Homogenizing variable name
 
     @staticmethod
-    def create_from_matrices(C, A_list, B_list):
-        homQCQP = HomQCQP(homog_var="h")
+    def create_from_matrices(C, A_list, B_list, homog_var="h"):
+        homQCQP = HomQCQP(homog_var=homog_var)
         homQCQP.C = C
         homQCQP.As = A_list
         homQCQP.Bs = B_list
