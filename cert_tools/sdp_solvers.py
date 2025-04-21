@@ -467,6 +467,7 @@ def solve_sdp_cvxpy(
         """
         min < Q, X >
         s.t.  trace(Ai @ X) == bi, for all i.
+              trace(Bj @ X) <= 0 for all j
         """
         X = cp.Variable(Q.shape, symmetric=True)
         constraints = [X >> 0]
@@ -500,7 +501,13 @@ def solve_sdp_cvxpy(
     else:  # Dual
         """
         max < y, b >
-        s.t. sum(Ai * yi for all i) << Q
+        s.t. sum(Ai * yi) - sum(uj Bj) <= Q
+            uj >= 0
+
+        equivalently
+        max <-y, b>
+            Q + sum(yi Ai) + sum(uj Bj) >= 0
+            uj >= 0
         """
         m = len(Constraints)
         y = cp.Variable(shape=(m,))
@@ -583,6 +590,7 @@ def solve_feasibility_sdp(
     Q,
     Constraints,
     x_cand,
+    B_list=[],
     adjust=ADJUST,
     tol=None,
     soft_epsilon=True,
@@ -605,6 +613,8 @@ def solve_feasibility_sdp(
     """
     m = len(Constraints)
     y = cp.Variable(shape=(m,))
+    if len(B_list):
+        u = cp.Variable(shape=(len(B_list),))
 
     As, b = zip(*Constraints)
     b = np.concatenate([np.atleast_1d(bi) for bi in b])
@@ -615,8 +625,19 @@ def solve_feasibility_sdp(
         adjust_tol(options, tol)
     options["verbose"] = verbose
 
-    H = cp.sum([Q_here] + [y[i] * Ai for (i, Ai) in enumerate(As)])
-    constraints = [H >> 0]
+    n = Q_here.shape[0]
+    H = cp.Variable(shape=(n, n), PSD=True)
+    constraints = [
+        H
+        == cp.sum(
+            [Q_here]
+            + [y[i] * Ai for (i, Ai) in enumerate(As)]
+            + [u[j] * Bj for (j, Bj) in enumerate(B_list)]
+        )
+    ]
+    if len(B_list):
+        constraints += [u >= 0]
+
     if soft_epsilon:
         eps = cp.Variable()
         constraints += [H @ x_cand <= eps]
@@ -637,6 +658,7 @@ def solve_feasibility_sdp(
         X = None
         H = None
         yvals = None
+        mus = None
         msg = "infeasible / unknown"
     else:
         if np.isfinite(cprob.value):
@@ -645,6 +667,7 @@ def solve_feasibility_sdp(
             X = constraints[0].dual_value
             H = H.value
             yvals = [x.value for x in y]
+            mus = u.value
             msg = f"converged: {cprob.status}"
         else:
             eps = None
@@ -652,6 +675,7 @@ def solve_feasibility_sdp(
             X = None
             H = None
             yvals = None
+            mus = None
             msg = f"unbounded: {cprob.status}"
     if verbose:
         print(msg)
@@ -662,7 +686,7 @@ def solve_feasibility_sdp(
         yvals[0] = yvals[0] * scale + offset
         H = Q_here + cp.sum([yvals[i] * Ai for (i, Ai) in enumerate(As)])
 
-    info = {"X": X, "yvals": yvals, "cost": cost, "msg": msg, "eps": eps}
+    info = {"X": X, "yvals": yvals, "mus": mus, "cost": cost, "msg": msg, "eps": eps}
     return H, info
 
 
