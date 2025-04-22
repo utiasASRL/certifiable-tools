@@ -182,7 +182,7 @@ class HomQCQP(object):
         The clique objects are stored in a list. Each clique object stores information
         about its parents and children, as well as separators"""
         if len(self.asg.vs) == 0:
-            warnings.warn("Aggregate sparsity graph not defined. Building now.")
+            # warnings.warn("Aggregate sparsity graph not defined. Building now.")
             # build aggregate sparsity graph
             var_list = None
             if len(clique_data):

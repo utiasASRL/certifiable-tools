@@ -597,6 +597,7 @@ def solve_feasibility_sdp(
     eps_tol=1e-8,
     verbose=False,
     options=options_cvxpy,
+    single_constraint=False,
 ):
     """Solve feasibility SDP using the MOSEK API.
 
@@ -607,7 +608,7 @@ def solve_feasibility_sdp(
         x_cand: Solution candidate.
         adjust (tuple, optional): Adjustment tuple: (scale,offset) for final cost.
         verbose (bool, optional): If true, prints output to screen. Defaults to True.
-
+	single_constraint (bool, optional): If true, enforce x.T @ H @ x < eps instead of H @ x < eps (both are equivalent when H is p.s.d.)
     Returns:
         _type_: _description_
     """
@@ -640,14 +641,20 @@ def solve_feasibility_sdp(
 
     if soft_epsilon:
         eps = cp.Variable()
-        constraints += [H @ x_cand <= eps]
-        constraints += [H @ x_cand >= -eps]
         objective = cp.Minimize(eps)
+
+        if single_constraint:
+            constraints += [x_cand.T @ H @ x_cand <= eps]
+        else:
+            constraints += [H @ x_cand <= eps]
+            constraints += [H @ x_cand >= -eps]
     else:
-        eps = cp.Variable()
-        constraints += [H @ x_cand <= eps_tol]
-        constraints += [H @ x_cand >= -eps_tol]
         objective = cp.Minimize(1.0)
+        if single_constraint:
+            constraints += [x_cand.T @ H @ x_cand <= eps_tol]
+        else:
+            constraints += [H @ x_cand <= eps_tol]
+            constraints += [H @ x_cand >= -eps_tol]
 
     cprob = cp.Problem(objective, constraints)
     try:
@@ -684,7 +691,11 @@ def solve_feasibility_sdp(
     if cost:
         cost = cost * scale + offset
         yvals[0] = yvals[0] * scale + offset
-        H = Q_here + cp.sum([yvals[i] * Ai for (i, Ai) in enumerate(As)])
+        H = (
+            Q_here
+            + cp.sum([yvals[i] * Ai for (i, Ai) in enumerate(As)])
+            + cp.sum([mus[j] * Bj for (j, Bj) in enumerate(B_list)])
+        )
 
     info = {"X": X, "yvals": yvals, "mus": mus, "cost": cost, "msg": msg, "eps": eps}
     return H, info
