@@ -598,6 +598,7 @@ def solve_feasibility_sdp(
     verbose=False,
     options=options_cvxpy,
     single_constraint=False,
+    nu_0=None,
 ):
     """Solve feasibility SDP using the MOSEK API.
 
@@ -608,12 +609,13 @@ def solve_feasibility_sdp(
         x_cand: Solution candidate.
         adjust (tuple, optional): Adjustment tuple: (scale,offset) for final cost.
         verbose (bool, optional): If true, prints output to screen. Defaults to True.
-	single_constraint (bool, optional): If true, enforce x.T @ H @ x < eps instead of H @ x < eps (both are equivalent when H is p.s.d.)
+        single_constraint (bool, optional): If true, enforce x.T @ H @ x < eps instead of H @ x < eps (both are equivalent when H is p.s.d.)
     Returns:
         _type_: _description_
     """
     m = len(Constraints)
     y = cp.Variable(shape=(m,))
+
     if len(B_list):
         u = cp.Variable(shape=(len(B_list),))
 
@@ -643,6 +645,13 @@ def solve_feasibility_sdp(
         eps = cp.Variable()
         objective = cp.Minimize(eps)
 
+        if nu_0 is not None:
+            assert (
+                b[0] == 1
+            ), "homogenization constraint not in expected location for nu_0"
+            constraints.append(y[0] - nu_0 < eps)
+            constraints.append(y[0] - nu_0 > -eps)
+
         if single_constraint:
             constraints += [x_cand.T @ H @ x_cand <= eps]
         else:
@@ -650,6 +659,12 @@ def solve_feasibility_sdp(
             constraints += [H @ x_cand >= -eps]
     else:
         objective = cp.Minimize(1.0)
+        if nu_0 is not None:
+            assert (
+                b[0] == 1
+            ), "homogenization constraint not in expected location for nu_0"
+            constraints.append(y[0] - nu_0 <= eps_tol)
+            constraints.append(y[0] - nu_0 >= -eps_tol)
         if single_constraint:
             constraints += [x_cand.T @ H @ x_cand <= eps_tol]
         else:
@@ -673,7 +688,9 @@ def solve_feasibility_sdp(
             cost = cprob.value
             X = constraints[0].dual_value
             H = H.value
-            yvals = [x.value for x in y]
+            yvals = y.value
+            if (nu_0 is not None) and (abs(yvals[0] - nu_0) > 1e-5):
+                print(f"Warning: error in nu_0: {yvals[0]}!={nu_0}")
             mus = u.value
             msg = f"converged: {cprob.status}"
         else:
