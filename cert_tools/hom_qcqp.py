@@ -120,13 +120,16 @@ class HomQCQP(object):
         pmat = self.C.copy()
         for A in self.As:
             pmat += A
+        for B in self.Bs:
+            pmat += B
+
         # build variable dictionaries
-        var_sizes = pmat.variable_dict_i.copy()
-        # If list is specified then align dictionary to list
         if var_list is not None:
-            self.var_sizes = {key: var_sizes[key] for key in var_list}
+            # If list is specified then align dictionary to list
+            self.var_sizes = {key: pmat.variable_dict_i[key] for key in var_list}
         else:
-            self.var_sizes = var_sizes
+            self.var_sizes = pmat.variable_dict_i.copy()
+
         # Update indices
         self._update_variables()
 
@@ -686,7 +689,7 @@ class HomQCQP(object):
         Y = np.vstack(Y)
         return Y, ranks, factor_dict
 
-    def get_dual_matrix(self, dual_cliques, var_list=None):
+    def get_dual_matrix(self, dual_cliques, var_list):
         """Construct the dual (certificate) matrix based on the dual variables corresponding to the cliques.
 
         Args:
@@ -694,7 +697,7 @@ class HomQCQP(object):
             var_list (list, optional): List representing desired variable ordering. Warning: Using this option may result in slower runtime. Defaults to None.
 
         Returns:
-            _type_: _description_
+            sparse matrix: dual matrix
         """
         if var_list is None:
             # Construct using HomQCQP variable ordering
@@ -715,15 +718,43 @@ class HomQCQP(object):
             H = PolyMatrix()
             for k, clique in enumerate(self.cliques):
                 clique_vars = clique.var_list
-                for iVar0 in range(len(clique_vars)):
-                    for iVar1 in range(iVar0, len(clique_vars)):
-                        var0 = clique_vars[iVar0]
-                        var1 = clique_vars[iVar1]
+                for i_var0 in range(len(clique_vars)):
+                    for i_var1 in range(i_var0, len(clique_vars)):
+                        var0 = clique_vars[i_var0]
+                        var1 = clique_vars[i_var1]
                         inds0 = clique._get_indices(var0)
                         inds1 = clique._get_indices(var1)
                         H[var0, var1] += dual_cliques[k][np.ix_(inds0, inds1)]
             H_mat = H.get_matrix(variables=var_list)
         return H_mat
+
+    def get_dual_matrix_from_vars(self, l_0, l_i, mu_i):
+        """Construct dual matrix using dual variables.
+
+        Args:
+            l_0 (float): variable corresponding to homogenization constraint
+            l_i (list): variables corresponding to equality constraints
+            mu_i (list): variables corresponding to inequality constraints
+
+        Returns:
+            dense matrix: dual matrix
+        """
+        Q, Constraints, B_list = self.get_problem_matrices()
+        A_0_list = [l_0 * A.toarray() for A, b in Constraints if b == 1]
+        assert len(A_0_list) == 1
+        assert len(Constraints) == len(l_i) + 1
+        assert len(B_list) == len(mu_i)
+
+        H = np.sum(
+            np.dstack(
+                [Q.toarray()]
+                + A_0_list
+                + [A * l for (A, b), l in zip(Constraints, l_i) if b == 0]
+                + [B.toarray() * m for B, m in zip(B_list, mu_i)]
+            ),
+            axis=2,
+        )
+        return H
 
     def _update_variables(self):
         "Loop through variable sizes and get starting indices"

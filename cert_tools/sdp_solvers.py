@@ -649,8 +649,8 @@ def solve_feasibility_sdp(
             assert (
                 b[0] == 1
             ), "homogenization constraint not in expected location for nu_0"
-            constraints.append(y[0] - nu_0 < eps)
-            constraints.append(y[0] - nu_0 > -eps)
+            constraints += [y[0] <= nu_0 + eps]
+            constraints += [y[0] >= nu_0 - eps]
 
         if single_constraint:
             constraints += [x_cand.T @ H @ x_cand <= eps]
@@ -663,8 +663,8 @@ def solve_feasibility_sdp(
             assert (
                 b[0] == 1
             ), "homogenization constraint not in expected location for nu_0"
-            constraints.append(y[0] - nu_0 <= eps_tol)
-            constraints.append(y[0] - nu_0 >= -eps_tol)
+            constraints += [y[0] <= nu_0 + eps_tol]
+            constraints += [y[0] >= nu_0 - eps_tol]
         if single_constraint:
             constraints += [x_cand.T @ H @ x_cand <= eps_tol]
         else:
