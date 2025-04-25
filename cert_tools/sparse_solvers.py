@@ -273,7 +273,8 @@ def solve_feasibility_dsdp(
         # Get component of certificate matrix
         row_inds = problem._get_indices(var0)
         col_inds = problem._get_indices(var1)
-        print(f"block {row_inds},{col_inds} of H", end=" ")
+        if verbose:
+            print(f"block {row_inds},{col_inds} of H", end=" ")
         H_subblock = H[np.ix_(row_inds, col_inds)]
 
         # Find the cliques that are involved with these variables
@@ -291,7 +292,8 @@ def solve_feasibility_dsdp(
 
                 row_inds = clique._get_indices(var0)
                 col_inds = clique._get_indices(var1)
-                print(f"minus {row_inds},{col_inds} of clique {clique}", end=" ")
+                if verbose:
+                    print(f"minus {row_inds},{col_inds} of clique {clique}", end=" ")
                 sum_list += [-cvars[clique.index][np.ix_(row_inds, col_inds)]]
                 if test_H_poly is not None:
                     test_sum_list += [
@@ -306,7 +308,8 @@ def solve_feasibility_dsdp(
                 np.testing.assert_allclose(np.sum(list_to_sum, axis=2), 0.0)
             matsumvec = cp.sum(sum_list)
             constraints += [matsumvec == 0]
-            print("must equal zero.")
+            if verbose:
+                print("must equal zero.")
         else:
             raise ValueError(
                 "inconsistency found: edge appears in graph but in none of the cliques."
