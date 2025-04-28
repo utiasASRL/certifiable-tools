@@ -474,8 +474,10 @@ def solve_feasibility_dsdp_fusion(
         M.constraint(f"Hx_gt", expression2, fu.Domain.greaterThan(0))
     else:
         M.objective(fu.ObjectiveSense.Minimize, 1.0)
-        M.constraint(f"Hx_lt", expression, fu.Domain.lessThan(eps_tol))
-        M.constraint(f"Hx_gt", expression, fu.Domain.greaterThan(-eps_tol))
+        M.constraint(f"Hx_lt", expression, fu.Domain.lessThan([eps_tol] * len(x_cand)))
+        M.constraint(
+            f"Hx_gt", expression, fu.Domain.greaterThan([-eps_tol] * len(x_cand))
+        )
 
     if nu_0 is not None:
         M.constraint(f"nu_0_lt", y[-1], fu.Domain.lessThan(nu_0 + eps_tol))

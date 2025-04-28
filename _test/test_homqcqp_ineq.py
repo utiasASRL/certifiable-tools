@@ -1,6 +1,5 @@
 import matplotlib.pylab as plt
 import numpy as np
-import pytest
 from matplotlib.patches import Circle
 from poly_matrix import PolyMatrix
 
@@ -167,6 +166,7 @@ def test_obstacle():
     print("epsilon:", info_H_dsdp["epsilon"])
     np.testing.assert_allclose(y[1:], info_H_dsdp["mus"], rtol=1e-3)
     H_test = problem.get_dual_matrix(c_list_new, var_list=problem.var_list)
+    np.testing.assert_array_less(H_test @ Y, 1e-3)
 
     H_test2 = problem.get_dual_matrix_from_vars(
         info_H_dsdp["nu_0"], info_H_dsdp["yvals"], info_H_dsdp["mus"]
@@ -182,7 +182,7 @@ def test_obstacle():
 
     c_list_fusion, info_fusion = solve_feasibility_dsdp_fusion(
         problem,
-        x_cand=Y,
+        x_cand=Y.flatten(),
         nu_0=nu_0,
         tol=1e-4,
         soft_epsilon=False,

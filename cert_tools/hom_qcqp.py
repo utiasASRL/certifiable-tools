@@ -745,15 +745,13 @@ class HomQCQP(object):
         assert len(Constraints) == len(l_i) + 1
         assert len(B_list) == len(mu_i)
 
-        H = np.sum(
-            np.dstack(
-                [Q.toarray()]
-                + A_0_list
-                + [A * l for (A, b), l in zip(Constraints, l_i) if b == 0]
-                + [B.toarray() * m for B, m in zip(B_list, mu_i)]
-            ),
-            axis=2,
+        mat_list = (
+            [Q.toarray()]
+            + A_0_list
+            + [A.toarray() * l for (A, b), l in zip(Constraints, l_i) if b == 0]
+            + [B.toarray() * m for B, m in zip(B_list, mu_i)]
         )
+        H = np.sum(np.dstack(mat_list), axis=2)
         return H
 
     def _update_variables(self):
