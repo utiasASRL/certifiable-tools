@@ -14,12 +14,8 @@ from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
 from cert_tools.hom_qcqp import HomQCQP
 from cert_tools.linalg_tools import smat
-from cert_tools.sdp_solvers import (
-    adjust_tol,
-    adjust_tol_fusion,
-    options_cvxpy,
-    options_fusion,
-)
+from cert_tools.sdp_solvers import (adjust_tol, adjust_tol_fusion,
+                                    options_cvxpy, options_fusion)
 
 CONSTRAIN_ALL_OVERLAP = False
 
@@ -327,8 +323,9 @@ def solve_feasibility_dsdp(
         constraints += [H @ x_cand <= eps_tol]
 
     if nu_0 is not None:
-        constraints += [y[-1] <= nu_0 + eps_tol]
-        constraints += [y[-1] >= nu_0 - eps_tol]
+        constraints += [y[-1] == nu_0]
+        # constraints += [y[-1] <= nu_0 + eps_tol]
+        # constraints += [y[-1] >= nu_0 - eps_tol]
 
     # adjust tolerances
     adjust_tol(options_cvxpy, tol)
@@ -338,9 +335,8 @@ def solve_feasibility_dsdp(
     # Store information
     info = {"success": False, "cost": -np.inf, "msg": prob.status, "epsilon": None}
 
-    prob.solve()
-
-    if prob.status == "optimal":
+    prob.solve(verbose=True, accept_unknown=True)
+    if prob.status == "optimal" or prob.status == "optimal_inaccurate":
         cost = prob.value
         clq_list = [cvar.value for cvar in cvars]
         # dual = [c.dual_variables[0].value for cvar in cvars for c in cvar.domain]
@@ -353,6 +349,7 @@ def solve_feasibility_dsdp(
         info["yvals"] = ys[:-1]
         info["nu_0"] = ys[-1]
         info["mus"] = us
+        info["messsage"] = prob.status
     else:
         print("Solve Failed - Mosek Status: " + str(prob.status))
         clq_list = []
@@ -379,6 +376,9 @@ def solve_feasibility_dsdp_fusion(
         tol (float, optional): Tolerance for solver. Defaults to TOL.
         adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
     """
+    if adjust:
+        raise NotImplementedError("adjust=True not implemented.")
+
     t0 = time()
     # List of constraints with homogenizing constraint.
     A_h = PolyMatrix()
@@ -480,11 +480,13 @@ def solve_feasibility_dsdp_fusion(
         )
 
     if nu_0 is not None:
-        M.constraint(f"nu_0_lt", y[-1], fu.Domain.lessThan(nu_0 + eps_tol))
-        M.constraint(f"nu_0_gt", y[-1], fu.Domain.greaterThan(nu_0 - eps_tol))
+        M.constraint(f"nu_0_lt", y[-1], fu.Domain.equalsTo(nu_0))
+        # M.constraint(f"nu_0_lt", y[-1], fu.Domain.lessThan(nu_0 + eps_tol))
+        # M.constraint(f"nu_0_gt", y[-1], fu.Domain.greaterThan(nu_0 - eps_tol))
 
     # SOLVE
-    M.setSolverParam("intpntSolveForm", "dual")
+    # M.setSolverParam("intpntSolveForm", "dual")
+    M.setSolverParam("intpntSolveForm", "primal")
     # record problem
     if verbose:
         M.writeTask("problem_dump_dual.ptf")
