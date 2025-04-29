@@ -14,8 +14,12 @@ from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
 from cert_tools.hom_qcqp import HomQCQP
 from cert_tools.linalg_tools import smat
-from cert_tools.sdp_solvers import (adjust_tol, adjust_tol_fusion,
-                                    options_cvxpy, options_fusion)
+from cert_tools.sdp_solvers import (
+    adjust_tol,
+    adjust_tol_fusion,
+    options_cvxpy,
+    options_fusion,
+)
 
 CONSTRAIN_ALL_OVERLAP = False
 
@@ -328,7 +332,6 @@ def solve_feasibility_dsdp(
             col_inds = problem._get_indices(var1)
             if verbose:
                 print(f"block {row_inds},{col_inds} of H", end=" ")
-
             sum_list = [H[np.ix_(row_inds, col_inds)]]
 
             if test_H_poly is not None:
@@ -513,7 +516,6 @@ def solve_feasibility_dsdp_fusion(
         for var0, var1 in itertools.combinations(clique.var_list, 2):
             unique_id = "".join(sorted([var0, var1]))
             if unique_id in var_lookup_dict[clique.index]:
-                print("skipping", unique_id)
                 continue
 
             # Get component of certificate matrix
@@ -523,6 +525,7 @@ def solve_feasibility_dsdp_fusion(
                 print(f"block {row_inds},{col_inds} of H", end=" ")
             inds = get_block_inds(row_inds, col_inds, var0 == var1)
             H_subblock = H.pick(inds)
+            sum_list = [H_subblock]
 
             row_inds = clique._get_indices(var0)
             col_inds = clique._get_indices(var1)
