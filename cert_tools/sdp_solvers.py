@@ -183,6 +183,7 @@ def solve_low_rank_sdp(
 def solve_sdp_mosek(
     Q,
     Constraints,
+    B_list=[],
     adjust=ADJUST,
     primal=PRIMAL,
     tol=TOL,
@@ -234,12 +235,10 @@ def solve_sdp_mosek(
         )
         # problem params
         dim = Q_here.shape[0]
-        numcon = len(Constraints)
+        numcon = len(Constraints) + len(B_list)
         # append vars,constr
         task.appendbarvars([dim])
         task.appendcons(numcon)
-        # bound keys
-        bkc = mosek.boundkey.fx
         # Cost matrix
         Q_l = sp.tril(Q_here, format="csr")
         rows, cols = Q_l.nonzero()
@@ -260,7 +259,19 @@ def solve_sdp_mosek(
             # Add constraint matrix
             task.putbaraij(cnt, 0, [syma], [1.0])
             # Set bound (equality)
-            task.putconbound(cnt, bkc, b, b)
+            task.putconbound(cnt, mosek.boundkey.fx, b, b)
+            cnt += 1
+
+        for B in B_list:
+            # Generate matrix
+            B_l = sp.tril(B, format="csr")
+            rows, cols = B_l.nonzero()
+            vals = B_l[rows, cols].tolist()[0]
+            syma = task.appendsparsesymmat(dim, rows, cols, vals)
+            # Add constraint matrix
+            task.putbaraij(cnt, 0, [syma], [1.0])
+            # Set bound (inequality)
+            task.putconbound(cnt, mosek.boundkey.up, -1e16, 0)
             cnt += 1
         # Store problem
         task.writedata("solve_mosek.ptf")
@@ -456,6 +467,7 @@ def solve_sdp_cvxpy(
         """
         min < Q, X >
         s.t.  trace(Ai @ X) == bi, for all i.
+              trace(Bj @ X) <= 0 for all j
         """
         X = cp.Variable(Q.shape, symmetric=True)
         constraints = [X >> 0]
@@ -489,7 +501,13 @@ def solve_sdp_cvxpy(
     else:  # Dual
         """
         max < y, b >
-        s.t. sum(Ai * yi for all i) << Q
+        s.t. sum(Ai * yi) - sum(uj Bj) <= Q
+            uj >= 0
+
+        equivalently
+        max <-y, b>
+            Q + sum(yi Ai) + sum(uj Bj) >= 0
+            uj >= 0
         """
         m = len(Constraints)
         y = cp.Variable(shape=(m,))
@@ -532,18 +550,18 @@ def solve_sdp_cvxpy(
                 H = Q_here - LHS.value
                 yvals = [x.value for x in y]
 
-                # sanity check for inequality constraints.
-                # we want them to be inactive!!!
                 if len(B_list):
                     mu = np.array([ui.value for ui in u])
-                    i_nnz = np.where(mu > 1e-10)[0]
-                    if len(i_nnz):
-                        for i in i_nnz:
-                            print(
-                                f"Warning: is constraint {i} active? (mu={mu[i]:.4e}):"
-                            )
-                            print(np.trace(B_list[i] @ X))
                     info["mu"] = mu
+                # sanity check for inequality constraints.
+                # we want them to be inactive!!!
+                #    i_nnz = np.where(mu > 1e-10)[0]
+                #    if len(i_nnz):
+                #        for i in i_nnz:
+                #            print(
+                #                f"Warning: is constraint {i} active? (mu={mu[i]:.4e}):"
+                #            )
+                #            print(np.trace(B_list[i] @ X))
                 msg = "converged"
             else:
                 cost = None
@@ -572,12 +590,15 @@ def solve_feasibility_sdp(
     Q,
     Constraints,
     x_cand,
+    B_list=[],
     adjust=ADJUST,
     tol=None,
     soft_epsilon=True,
     eps_tol=1e-8,
     verbose=False,
     options=options_cvxpy,
+    single_constraint=False,
+    nu_0=None,
 ):
     """Solve feasibility SDP using the MOSEK API.
 
@@ -588,12 +609,15 @@ def solve_feasibility_sdp(
         x_cand: Solution candidate.
         adjust (tuple, optional): Adjustment tuple: (scale,offset) for final cost.
         verbose (bool, optional): If true, prints output to screen. Defaults to True.
-
+        single_constraint (bool, optional): If true, enforce x.T @ H @ x < eps instead of H @ x < eps (both are equivalent when H is p.s.d.)
     Returns:
         _type_: _description_
     """
     m = len(Constraints)
     y = cp.Variable(shape=(m,))
+
+    if len(B_list):
+        u = cp.Variable(shape=(len(B_list),))
 
     As, b = zip(*Constraints)
     b = np.concatenate([np.atleast_1d(bi) for bi in b])
@@ -604,18 +628,48 @@ def solve_feasibility_sdp(
         adjust_tol(options, tol)
     options["verbose"] = verbose
 
-    H = cp.sum([Q_here] + [y[i] * Ai for (i, Ai) in enumerate(As)])
-    constraints = [H >> 0]
+    n = Q_here.shape[0]
+    H = cp.Variable(shape=(n, n), PSD=True)
+    constraints = [
+        H
+        == cp.sum(
+            [Q_here]
+            + [y[i] * Ai for (i, Ai) in enumerate(As)]
+            + [u[j] * Bj for (j, Bj) in enumerate(B_list)]
+        )
+    ]
+    if len(B_list):
+        constraints += [u >= 0]
+
     if soft_epsilon:
         eps = cp.Variable()
-        constraints += [H @ x_cand <= eps]
-        constraints += [H @ x_cand >= -eps]
         objective = cp.Minimize(eps)
+
+        if nu_0 is not None:
+            assert (
+                b[0] == 1
+            ), "homogenization constraint not in expected location for nu_0"
+            constraints += [y[0] <= nu_0 + eps]
+            constraints += [y[0] >= nu_0 - eps]
+
+        if single_constraint:
+            constraints += [x_cand.T @ H @ x_cand <= eps]
+        else:
+            constraints += [H @ x_cand <= eps]
+            constraints += [H @ x_cand >= -eps]
     else:
-        eps = cp.Variable()
-        constraints += [H @ x_cand <= eps_tol]
-        constraints += [H @ x_cand >= -eps_tol]
         objective = cp.Minimize(1.0)
+        if nu_0 is not None:
+            assert (
+                b[0] == 1
+            ), "homogenization constraint not in expected location for nu_0"
+            constraints += [y[0] <= nu_0 + eps_tol]
+            constraints += [y[0] >= nu_0 - eps_tol]
+        if single_constraint:
+            constraints += [x_cand.T @ H @ x_cand <= eps_tol]
+        else:
+            constraints += [H @ x_cand <= eps_tol]
+            constraints += [H @ x_cand >= -eps_tol]
 
     cprob = cp.Problem(objective, constraints)
     try:
@@ -626,6 +680,7 @@ def solve_feasibility_sdp(
         X = None
         H = None
         yvals = None
+        mus = None
         msg = "infeasible / unknown"
     else:
         if np.isfinite(cprob.value):
@@ -633,7 +688,10 @@ def solve_feasibility_sdp(
             cost = cprob.value
             X = constraints[0].dual_value
             H = H.value
-            yvals = [x.value for x in y]
+            yvals = y.value
+            if (nu_0 is not None) and (abs(yvals[0] - nu_0) > 1e-5):
+                print(f"Warning: error in nu_0: {yvals[0]}!={nu_0}")
+            mus = u.value
             msg = f"converged: {cprob.status}"
         else:
             eps = None
@@ -641,6 +699,7 @@ def solve_feasibility_sdp(
             X = None
             H = None
             yvals = None
+            mus = None
             msg = f"unbounded: {cprob.status}"
     if verbose:
         print(msg)
@@ -649,9 +708,13 @@ def solve_feasibility_sdp(
     if cost:
         cost = cost * scale + offset
         yvals[0] = yvals[0] * scale + offset
-        H = Q_here + cp.sum([yvals[i] * Ai for (i, Ai) in enumerate(As)])
+        H = (
+            Q_here
+            + cp.sum([yvals[i] * Ai for (i, Ai) in enumerate(As)])
+            + cp.sum([mus[j] * Bj for (j, Bj) in enumerate(B_list)])
+        )
 
-    info = {"X": X, "yvals": yvals, "cost": cost, "msg": msg, "eps": eps}
+    info = {"X": X, "yvals": yvals, "mus": mus, "cost": cost, "msg": msg, "eps": eps}
     return H, info
 
 
@@ -829,7 +892,12 @@ def solve_sdp_homqcqp(
     """Solve non-chordal SDP for PGO problem without using ADMM"""
 
     # Get matrices
-    obj, constrs = problem.get_problem_matrices()
+    try:
+        obj, constrs, B_list = problem.get_problem_matrices()
+    except:
+        obj, constrs = problem.get_problem_matrices()
+        B_list = []
+
     # Select the solver
     if solver == "mosek":
         solver = solve_sdp_mosek
@@ -839,7 +907,12 @@ def solve_sdp_homqcqp(
     start_time = time()
     if method == "sdp":
         X, info = solver(
-            Q=obj, Constraints=constrs, adjust=False, verbose=verbose, tol=tol
+            Q=obj,
+            Constraints=constrs,
+            B_list=B_list,
+            adjust=False,
+            verbose=verbose,
+            tol=tol,
         )
     elif method == "dsdp":
         ValueError("Method not defined.")
@@ -847,8 +920,8 @@ def solve_sdp_homqcqp(
         ValueError("Method not defined.")
     # Get solution time.
     solve_time = time() - start_time
-
-    return X, info, solve_time
+    info["solve_time"] = solve_time
+    return X, info
 
 
 def solve_sdp(

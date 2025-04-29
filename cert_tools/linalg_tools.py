@@ -88,28 +88,25 @@ def rank_project(X, p=1, tolerance=1e-10):
     """Project matrix X to matrix of rank p."""
     try:
         assert la.issymmetric(X)
-        E, V = np.linalg.eigh(X)
+        E_dec, V_dec = np.linalg.eigh(X)
+        E = E_dec[::-1]
+        V = V_dec[:, ::-1]
         if p is None:
             p = np.sum(np.abs(E) > tolerance)
-        x = V[:, -p:] * np.sqrt(E[-p:])
-
+        x = V[:, :p] * np.sqrt(E[:p])
         X_hat = np.outer(x, x)
-        info = {
-            "error X": np.linalg.norm(X_hat - X),
-            "error eigs": np.sum(np.abs(E[:-p])),
-            "EVR": abs(E[-p] / E[-p - 1]),  # largest over second-largest
-        }
     except (ValueError, AssertionError):
         U, E, Vh = np.linalg.svd(X)
         if p is None:
             p = np.sum(np.abs(E) > tolerance)
         X_hat = U[:, :p] @ np.diag(E[:p]) @ Vh[:p, :]
         x = U[:, :p] @ np.diag(E[:p])
-        info = {
-            "error X": np.linalg.norm(X_hat - X),
-            "error eigs": np.sum(np.abs(E[p:])),
-            "EVR": abs(E[p - 1] / E[p]),  # largest over second-largest
-        }
+    info = {
+        "values": E,
+        "error X": np.linalg.norm(X_hat - X),
+        "error eigs": np.sum(np.abs(E[p:])),
+        "EVR": abs(E[p - 1] / E[p]),  # largest over second-largest
+    }
     return x, info
 
 

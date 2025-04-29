@@ -5,17 +5,15 @@ from time import time
 
 import clarabel
 import cvxpy as cp
-import matplotlib.pyplot as plt
 import mosek.fusion.pythonic as fu
 import numpy as np
 import scipy.sparse as sp
-from igraph import Graph
 from poly_matrix import PolyMatrix
 
 from cert_tools.base_clique import BaseClique
 from cert_tools.fusion_tools import get_slice, mat_fusion
 from cert_tools.hom_qcqp import HomQCQP
-from cert_tools.linalg_tools import smat, svec
+from cert_tools.linalg_tools import smat
 from cert_tools.sdp_solvers import (
     adjust_tol,
     adjust_tol_fusion,
@@ -207,6 +205,411 @@ def solve_dsdp(
             adjust=adjust,
         )
     return out
+
+
+def solve_feasibility_dsdp(
+    problem: HomQCQP,
+    x_cand: np.ndarray,
+    verbose=False,
+    tol=TOL,
+    adjust=False,
+    nu_0=None,
+    soft_epsilon=False,
+    eps_tol=1e-5,
+    test_H_poly=None,
+):
+    """Solve decomposed SDP corresponding to input problem
+
+    Args:
+        problem (HomQCQP): Homogenous QCQP Problem
+        x_cand (np.ndarray): Candidate solution that we try to certify
+        verbose (bool, optional): If true, display solver output. Defaults to False.
+        tol (float, optional): Tolerance for solver. Defaults to TOL.
+        adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
+    """
+    A_h = PolyMatrix()
+    A_h[problem.h, problem.h] = 1
+    As = problem.As + [A_h]
+
+    constraints = []
+
+    cliques = problem.cliques
+    cvars = [cp.Variable((c.size, c.size), PSD=True) for c in cliques]
+    if test_H_poly is not None:
+        assert isinstance(test_H_poly, PolyMatrix)
+        test_H = test_H_poly.get_matrix(problem.var_sizes)
+        test_cvars = [test_H_poly.get_matrix(c.var_sizes) for c in cliques]
+
+    # LAGRANGE VARIABLES
+    y = cp.Variable(len(As))
+    if len(problem.Bs):
+        u = cp.Variable(len(problem.Bs))
+        constraints += [u >= 0]
+
+    C_mat = problem.C.get_matrix(problem.var_sizes)
+
+    cert_mat_list = [C_mat]
+    # get constraint-multiplier products
+    for i, A in enumerate(As):
+        A_mat = A.get_matrix(problem.var_sizes)
+        cert_mat_list.append(A_mat * y[i])
+
+    for i, B in enumerate(problem.Bs):
+        B_mat = B.get_matrix(problem.var_sizes)
+        cert_mat_list.append(B_mat * u[i])
+    H = cp.sum(cert_mat_list)
+
+    # AFFINE CONSTRAINTS:
+    # H_ij - sum(Z_k)_ij = C_ij + sum(Ai*y_i)_ij - sum(Z_k)_ij = 0
+    # Get a list of edges in the aggregate sparsity pattern (including main diagonal)
+    edges = [e.tuple for e in problem.asg.es]
+    edges += [(v.index, v.index) for v in problem.asg.vs]
+
+    # Generate one matrix constraint per edge. This links the cliques
+    var_lookup_dict = {}
+    for edge_id in edges:
+        # Get variables in edge from graph
+        var0 = problem.asg.vs["name"][edge_id[0]]
+        var1 = problem.asg.vs["name"][edge_id[1]]
+
+        # Get component of certificate matrix
+        row_inds = problem._get_indices(var0)
+        col_inds = problem._get_indices(var1)
+        H_subblock = H[np.ix_(row_inds, col_inds)]
+        if verbose:
+            print(f"block {row_inds},{col_inds} of H", end=" ")
+
+        # Find the cliques that are involved with these variables
+        overlapping_cliques = [
+            c for c in problem.cliques if (var0 in c.var_list) and (var1 in c.var_list)
+        ]
+        if len(overlapping_cliques):
+            sum_list = [H_subblock]
+            for clique in overlapping_cliques:
+                unique_id = "".join(sorted([var0, var1]))
+                if clique.index not in var_lookup_dict:
+                    var_lookup_dict[clique.index] = []
+                var_lookup_dict[clique.index].append(unique_id)
+
+                if test_H_poly is not None:
+                    test_sum_list = [test_H[np.ix_(row_inds, col_inds)]]
+
+                row_inds = clique._get_indices(var0)
+                col_inds = clique._get_indices(var1)
+                if verbose:
+                    print(f"minus {row_inds},{col_inds} of clique {clique}", end=" ")
+                sum_list += [-cvars[clique.index][np.ix_(row_inds, col_inds)]]
+                if test_H_poly is not None:
+                    test_sum_list += [
+                        -test_cvars[clique.index][np.ix_(row_inds, col_inds)]
+                    ]
+
+            # Add the list together
+            if test_H_poly is not None:
+                list_to_sum = np.concatenate(
+                    [m.toarray()[:, :, None] for m in test_sum_list], axis=2
+                )
+                np.testing.assert_allclose(np.sum(list_to_sum, axis=2), 0.0)
+            matsumvec = cp.sum(sum_list)
+            constraints += [matsumvec == 0]
+            if verbose:
+                print("must equal zero.")
+        else:
+            raise ValueError(
+                "inconsistency found: edge appears in graph but in none of the cliques."
+            )
+
+    # For each clique, we also need to make sure to constrain the parts that are not present in H.
+    for clique in problem.cliques:
+        # find all the variables that were not already constrained.
+        for var0, var1 in itertools.combinations(clique.var_list, 2):
+            unique_id = "".join(sorted([var0, var1]))
+            if unique_id in var_lookup_dict[clique.index]:
+                continue
+
+            # Get component of certificate matrix
+            row_inds = problem._get_indices(var0)
+            col_inds = problem._get_indices(var1)
+            if verbose:
+                print(f"block {row_inds},{col_inds} of H", end=" ")
+            sum_list = [H[np.ix_(row_inds, col_inds)]]
+
+            if test_H_poly is not None:
+                test_sum_list = [test_H[np.ix_(row_inds, col_inds)]]
+
+            row_inds = clique._get_indices(var0)
+            col_inds = clique._get_indices(var1)
+            if verbose:
+                print(f"minus {row_inds},{col_inds} of clique {clique}", end=" ")
+            sum_list += [-cvars[clique.index][np.ix_(row_inds, col_inds)]]
+
+            if test_H_poly is not None:
+                test_sum_list += [-test_cvars[clique.index][np.ix_(row_inds, col_inds)]]
+
+            # Add the list together
+            if test_H_poly is not None:
+                list_to_sum = np.concatenate(
+                    [m.toarray()[:, :, None] for m in test_sum_list], axis=2
+                )
+                np.testing.assert_allclose(np.sum(list_to_sum, axis=2), 0.0)
+            matsumvec = cp.sum(sum_list)
+            constraints += [matsumvec == 0]
+            if verbose:
+                print("must equal zero.")
+
+    if soft_epsilon:
+        epsilon = cp.Variable()
+        cost = cp.Minimize(epsilon)
+
+        constraints += [H @ x_cand >= -epsilon]
+        constraints += [H @ x_cand <= epsilon]
+    else:
+        cost = cp.Minimize(1.0)
+        constraints += [H @ x_cand >= -eps_tol]
+        constraints += [H @ x_cand <= eps_tol]
+
+    if nu_0 is not None:
+        constraints += [y[-1] == nu_0]
+        # constraints += [y[-1] <= nu_0 + eps_tol]
+        # constraints += [y[-1] >= nu_0 - eps_tol]
+
+    # adjust tolerances
+    adjust_tol(options_cvxpy, tol)
+
+    prob = cp.Problem(cost, constraints)
+
+    # Store information
+    info = {"success": False, "cost": -np.inf, "msg": prob.status, "epsilon": None}
+
+    prob.solve(accept_unknown=True)
+    if prob.status == "optimal" or prob.status == "optimal_inaccurate":
+        cost = prob.value
+        clq_list = [cvar.value for cvar in cvars]
+        # dual = [c.dual_variables[0].value for cvar in cvars for c in cvar.domain]
+        ys = y.value
+        us = u.value
+        info["epsilon"] = prob.value if soft_epsilon else eps_tol
+        info["success"] = True
+        info["dual"] = "Not implemented"
+        info["cost"] = cost
+        info["yvals"] = ys[:-1]
+        info["nu_0"] = ys[-1]
+        info["mus"] = us
+        info["messsage"] = prob.status
+    else:
+        print("Solve Failed - Mosek Status: " + str(prob.status))
+        clq_list = []
+    return clq_list, info
+
+
+def solve_feasibility_dsdp_fusion(
+    problem: HomQCQP,
+    x_cand: np.ndarray,
+    verbose=False,
+    tol=TOL,
+    adjust=False,
+    nu_0=None,
+    soft_epsilon=False,
+    eps_tol=1e-5,
+    test_H_poly=None,
+):
+    """Solve decomposed SDP corresponding to input problem
+
+    Args:
+        problem (HomQCQP): Homogenous QCQP Problem
+        x_cand (np.ndarray): Candidate solution that we try to certify
+        verbose (bool, optional): If true, display solver output. Defaults to False.
+        tol (float, optional): Tolerance for solver. Defaults to TOL.
+        adjust (bool, optional): If true, adjust the cost matrix. Defaults to False.
+    """
+    if adjust:
+        raise NotImplementedError("adjust=True not implemented.")
+
+    t0 = time()
+    # List of constraints with homogenizing constraint.
+    A_h = PolyMatrix()
+    A_h[problem.h, problem.h] = 1
+    As = problem.As + [A_h]
+
+    # Define problem model
+    M = fu.Model()
+
+    # CLIQUE VARIABLES
+    cliques = problem.cliques
+    cvars = [M.variable(fu.Domain.inPSDCone(c.size)) for c in cliques]
+
+    # LAGRANGE VARIABLES
+    y = [M.variable(f"y{i}") for i in range(len(As))]
+    if len(problem.Bs):
+        u = [M.variable(f"u{j}") for j in range(len(problem.Bs))]
+        [
+            M.constraint(f"u{j}", u[j], fu.Domain.greaterThan(0.0))
+            for j in range(len(problem.Bs))
+        ]
+
+    # CONSTRUCT CERTIFICATE
+    if verbose:
+        print("Building Certificate Matrix")
+
+    C_mat = problem.C.get_matrix(problem.var_sizes)
+    C_fusion = fu.Expr.constTerm(sparse_to_fusion(C_mat))
+
+    cert_mat_list = [C_fusion]
+
+    # get constraint-multiplier products
+    for i, A in enumerate(As):
+        A_mat = A.get_matrix(problem.var_sizes)
+        A_fusion = sparse_to_fusion(A_mat)
+        cert_mat_list.append(fu.Expr.mul(A_fusion, y[i]))
+
+    for i, B in enumerate(problem.Bs):
+        B_mat = B.get_matrix(problem.var_sizes)
+        B_fusion = sparse_to_fusion(B_mat)
+        cert_mat_list.append(fu.Expr.mul(B_fusion, u[i]))
+    # sum into certificate
+    H = fu.Expr.add(cert_mat_list)
+
+    # AFFINE CONSTRAINTS:
+    # H_ij - sum(Z_k)_ij = C_ij + sum(Ai*y_i)_ij - sum(Z_k)_ij = 0
+    # Get a list of edges in the aggregate sparsity pattern (including main diagonal)
+    if verbose:
+        print("Generating Affine Constraints")
+    edges = [e.tuple for e in problem.asg.es]
+    edges += [(v.index, v.index) for v in problem.asg.vs]
+
+    # Generate one matrix constraint per edge. This links the cliques
+    var_lookup_dict = {}
+    for edge_id in edges:
+        # Get variables in edge from graph
+        var0 = problem.asg.vs["name"][edge_id[0]]
+        var1 = problem.asg.vs["name"][edge_id[1]]
+        # Get component of certificate matrix
+        row_inds = problem._get_indices(var0)
+        col_inds = problem._get_indices(var1)
+        inds = get_block_inds(row_inds, col_inds, var0 == var1)
+        H_subblock = H.pick(inds)
+
+        # Find the cliques that are involved with these variables
+        overlapping_cliques = [
+            c for c in problem.cliques if (var0 in c.var_list) and (var1 in c.var_list)
+        ]
+        if len(overlapping_cliques):
+            sum_list = [H_subblock]
+            for clique in overlapping_cliques:
+                unique_id = "".join(sorted([var0, var1]))
+                if clique.index not in var_lookup_dict:
+                    var_lookup_dict[clique.index] = []
+                var_lookup_dict[clique.index].append(unique_id)
+
+                row_inds = clique._get_indices(var0)
+                col_inds = clique._get_indices(var1)
+                inds = get_block_inds(row_inds, col_inds, var0 == var1)
+                sum_list += [-cvars[clique.index].pick(inds)]
+
+            # Add the list together
+            matsumvec = fu.Expr.add(sum_list)
+            M.constraint(f"e_{var0}_{var1}", matsumvec, fu.Domain.equalsTo(0.0))
+
+    # For each clique, we also need to make sure to constrain the parts that are not present in H.
+    for clique in problem.cliques:
+        # find all the variables that were not already constrained.
+        for var0, var1 in itertools.combinations(clique.var_list, 2):
+            unique_id = "".join(sorted([var0, var1]))
+            if unique_id in var_lookup_dict[clique.index]:
+                continue
+
+            # Get component of certificate matrix
+            row_inds = problem._get_indices(var0)
+            col_inds = problem._get_indices(var1)
+            if verbose:
+                print(f"block {row_inds},{col_inds} of H", end=" ")
+            inds = get_block_inds(row_inds, col_inds, var0 == var1)
+            H_subblock = H.pick(inds)
+            sum_list = [H_subblock]
+
+            row_inds = clique._get_indices(var0)
+            col_inds = clique._get_indices(var1)
+            if verbose:
+                print(f"minus {row_inds},{col_inds} of clique {clique}", end=" ")
+            inds = get_block_inds(row_inds, col_inds, var0 == var1)
+            sum_list += [-cvars[clique.index].pick(inds)]
+
+            # Add the list together
+            matsumvec = fu.Expr.add(sum_list)
+            M.constraint(f"e_{var0}_{var1}", matsumvec, fu.Domain.equalsTo(0.0))
+
+    expression = fu.Expr.mul(H, x_cand)
+    if verbose:
+        print("Adding Objective")
+    if soft_epsilon:
+        epsilon = M.variable("epsilon")
+        M.objective(fu.ObjectiveSense.Minimize, epsilon)
+
+        expression1 = fu.Expr.mul(H, x_cand) - fu.Expr.vstack([epsilon] * len(x_cand))
+        M.constraint(f"Hx_lt", expression1, fu.Domain.lessThan(0))
+        expression2 = fu.Expr.mul(H, x_cand) + fu.Expr.vstack([epsilon] * len(x_cand))
+        M.constraint(f"Hx_gt", expression2, fu.Domain.greaterThan(0))
+    else:
+        M.objective(fu.ObjectiveSense.Minimize, 1.0)
+        M.constraint(f"Hx_lt", expression, fu.Domain.lessThan([eps_tol] * len(x_cand)))
+        M.constraint(
+            f"Hx_gt", expression, fu.Domain.greaterThan([-eps_tol] * len(x_cand))
+        )
+
+    if nu_0 is not None:
+        M.constraint(f"nu_0_lt", y[-1], fu.Domain.equalsTo(nu_0))
+        # M.constraint(f"nu_0_lt", y[-1], fu.Domain.lessThan(nu_0 + eps_tol))
+        # M.constraint(f"nu_0_gt", y[-1], fu.Domain.greaterThan(nu_0 - eps_tol))
+
+    # SOLVE
+    # M.setSolverParam("intpntSolveForm", "dual")
+    M.setSolverParam("intpntSolveForm", "primal")
+    # record problem
+    if verbose:
+        M.writeTask("problem_dump_dual.ptf")
+        print("Starting Solve")
+    # adjust tolerances
+    adjust_tol_fusion(options_fusion, tol)
+    options_fusion["intpntCoTolRelGap"] = tol
+    for key, val in options_fusion.items():
+        M.setSolverParam(key, val)  # default 1e-8
+    if verbose:
+        M.setLogHandler(sys.stdout)
+    else:
+        f = open("mosek_output.tmp", "a+")
+        M.setLogHandler(f)
+
+    M.acceptedSolutionStatus(fu.AccSolutionStatus.Anything)
+    t1 = time()
+    M.solve()
+    t2 = time()
+
+    # Store information
+    info = {
+        "success": False,
+        "cost": -np.inf,
+        "runtime": t2 - t1,
+        "preprocess_time": t1 - t0,
+        "msg": str(M.getProblemStatus()),
+    }
+
+    # EXTRACT SOLN
+    status = M.getProblemStatus()
+    if status == fu.ProblemStatus.PrimalAndDualFeasible:
+        # Get MOSEK cost
+        cost = M.primalObjValue()
+        clq_list = [cvar.level().reshape(cvar.shape) for cvar in cvars]
+        yvals = [y_i.level()[0] for y_i in y]
+        info["success"] = True
+        info["dual"] = [cvar.dual().reshape(cvar.shape) for cvar in cvars]
+        info["cost"] = cost
+        info["yvals"] = yvals[:-1]
+        info["nu_0"] = yvals[-1]
+        info["mus"] = [u_i.level()[0] for u_i in u]
+    else:
+        print("Solve Failed - Mosek Status: " + str(status))
+        clq_list = []
+    return clq_list, info
 
 
 def solve_dsdp_dual(
@@ -409,17 +812,30 @@ def solve_dsdp_primal(
         fu.Domain.equalsTo(1.0),
     )
 
-    # AFFINE CONSTRAINTS
+    # EQUALITY CONSTRAINTS
     if verbose:
-        print("Adding Affine Constraints")
+        print("Adding affine equality constraints")
     for iCnstr, A in enumerate(problem.As):
         constr_expr = get_decomp_fusion_expr(
             A, decomp_method=decomp_methods["constraint"]
         )
         M.constraint(
-            "c_" + str(iCnstr),
+            "eq_" + str(iCnstr),
             constr_expr,
             fu.Domain.equalsTo(0.0),
+        )
+
+    # INEQUALITY CONSTRAINTS
+    if verbose:
+        print("Adding affine inequality constraints")
+    for iCnstr, B in enumerate(problem.Bs):
+        constr_expr = get_decomp_fusion_expr(
+            B, decomp_method=decomp_methods["constraint"]
+        )
+        M.constraint(
+            "ineq_" + str(iCnstr),
+            constr_expr,
+            fu.Domain.lessThan(0.0),
         )
 
     # CLIQUE CONSISTENCY EQUALITIES

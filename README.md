@@ -14,3 +14,10 @@ and check installation by running
 ```
 pytest .
 ```
+
+## How to use
+
+### Create problems for sparsity-exploiting solvers
+
+See `_tests/test_homqcqp_ineq` for an example for how to easily build and solve a 
+problem exploiting sparsity. 
