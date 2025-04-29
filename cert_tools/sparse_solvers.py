@@ -262,27 +262,31 @@ def solve_feasibility_dsdp(
     edges += [(v.index, v.index) for v in problem.asg.vs]
 
     # Generate one matrix constraint per edge. This links the cliques
+    var_lookup_dict = {}
     for edge_id in edges:
         # Get variables in edge from graph
         var0 = problem.asg.vs["name"][edge_id[0]]
         var1 = problem.asg.vs["name"][edge_id[1]]
+
         # Get component of certificate matrix
         row_inds = problem._get_indices(var0)
         col_inds = problem._get_indices(var1)
+        H_subblock = H[np.ix_(row_inds, col_inds)]
         if verbose:
             print(f"block {row_inds},{col_inds} of H", end=" ")
-        H_subblock = H[np.ix_(row_inds, col_inds)]
 
         # Find the cliques that are involved with these variables
-        clique_inds = problem.var_clique_map[var0] & problem.var_clique_map[var1]
-        cliques = [problem.cliques[i] for i in clique_inds]
-        # get components of clique variables
         overlapping_cliques = [
-            c for c in cliques if (var0 in c.var_list) and (var1 in c.var_list)
+            c for c in problem.cliques if (var0 in c.var_list) and (var1 in c.var_list)
         ]
         if len(overlapping_cliques):
             sum_list = [H_subblock]
             for clique in overlapping_cliques:
+                unique_id = "".join(sorted([var0, var1]))
+                if clique.index not in var_lookup_dict:
+                    var_lookup_dict[clique.index] = []
+                var_lookup_dict[clique.index].append(unique_id)
+
                 if test_H_poly is not None:
                     test_sum_list = [test_H[np.ix_(row_inds, col_inds)]]
 
@@ -311,6 +315,45 @@ def solve_feasibility_dsdp(
                 "inconsistency found: edge appears in graph but in none of the cliques."
             )
 
+    # For each clique, we also need to make sure to constrain the parts that are not present in H.
+    for clique in problem.cliques:
+        # find all the variables that were not already constrained.
+        for var0, var1 in itertools.combinations(clique.var_list, 2):
+            unique_id = "".join(sorted([var0, var1]))
+            if unique_id in var_lookup_dict[clique.index]:
+                continue
+
+            # Get component of certificate matrix
+            row_inds = problem._get_indices(var0)
+            col_inds = problem._get_indices(var1)
+            if verbose:
+                print(f"block {row_inds},{col_inds} of H", end=" ")
+
+            sum_list = [H[np.ix_(row_inds, col_inds)]]
+
+            if test_H_poly is not None:
+                test_sum_list = [test_H[np.ix_(row_inds, col_inds)]]
+
+            row_inds = clique._get_indices(var0)
+            col_inds = clique._get_indices(var1)
+            if verbose:
+                print(f"minus {row_inds},{col_inds} of clique {clique}", end=" ")
+            sum_list += [-cvars[clique.index][np.ix_(row_inds, col_inds)]]
+
+            if test_H_poly is not None:
+                test_sum_list += [-test_cvars[clique.index][np.ix_(row_inds, col_inds)]]
+
+            # Add the list together
+            if test_H_poly is not None:
+                list_to_sum = np.concatenate(
+                    [m.toarray()[:, :, None] for m in test_sum_list], axis=2
+                )
+                np.testing.assert_allclose(np.sum(list_to_sum, axis=2), 0.0)
+            matsumvec = cp.sum(sum_list)
+            constraints += [matsumvec == 0]
+            if verbose:
+                print("must equal zero.")
+
     if soft_epsilon:
         epsilon = cp.Variable()
         cost = cp.Minimize(epsilon)
@@ -335,7 +378,7 @@ def solve_feasibility_dsdp(
     # Store information
     info = {"success": False, "cost": -np.inf, "msg": prob.status, "epsilon": None}
 
-    prob.solve(verbose=True, accept_unknown=True)
+    prob.solve(accept_unknown=True)
     if prob.status == "optimal" or prob.status == "optimal_inaccurate":
         cost = prob.value
         clq_list = [cvar.value for cvar in cvars]
@@ -432,6 +475,7 @@ def solve_feasibility_dsdp_fusion(
     edges += [(v.index, v.index) for v in problem.asg.vs]
 
     # Generate one matrix constraint per edge. This links the cliques
+    var_lookup_dict = {}
     for edge_id in edges:
         # Get variables in edge from graph
         var0 = problem.asg.vs["name"][edge_id[0]]
@@ -441,21 +485,51 @@ def solve_feasibility_dsdp_fusion(
         col_inds = problem._get_indices(var1)
         inds = get_block_inds(row_inds, col_inds, var0 == var1)
         H_subblock = H.pick(inds)
-        # Find the cliques that are involved with these variables
-        clique_inds = problem.var_clique_map[var0] & problem.var_clique_map[var1]
-        cliques = [problem.cliques[i] for i in clique_inds]
 
-        # get components of clique variables
+        # Find the cliques that are involved with these variables
         overlapping_cliques = [
-            c for c in cliques if (var0 in c.var_list) and (var1 in c.var_list)
+            c for c in problem.cliques if (var0 in c.var_list) and (var1 in c.var_list)
         ]
         if len(overlapping_cliques):
             sum_list = [H_subblock]
-            for clique in cliques:
+            for clique in overlapping_cliques:
+                unique_id = "".join(sorted([var0, var1]))
+                if clique.index not in var_lookup_dict:
+                    var_lookup_dict[clique.index] = []
+                var_lookup_dict[clique.index].append(unique_id)
+
                 row_inds = clique._get_indices(var0)
                 col_inds = clique._get_indices(var1)
                 inds = get_block_inds(row_inds, col_inds, var0 == var1)
-                sum_list.append(-cvars[clique.index].pick(inds))
+                sum_list += [-cvars[clique.index].pick(inds)]
+
+            # Add the list together
+            matsumvec = fu.Expr.add(sum_list)
+            M.constraint(f"e_{var0}_{var1}", matsumvec, fu.Domain.equalsTo(0.0))
+
+    # For each clique, we also need to make sure to constrain the parts that are not present in H.
+    for clique in problem.cliques:
+        # find all the variables that were not already constrained.
+        for var0, var1 in itertools.combinations(clique.var_list, 2):
+            unique_id = "".join(sorted([var0, var1]))
+            if unique_id in var_lookup_dict[clique.index]:
+                print("skipping", unique_id)
+                continue
+
+            # Get component of certificate matrix
+            row_inds = problem._get_indices(var0)
+            col_inds = problem._get_indices(var1)
+            if verbose:
+                print(f"block {row_inds},{col_inds} of H", end=" ")
+            inds = get_block_inds(row_inds, col_inds, var0 == var1)
+            H_subblock = H.pick(inds)
+
+            row_inds = clique._get_indices(var0)
+            col_inds = clique._get_indices(var1)
+            if verbose:
+                print(f"minus {row_inds},{col_inds} of clique {clique}", end=" ")
+            inds = get_block_inds(row_inds, col_inds, var0 == var1)
+            sum_list += [-cvars[clique.index].pick(inds)]
 
             # Add the list together
             matsumvec = fu.Expr.add(sum_list)
