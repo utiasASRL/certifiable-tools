@@ -8,13 +8,15 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import scipy.sparse as sp
+from cert_tools.base_clique import BaseClique, get_chain_clique_data
+from cert_tools.linalg_tools import find_dependent_columns, svec
 from cvxopt import amd, spmatrix
 from igraph import Graph
-from poly_matrix import PolyMatrix
 from scipy.linalg import polar
 
-from cert_tools.base_clique import BaseClique
-from cert_tools.linalg_tools import find_dependent_columns, svec
+from poly_matrix import PolyMatrix
+
+CONSTRAIN_ONLY_H_ROW = True
 
 
 class HomQCQP(object):
@@ -38,11 +40,40 @@ class HomQCQP(object):
         self.dim = 0  # total size of variables
         self.C = None  # cost matrix
         self.As = None  # list of constraints
+        self.Es = None  # list of consistency constraints
         self.asg = Graph()  # Aggregate sparsity graph
         self.cliques = []  # List of clique objects
         self.order = []  # Elimination ordering
         self.var_clique_map = {}  # Variable to clique mapping (maps to set)
         self.h = homog_var  # Homogenizing variable name
+
+    @staticmethod
+    def init_from_lifter(lifter, learned=False):
+        from lifters.state_lifter import StateLifter
+
+        assert isinstance(lifter, StateLifter)
+        problem = HomQCQP()
+        problem.C = lifter.get_Q_from_y(lifter.y_, output_poly=True)
+        problem.var_sizes = lifter.var_dict
+
+        if learned:
+            A_poly_list = lifter.get_A_learned_simple(output_poly=True)
+        else:
+            # does not output the homogeneous constraint.
+            A_poly_list = lifter.get_A_known(output_poly=True)
+        lifter.test_constraints(
+            [A.get_matrix_sparse(problem.var_sizes) for A in A_poly_list]
+        )
+
+        problem.As = A_poly_list
+        problem.get_asg(lifter.var_dict)  # to suppress warning in clique_decomposition
+
+        # TODO(FD) not sure if we should do this here or wait.
+        clique_data = get_chain_clique_data(
+            problem.var_sizes, variable=lifter.VARIABLES
+        )
+        problem.clique_decomposition(clique_data=clique_data)
+        return problem
 
     def define_objective(self, *args, **kwargs) -> PolyMatrix:
         """Function should define the cost matrix for the problem
@@ -156,7 +187,14 @@ class HomQCQP(object):
     ):
         """Uses CHOMPACK to get the maximal cliques and build the clique tree
         The clique objects are stored in a list. Each clique object stores information
-        about its parents and children, as well as separators"""
+        about its parents and children, as well as separators
+
+        Args:
+            elim_order: currently, can choose from "amd" or None (no reordering).
+            clique_data (list): optional, can pass the fixed order to be used
+
+        """
+
         if len(self.asg.vs) == 0:
             warnings.warn("Aggregate sparsity graph not defined. Building now.")
             # build aggregate sparsity graph
@@ -165,6 +203,11 @@ class HomQCQP(object):
         if len(clique_data) == 0:
             if elim_order == "amd":
                 p = amd.order
+            elif elim_order is None:
+                p = list(range(len(self.var_sizes)))
+            else:
+                raise ValueError(elim_order)
+
             # Convert adjacency to sparsity pattern
             nvars = len(self.var_sizes)
             A = self.asg.get_adjacency_sparse() + sp.eye(nvars)
@@ -291,6 +334,27 @@ class HomQCQP(object):
 
         return clique_list, separators, parents
 
+    def get_X0(self, X):
+        X0 = {}
+        X_poly, __ = PolyMatrix.init_from_sparse(X, var_dict=self.var_sizes)
+        for clique in self.cliques:
+            X0[clique.index] = X_poly.get_matrix_dense(clique.var_sizes)
+        return X0
+
+    def get_admm_cliques(self):
+        from cert_tools.admm_clique import ADMMClique
+
+        admm_cliques = []
+        for clique in self.cliques:
+            admm_cliques.append(ADMMClique.init_from_clique(clique))
+
+    def get_homog_constraint(self, var_sizes=None):
+        if var_sizes is None:
+            var_sizes = self.var_sizes
+        Ah = PolyMatrix()
+        Ah[self.h, self.h] = 1
+        return (Ah.get_matrix_sparse(var_sizes), 1.0)
+
     def get_problem_matrices(self):
         """Get sparse, numerical form of objective and constraint matrices
         for use in optimization"""
@@ -299,10 +363,7 @@ class HomQCQP(object):
         # Define other constraints
         constraints = [(A.get_matrix(self.var_sizes), 0.0) for A in self.As]
         # define homogenizing constraint
-        Ah = PolyMatrix()
-        Ah[self.h, self.h] = 1
-        homog_constraint = (Ah.get_matrix(self.var_sizes), 1.0)
-        constraints.append(homog_constraint)
+        constraints.append(self.get_homog_constraint())
         return cost, constraints
 
     def get_standard_form(self, vec_order="C"):
@@ -331,7 +392,7 @@ class HomQCQP(object):
         b = svec(C.toarray(), vec_order)
         return P, q, A, b
 
-    def get_consistency_constraints(self):
+    def consistency_constraints(self, constrain_only_h_row=CONSTRAIN_ONLY_H_ROW):
         """Return a list of constraints that enforce equalities between
         clique variables. List consist of 4-tuples: (k, l, A_k, A_l)
         where k and l are the indices of the cliques for which the equality is
@@ -343,7 +404,7 @@ class HomQCQP(object):
         PolyMatrix module.
         """
         # Lopp through edges in the junction tree
-        eq_list = []
+        self.Es = []
         for l, clique_l in enumerate(self.cliques):
             # Get parent clique object and separator set
             k = clique_l.parent
@@ -356,6 +417,45 @@ class HomQCQP(object):
             indices_l = clique_l._get_indices(var_list=sepset)
             size_k = clique_k.size
             size_l = clique_l.size
+
+            # Define constraint matrices only in one row
+            if constrain_only_h_row:
+                assert "h" in sepset
+
+                hom_k = int(clique_k._get_indices(var_list="h"))
+                hom_l = int(clique_l._get_indices(var_list="h"))
+                vals = np.ones(2)
+                for i_k, i_l in zip(indices_k, indices_l):
+                    if i_k == hom_k:
+                        assert i_l == hom_l
+                        continue
+
+                    rows_k = np.r_[hom_k, i_k]
+                    cols_k = np.r_[i_k, hom_k]
+                    A_k = sp.coo_matrix(
+                        (vals, (rows_k, cols_k)),
+                        (size_k, size_k),
+                    )
+
+                    rows_l = np.r_[hom_l, i_l]
+                    cols_l = np.r_[i_l, hom_l]
+                    A_l = sp.coo_matrix(
+                        (-vals, (rows_l, cols_l)),
+                        (size_l, size_l),
+                    )
+                    self.Es.append((k, l, A_k, A_l))
+
+                A_k = sp.coo_matrix(
+                    ([1.0], ([hom_k], [hom_k])),
+                    (size_k, size_k),
+                )
+                A_l = sp.coo_matrix(
+                    ([-1.0], ([hom_l], [hom_l])),
+                    (size_l, size_l),
+                )
+                self.Es.append((k, l, A_k, A_l))
+                continue
+
             # Define sparse constraint matrices for each element in the seperator overlap
             for i in range(len(indices_k)):
                 for j in range(i, len(indices_k)):
@@ -381,14 +481,49 @@ class HomQCQP(object):
                         (vals_l, (rows_l, cols_l)),
                         (size_l, size_l),
                     )
-                    eq_list.append((k, l, A_k, A_l))
+                    self.Es.append((k, l, A_k, A_l))
 
-        return eq_list
+    def assign_matrix(self, pmat: PolyMatrix):
+        """Assign a matrix to the clique that it corresponds to.
 
-    def decompose_matrix(self, pmat: PolyMatrix, method="split"):
-        """Decompose a matrix according to clique decomposition. Returns a dictionary with the key being the clique number and the value being a PolyMatrix that contains decomposed matrix on that clique."""
+        Returns the index of the clique that this matrix applies to.
+        """
         assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
         assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")
+
+        if not len(self.var_clique_map):
+            raise ValueError(
+                "var_clique_map is empty. Did you run clique_decomposition?"
+            )
+
+        involved_variables = set(pmat.get_variables())
+        valid_cliques = []
+        for clique in self.cliques:
+            if involved_variables.issubset(clique.var_list):
+                valid_cliques.append(clique.index)
+
+        if not len(valid_cliques):
+            raise ValueError(
+                f"Error assigning constraint to a single clique: {len(valid_cliques)} matches"
+            )
+        return valid_cliques
+
+    def decompose_matrix(self, pmat: PolyMatrix, method="split"):
+        """Decompose a matrix according to clique decomposition.
+
+        Returns a dictionary with the key being the clique number and the value being a
+        PolyMatrix that contains decomposed matrix on that clique.
+
+        Args:
+            method (str): "split" means equal split between overlapping, "greedy-cover" uses a smart algorithm to split.
+        """
+        assert isinstance(pmat, PolyMatrix), TypeError("Input should be a PolyMatrix")
+        assert pmat.symmetric, ValueError("PolyMatrix input should be symmetric")
+
+        if not len(self.var_clique_map):
+            raise ValueError(
+                "var_clique_map is empty. Did you run clique_decomposition?"
+            )
         dmat = {}  # defined decomposed matrix dictionary
         # Loop through elements of polymatrix and gather information about cliques and edges
         edges = []
@@ -416,9 +551,9 @@ class HomQCQP(object):
         for edge in edges:
             cliques = edge_clique_map[edge] & valid_cliques
             # Define weighting based on method
-            if method in ["split"]:
+            if method == "split":
                 alpha = np.ones(len(cliques)) / len(cliques)
-            elif method in ["first", "greedy-cover"]:
+            elif method == "greedy-cover":
                 alpha = np.zeros(len(cliques))
                 alpha[0] = 1.0
             else:

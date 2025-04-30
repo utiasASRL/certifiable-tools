@@ -4,12 +4,11 @@ import pickle
 
 import mosek
 import numpy as np
-
 from cert_tools import (
-    solve_sdp_mosek,
     solve_low_rank_sdp,
-    solve_sdp_fusion,
     solve_sdp_cvxpy,
+    solve_sdp_fusion,
+    solve_sdp_mosek,
 )
 
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
