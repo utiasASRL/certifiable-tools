@@ -80,9 +80,7 @@ def adjust_Q(Q, scale=True, offset=True, scale_method=SCALE_METHOD):
     """
     ii, jj = (Q == Q.max()).nonzero()
     if (ii[0], jj[0]) != (0, 0) or (len(ii) > 1):
-        print(
-            "Warning: maximum is not at 0, 0, so adjust_Q is not as effective as we want."
-        )
+        #print( "Warning: maximum is not at 0, 0, so adjust_Q is not as effective as we want.")
         pass
 
     Q_mat = deepcopy(Q)
