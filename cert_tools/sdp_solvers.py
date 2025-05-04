@@ -619,7 +619,7 @@ def solve_feasibility_sdp(
 
     cprob = cp.Problem(objective, constraints)
     try:
-        cprob.solve(solver="MOSEK", accept_unknown=True, **options)
+        cprob.solve(solver="MOSEK", **options)
     except Exception as e:
         eps = None
         cost = None
@@ -809,7 +809,7 @@ def solve_lambda_cvxpy(
 
         cprob = cp.Problem(objective, constraints)
         try:
-            cprob.solve(solver="MOSEK", accept_unknown=True, **options)
+            cprob.solve(solver="MOSEK", **options)
         except Exception:
             X = None
             lamda = None
