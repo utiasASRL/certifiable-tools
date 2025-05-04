@@ -2,14 +2,14 @@ import random
 import unittest
 
 import numpy as np
-from poly_matrix import PolyMatrix
-from utils import get_chain_rot_prob, get_loop_rot_prob
-
 from cert_tools import HomQCQP
 from cert_tools.hom_qcqp import greedy_cover
 from cert_tools.linalg_tools import svec
 from cert_tools.sdp_solvers import solve_sdp_homqcqp
 from cert_tools.sparse_solvers import solve_clarabel, solve_dsdp
+from poly_matrix import PolyMatrix
+
+from utils import get_chain_rot_prob, get_loop_rot_prob
 
 
 class TestHomQCQP(unittest.TestCase):
@@ -20,7 +20,7 @@ class TestHomQCQP(unittest.TestCase):
         assert isinstance(problem, HomQCQP), TypeError(
             "Problem should be homogenized qcqp object"
         )
-        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
+        X, info = solve_sdp_homqcqp(problem, verbose=True)
         R = problem.convert_sdp_to_rot(X)
         for Rk, Rk_gt in zip(R.values(), problem.R_gt):
             np.testing.assert_allclose(Rk, Rk_gt, atol=0.1, rtol=0.1)
@@ -247,7 +247,7 @@ class TestHomQCQP(unittest.TestCase):
         c_list, info = solve_dsdp(problem, verbose=True, tol=1e-8)  # check solutions
 
         # Solve non-decomposed problem
-        X, info, time = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
+        X, info = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
         # get cliques from non-decomposed solution
         c_list_nd = problem.get_cliques_from_sol(X)
         for c, c_nd in zip(c_list, c_list_nd):
@@ -298,7 +298,7 @@ class TestHomQCQP(unittest.TestCase):
         P, q, A, b = problem.get_standard_form()
 
         # get solution from MOSEK
-        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
+        X, info = solve_sdp_homqcqp(problem, verbose=True)
         x = svec(X)
 
         # Check cost matrix
@@ -319,7 +319,7 @@ class TestHomQCQP(unittest.TestCase):
         problem = get_chain_rot_prob(N=nvars)
         problem.get_asg()
         X_clarabel = solve_clarabel(problem)
-        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
+        X, info = solve_sdp_homqcqp(problem, verbose=True)
 
         np.testing.assert_allclose(
             X_clarabel,
@@ -344,7 +344,7 @@ class TestHomQCQP(unittest.TestCase):
         c_list, info = solve_dsdp(problem, form="dual", verbose=True, tol=1e-8)
 
         # Solve non-decomposed problem
-        X, _, time = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
+        X, _ = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
         # get cliques from non-decomposed solution
         c_list_nd = problem.get_cliques_from_sol(X)
         for c, c_nd in zip(c_list, c_list_nd):

@@ -1,10 +1,8 @@
-import itertools
 import os
 
 import numpy as np
-from poly_matrix import PolyMatrix
-
 from cert_tools import HomQCQP
+from poly_matrix import PolyMatrix
 
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
 
