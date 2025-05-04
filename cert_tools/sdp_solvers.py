@@ -80,9 +80,7 @@ def adjust_Q(Q, scale=True, offset=True, scale_method=SCALE_METHOD):
     """
     ii, jj = (Q == Q.max()).nonzero()
     if (ii[0], jj[0]) != (0, 0) or (len(ii) > 1):
-        print(
-            "Warning: maximum is not at 0, 0, so adjust_Q is not as effective as we want."
-        )
+        # print( "Warning: maximum is not at 0, 0, so adjust_Q is not as effective as we want.")
         pass
 
     Q_mat = deepcopy(Q)
@@ -619,7 +617,7 @@ def solve_feasibility_sdp(
 
     cprob = cp.Problem(objective, constraints)
     try:
-        cprob.solve(solver="MOSEK", accept_unknown=True, **options)
+        cprob.solve(solver="MOSEK", **options)
     except Exception as e:
         eps = None
         cost = None
@@ -809,7 +807,7 @@ def solve_lambda_cvxpy(
 
         cprob = cp.Problem(objective, constraints)
         try:
-            cprob.solve(solver="MOSEK", accept_unknown=True, **options)
+            cprob.solve(solver="MOSEK", **options)
         except Exception:
             X = None
             lamda = None
@@ -848,7 +846,8 @@ def solve_sdp_homqcqp(
     # Get solution time.
     solve_time = time() - start_time
 
-    return X, info, solve_time
+    info["solve time"] = solve_time
+    return X, info
 
 
 def solve_sdp(

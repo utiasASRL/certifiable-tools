@@ -20,7 +20,7 @@ class TestHomQCQP(unittest.TestCase):
         assert isinstance(problem, HomQCQP), TypeError(
             "Problem should be homogenized qcqp object"
         )
-        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
+        X, info = solve_sdp_homqcqp(problem, verbose=True)
         R = problem.convert_sdp_to_rot(X)
         for Rk, Rk_gt in zip(R.values(), problem.R_gt):
             np.testing.assert_allclose(Rk, Rk_gt, atol=0.1, rtol=0.1)
@@ -247,7 +247,7 @@ class TestHomQCQP(unittest.TestCase):
         c_list, info = solve_dsdp(problem, verbose=True, tol=1e-8)  # check solutions
 
         # Solve non-decomposed problem
-        X, info, time = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
+        X, info = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
         # get cliques from non-decomposed solution
         c_list_nd = problem.get_cliques_from_sol(X)
         for c, c_nd in zip(c_list, c_list_nd):
@@ -298,7 +298,7 @@ class TestHomQCQP(unittest.TestCase):
         P, q, A, b = problem.get_standard_form()
 
         # get solution from MOSEK
-        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
+        X, info = solve_sdp_homqcqp(problem, verbose=True)
         x = svec(X)
 
         # Check cost matrix
@@ -319,7 +319,7 @@ class TestHomQCQP(unittest.TestCase):
         problem = get_chain_rot_prob(N=nvars)
         problem.get_asg()
         X_clarabel = solve_clarabel(problem)
-        X, info, time = solve_sdp_homqcqp(problem, verbose=True)
+        X, info = solve_sdp_homqcqp(problem, verbose=True)
 
         np.testing.assert_allclose(
             X_clarabel,
@@ -344,7 +344,7 @@ class TestHomQCQP(unittest.TestCase):
         c_list, info = solve_dsdp(problem, form="dual", verbose=True, tol=1e-8)
 
         # Solve non-decomposed problem
-        X, _, time = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
+        X, _ = solve_sdp_homqcqp(problem, tol=1e-8, verbose=True)
         # get cliques from non-decomposed solution
         c_list_nd = problem.get_cliques_from_sol(X)
         for c, c_nd in zip(c_list, c_list_nd):
@@ -390,13 +390,13 @@ class TestHomQCQP(unittest.TestCase):
 
 if __name__ == "__main__":
     test = TestHomQCQP()
-    # test.test_solve()
-    # test.test_get_asg(plot=True)
+    test.test_solve()
+    test.test_get_asg(plot=False)
     test.test_clique_decomp(plot=False)
-    # test.test_consistency_constraints()
-    # test.test_greedy_cover()
-    # test.test_decompose_matrix()
-    # test.test_solve_primal_dsdp()
-    # test.test_solve_dual_dsdp()
-    # test.test_standard_form()
-    # test.test_clarabel()
+    test.test_consistency_constraints()
+    test.test_greedy_cover()
+    test.test_decompose_matrix()
+    test.test_solve_primal_dsdp()
+    test.test_solve_dual_dsdp()
+    test.test_standard_form()
+    test.test_clarabel()
