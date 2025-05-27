@@ -5,8 +5,6 @@ import chompack
 import igraph as ig
 import matplotlib.pyplot as plt
 import numpy as np
-import plotly.graph_objects as go
-import plotly.io as pio
 import scipy.sparse as sp
 from cvxopt import amd, spmatrix
 from igraph import Graph
@@ -735,6 +733,9 @@ class HomQCQP(object):
 
 
 def plot_graph(graph, **kwargs):
+    import plotly.graph_objects as go
+    import plotly.io as pio
+
     layout = kwargs.get("layout", graph.layout("kk"))
     vertex_label = kwargs.get(
         "vertex_label", graph.vs["name"] if "name" in graph.vs.attributes() else None
