@@ -1,1 +1,2 @@
 # packages that cannot be installed by install_requires or conda
+sparseqr
