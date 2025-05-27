@@ -14,6 +14,7 @@ dependencies:
     - plotly>=5.24
     - pytest
 
+    - suitesparse # required for sparseqr
     - pip:
       - -r requirements.txt
       - -e .
