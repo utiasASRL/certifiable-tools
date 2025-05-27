@@ -1,8 +1,7 @@
-sparseqr>=1.2.1
 gurobipy==10.0.3 
 quadprog==0.1.11
 cvxopt>=1.3.2
 igraph>=0.11.8
 asrl-pylgmath>=1.0.3
 chompack>=2.3.2
-git+https://github.com/utiasASRL/poly_matrix.git@v0.2
+git+https://github.com/utiasASRL/poly_matrix.git@v0.3
