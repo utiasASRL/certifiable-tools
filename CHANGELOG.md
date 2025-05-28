@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Changed 
 
 ### Fixed
- 
-## [0.0.4] - 2025-05-27
+
+## [0.0.5] - 2025-05-27
 
 ### Added 
 - This CHANGELOG, to keep track of new releases in the future. 
