@@ -3,11 +3,11 @@ import matplotlib.pyplot as plt
 import mosek
 import numpy as np
 import numpy.linalg as la
-import pandas as pd
 import scipy.sparse as sp
+from scipy.optimize import linprog
+
 from cert_tools.eig_tools import get_min_eigpairs
 from cert_tools.linalg_tools import get_nullspace
-from scipy.optimize import linprog
 
 # Number of eigenvalues to compute
 EIG_METHOD = "direct"  # "lobpcg"
@@ -474,6 +474,10 @@ def solve_eopt_cuts(
     """Solve the certificate/eigenvalue optimization problem using a cutting plane algorithm.
     Current algorithm uses the level method with the target level at a tolerance below zero
     """
+    print(
+        "Warning: when using this function, you might want to convert iter_info to a pandas Dataframe."
+        "This used to be the default behavior but was removed to avoid pandas dependency."
+    )
     # Initialize cut plane model
     m = CutPlaneModel(xinit.shape[0], A_eq=A_eq, b_eq=b_eq)
     # Intialize status vars for optimization
@@ -589,7 +593,7 @@ def solve_eopt_cuts(
         gap=gap,
         t_min=t_min,
         t_max=t_max,
-        iter_info=pd.DataFrame(iter_info),
+        iter_info=iter_info,
         model=m,
     )
 

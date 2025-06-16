@@ -1,11 +1,35 @@
 import numpy as np
 from poly_matrix import PolyMatrix
-from pylgmath import so3op
+from scipy.spatial.transform import Rotation as R
 
 from cert_tools import HomQCQP
 
 # Global Defaults
 ER_MIN = 1e6
+
+
+def vec2rot(aaxis_ba):
+    """Replacement for pylgmath.so3.operations.vec2rot"""
+    mats = []
+    if np.ndim(aaxis_ba) == 3:
+        for ai in aaxis_ba:
+            assert ai.shape[-1] == 1
+            r = R.from_rotvec(ai[:, 0])
+            mats.append(r.as_matrix())
+        mat = np.stack(mats)
+    elif np.ndim(aaxis_ba) == 2:
+        assert aaxis_ba.shape[-1] == 1
+        r = R.from_rotvec(aaxis_ba[:, 0])
+        mat = r.as_matrix()
+
+    # For performance, we can switch back to using pylgmath.
+    # For now it was removed to avoid dependeny for one function only.
+    # Below was ensured to pass before removing dependncy.
+    #
+    # from pylgmath import so3op
+    # mat_test = so3op.vec2rot(aaxis_ba)
+    # np.testing.assert_allclose(mat, mat_test)
+    return mat
 
 
 class RotSynchLoopProblem(HomQCQP):
@@ -34,7 +58,7 @@ class RotSynchLoopProblem(HomQCQP):
         np.random.seed(seed)
         # generate ground truth poses
         aaxis_ab_rand = np.random.uniform(-np.pi / 2, np.pi / 2, size=(N, 3, 1))
-        R_gt = so3op.vec2rot(aaxis_ab_rand)
+        R_gt = vec2rot(aaxis_ab_rand)
         # Associated variable list
         self.var_sizes = {"h": 1}
         for i in range(N):
@@ -44,7 +68,7 @@ class RotSynchLoopProblem(HomQCQP):
         self.locked_pose = str(locked_pose)  # Pose locked at this pose
         self.meas_dict = {}
         for i in range(0, N):
-            R_pert = so3op.vec2rot(sigma * np.random.randn(3, 1))
+            R_pert = vec2rot(sigma * np.random.randn(3, 1))
             if i == N - 1:
                 if loop_pose > 0:
                     j = loop_pose
