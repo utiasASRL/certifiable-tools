@@ -93,7 +93,10 @@ def rank_project(X, p=1, tolerance=1e-10):
             p = np.sum(np.abs(E) > tolerance)
         x = V[:, -p:] * np.sqrt(E[-p:])
 
-        X_hat = np.outer(x, x)
+        if p == 1:
+            X_hat = np.outer(x, x)
+        else:
+            X_hat = x @ x.T
         info = {
             "error X": np.linalg.norm(X_hat - X),
             "error eigs": np.sum(np.abs(E[:-p])),
