@@ -152,14 +152,14 @@ def solve_low_rank_sdp(
     # Define Low Rank NLP
     nlp = {"x": Y.reshape((-1, 1)), "f": f, "g": g_lhs}
     options["print_time"] = int(verbose)
-    options["print_level"] = 5
     options["error_on_fail"] = False
-    options["warm_start_init_point"] = "yes"
-    options["mu_init"] = 1e2
-    options["mu_strategy"] = "adaptive"
-    options["warm_start_bound_push"] = 1e-6
-    options["warm_start_mult_bound_push"] = 1e-6
     if method == "ipopt":
+        options["ipopt.warm_start_init_point"] = "yes"
+        options["ipopt.warm_start_bound_push"] = 1e-6
+        options["ipopt.warm_start_mult_bound_push"] = 1e-6
+        options["ipopt.print_level"] = 5
+        options["ipopt.mu_init"] = 1e2
+        options["ipopt.mu_strategy"] = "adaptive"
         options["ipopt.print_level"] = int(verbose)
         S = cas.nlpsol("S", "ipopt", nlp, options)
     else:

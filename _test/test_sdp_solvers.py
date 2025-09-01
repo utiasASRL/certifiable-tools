@@ -6,10 +6,10 @@ import mosek
 import numpy as np
 
 from cert_tools import (
-    solve_sdp_mosek,
     solve_low_rank_sdp,
-    solve_sdp_fusion,
     solve_sdp_cvxpy,
+    solve_sdp_fusion,
+    solve_sdp_mosek,
 )
 
 root_dir = os.path.abspath(os.path.dirname(__file__) + "/../")
@@ -178,5 +178,5 @@ if __name__ == "__main__":
             continue
         # test_sdp_solvers(f"test_prob_{i}.pkl", primal_list=[False], verbose=True)
         test_sdp_solvers(f"test_prob_{i}.pkl")
-    # test_p1_low_rank()
-    # test_p3_low_rank()
+    test_p1_low_rank()
+    test_p3_low_rank()
