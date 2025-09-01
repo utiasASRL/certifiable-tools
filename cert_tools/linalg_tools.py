@@ -87,7 +87,7 @@ def project_so3(X):
 def rank_project(X, p=1, tolerance=1e-10):
     """Project matrix X to matrix of rank p."""
     try:
-        assert la.issymmetric(X)
+        assert la.issymmetric(X, atol=tolerance)
         E, V = np.linalg.eigh(X)
         if p is None:
             p = np.sum(np.abs(E) > tolerance)
