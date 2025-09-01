@@ -125,6 +125,7 @@ def solve_low_rank_sdp(
     options={},
     limit_constraints=False,
     verbose=False,
+    method="ipopt",
 ):
     """Use the factorization proposed by Burer and Monteiro to solve a
     fixed rank SDP.
@@ -150,9 +151,20 @@ def solve_low_rank_sdp(
     g_rhs = cas.vertcat(*g_rhs)
     # Define Low Rank NLP
     nlp = {"x": Y.reshape((-1, 1)), "f": f, "g": g_lhs}
-    options["ipopt.print_level"] = int(verbose)
     options["print_time"] = int(verbose)
-    S = cas.nlpsol("S", "ipopt", nlp, options)
+    options["error_on_fail"] = False
+    if method == "ipopt":
+        options["ipopt.warm_start_init_point"] = "yes"
+        options["ipopt.warm_start_bound_push"] = 1e-6
+        options["ipopt.warm_start_mult_bound_push"] = 1e-6
+        options["ipopt.print_level"] = 5
+        options["ipopt.mu_init"] = 1e2
+        options["ipopt.mu_strategy"] = "adaptive"
+        options["ipopt.print_level"] = int(verbose)
+        S = cas.nlpsol("S", "ipopt", nlp, options)
+    else:
+        S = cas.nlpsol("S", method, nlp, options)
+
     # Run Program
     sol_input = dict(lbg=g_rhs, ubg=g_rhs)
     if x_cand is not None:

@@ -4,13 +4,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
-## [Unreleased] - YYYY-MM-DD
+## [Unreleased] - 2025-09-01
 
 ### Added 
 
 ### Changed 
 
 ### Fixed
+
+## [0.0.6] - 2025-09-01
+
+### Added 
+- sdp_solvers.solve_low_rank_sdp: expose options of ipopt.
+
+### Fixed
+- rank_project working with p>1.
+- rank_project working with almost-symmetric matrices.
+- rank_project working with non-symmetric matrices.
 
 ## [0.0.5] - 2025-05-27
 
