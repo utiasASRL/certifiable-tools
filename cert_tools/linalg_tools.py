@@ -8,7 +8,7 @@ METHOD = "qrp"
 NULL_THRESH = 1e-5
 
 
-def svec(S, order="C"):
+def svec(S, order="C") -> np.ndarray | sp.csc_array:
     """Convert symmetric matrix to vectorized form
 
     Args:
@@ -90,7 +90,7 @@ def rank_project(X, p=1, tolerance=1e-10):
         assert la.issymmetric(X, atol=tolerance)
         E, V = np.linalg.eigh(X)
         if p is None:
-            p = np.sum(np.abs(E) > tolerance)
+            p = int(np.sum(np.abs(E) > tolerance))
         x = V[:, -p:] * np.sqrt(E[-p:])
 
         if p == 1:
@@ -107,7 +107,7 @@ def rank_project(X, p=1, tolerance=1e-10):
         if p is None:
             p = np.sum(np.abs(E) > tolerance)
         X_hat = U[:, :p] @ np.diag(E[:p]) @ Vh[:p, :]
-        x = U[:, :p] @ np.diag(E[:p])
+        x = U[:, :p] @ np.diag(np.sqrt(E[:p]))
         info = {
             "error X": np.linalg.norm(X_hat - X),
             "error eigs": np.sum(np.abs(E[p:])),
@@ -137,6 +137,7 @@ def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False, debug=False
         print(f"clean_constraints: keeping {rank}/{A_sparse.shape[1]} independent")
 
     bad_idx = list(range(A_sparse.shape[1]))
+    assert E is not None
     good_idx_list = sorted(E[sort_inds[:rank]])[::-1]
     for good_idx in good_idx_list:
         del bad_idx[good_idx]
@@ -181,8 +182,8 @@ def get_nullspace(A_dense, method=METHOD, tolerance=NULL_THRESH):
         # Based on Section 5.5.5 "Basic Solutions via QR with Column Pivoting" from Golub and Van Loan.
         # assert A_dense.shape[0] >= A_dense.shape[1], "only tall matrices supported"
 
-        Q, R, P = la.qr(A_dense, pivoting=True, mode="economic")
-        if Q.shape[0] < 1e4:
+        Q, R, P = la.qr(A_dense, pivoting=True, mode="economic")  # type: ignore
+        if Q.shape[0] < 1e4:  # type: ignore
             np.testing.assert_allclose(Q @ R, A_dense[:, P], atol=1e-5)
 
         S = np.abs(np.diag(R))
@@ -199,7 +200,7 @@ def get_nullspace(A_dense, method=METHOD, tolerance=NULL_THRESH):
             Pinv[p] = k
         LHS = R1[:, Pinv]
 
-        info["Q1"] = Q[:, :rank]
+        info["Q1"] = Q[:, :rank]  # type: ignore
         info["LHS"] = LHS
 
         basis = np.zeros(N.T.shape)
