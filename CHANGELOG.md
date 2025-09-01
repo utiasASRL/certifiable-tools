@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased] - 2025-09-01
 
 ### Added 
-- sdp_solvers.solve_low_rank_sdp: expose options of ipopt.
 
 ### Changed 
+
+### Fixed
+
+## [0.0.6] - 2025-09-01
+
+### Added 
+- sdp_solvers.solve_low_rank_sdp: expose options of ipopt.
 
 ### Fixed
 - rank_project working with p>1.
