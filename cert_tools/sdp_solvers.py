@@ -164,7 +164,7 @@ def solve_low_rank_sdp(
         S = cas.nlpsol("S", "ipopt", nlp, options)
     else:
         S = cas.nlpsol("S", method, nlp, options)
-        
+
     # Run Program
     sol_input = dict(lbg=g_rhs, ubg=g_rhs)
     if x_cand is not None:
@@ -196,7 +196,6 @@ def solve_low_rank_sdp(
     # Return
     info = {"X": X_opt, "H": H, "cost": cost, "success": success}
     return Y_opt, info
-
 
 
 def solve_sdp_mosek(

@@ -1,3 +1,4 @@
+import warnings
 from copy import deepcopy
 
 import numpy as np
@@ -84,7 +85,7 @@ def project_so3(X):
         return U @ Vh
 
 
-def rank_project(X, p=1, tolerance=1e-10):
+def rank_project(X, p=1, tolerance=1e-10) -> tuple[np.ndarray, dict]:
     """Project matrix X to matrix of rank p."""
     try:
         assert la.issymmetric(X, atol=tolerance)
@@ -113,7 +114,43 @@ def rank_project(X, p=1, tolerance=1e-10):
             "error eigs": np.sum(np.abs(E[p:])),
             "EVR": abs(E[p - 1] / E[p]),  # largest over second-largest
         }
-    return x, info
+    return np.asarray(x), info
+
+
+def extract_lower_rank_solution(X, Constraints, tol=1e-8, max_trials=10):
+    """Given a psd matrix X of rank r, returns a matrix X' of rank r-1"""
+    r_start = 0
+    for k in range(max_trials):
+        E, U = np.linalg.eigh(X)
+        r = int(np.sum(E > tol))
+        if r == 1:
+            return X, {"success": True, "rank": 1, "iter": k}
+        elif r == r_start - 1:
+            return X, {"success": True, "rank": r, "iter": k}
+        if r_start == 0:
+            r_start = r
+        V = U[:, -r:] @ np.diag(np.sqrt(E[-r:]))
+        np.testing.assert_allclose(X, V @ V.T, atol=tol)
+
+        AV = np.vstack([svec(V.T @ Ai @ V) for Ai, _ in Constraints])  # type: ignore
+
+        # below, the rows of bi have the nullspace vectors.
+        # AV @ bi = 0
+        b, info_null = get_nullspace(AV, tolerance=tol)
+
+        # chose one of the vectors
+        idx = np.random.choice(b.shape[0])
+        bi = b[idx]
+
+        assert np.all(AV @ bi < tol)
+        Delta = smat(bi)
+
+        lambdas = np.abs(np.linalg.eigvalsh(Delta))
+        # maximum magnitude eigenvalue
+        alpha = -1 / np.max(lambdas)
+        X = V @ (np.eye(r) + alpha * Delta) @ V.T
+    warnings.warn(f"Did not find a lower-rank solution in {max_trials} trials.")
+    return X, {"success": True, "rank": r, "iter": k}
 
 
 def find_dependent_columns(A_sparse, tolerance=1e-10, verbose=False, debug=False):
