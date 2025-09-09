@@ -118,7 +118,13 @@ def rank_project(X, p=1, tolerance=1e-10) -> tuple[np.ndarray, dict]:
 
 
 def extract_lower_rank_solution(X, A_list, tol=1e-8, max_trials=10):
-    """Given a psd matrix X of rank r, returns a matrix X' of rank r-1"""
+    """Given a psd matrix X of rank r, returns a matrix X' of rank r-1.
+
+    This is an implementation of Algorithm 2.1 by [1].
+
+    [1] Lemon et al. -- Low-Rank Semidefinite Programming Theory and Applications
+    Foundations and Trends in Optimization, 2015.
+    """
     r_start = 0
     for k in range(max_trials):
         E, U = np.linalg.eigh(X)

@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased] - 2025-09-01
 
 ### Added 
+- linalg_tools.extract_lower_rank_solution: new algorithm to extract
+  lower-rank solution from a solution to an SDP.
 
 ### Changed 
+- sdp_solvers.solve_low_rank_sdp: now returns the actuall success status of IPOPT.
 
 ### Fixed
 
