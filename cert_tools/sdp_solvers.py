@@ -170,13 +170,21 @@ def solve_low_rank_sdp(
     if x_cand is not None:
         sol_input["x0"] = x_cand.reshape((-1, 1))
     r = S(**sol_input)
-    Y_opt = r["x"]
+
+    # Get solver info
+    stats = S.stats()
+    success = stats.get("success", False)
+    info = {"solver_stats": stats, "success": success}
+
     # Reshape and generate SDP solution
+    Y_opt = r["x"]
     Y_opt = np.array(Y_opt).reshape((n, rank), order="F")
     X_opt = Y_opt @ Y_opt.T
+
     # Get cost
     scale, offset = adjust
     cost = np.trace(Q @ X_opt) * scale + offset
+
     # Construct certificate
     mults = np.array(r["lam_g"])
     H = Q
@@ -186,7 +194,7 @@ def solve_low_rank_sdp(
         H = H + A * mults[i, 0]
 
     # Return
-    info = {"X": X_opt, "H": H, "cost": cost}
+    info = {"X": X_opt, "H": H, "cost": cost, "success": success}
     return Y_opt, info
 
 
