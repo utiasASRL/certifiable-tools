@@ -4,11 +4,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
-## [Unreleased] - 2025-09-01
+## [Unreleased] 
 
 ### Added 
 
 ### Changed 
+
+### Fixed
+
+## [0.0.7] - 2025-09-09
+
+### Added 
+- linalg_tools.extract_lower_rank_solution: new algorithm to extract
+  lower-rank solution from a solution to an SDP.
+
+### Changed 
+- sdp_solvers.solve_low_rank_sdp: now returns the actuall success status of IPOPT.
 
 ### Fixed
 
