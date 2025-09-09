@@ -117,7 +117,7 @@ def rank_project(X, p=1, tolerance=1e-10) -> tuple[np.ndarray, dict]:
     return np.asarray(x), info
 
 
-def extract_lower_rank_solution(X, Constraints, tol=1e-8, max_trials=10):
+def extract_lower_rank_solution(X, A_list, tol=1e-8, max_trials=10):
     """Given a psd matrix X of rank r, returns a matrix X' of rank r-1"""
     r_start = 0
     for k in range(max_trials):
@@ -132,11 +132,14 @@ def extract_lower_rank_solution(X, Constraints, tol=1e-8, max_trials=10):
         V = U[:, -r:] @ np.diag(np.sqrt(E[-r:]))
         np.testing.assert_allclose(X, V @ V.T, atol=tol)
 
-        AV = np.vstack([svec(V.T @ Ai @ V) for Ai, _ in Constraints])  # type: ignore
+        AV = np.vstack([svec(V.T @ Ai @ V) for Ai in A_list])  # type: ignore
 
         # below, the rows of bi have the nullspace vectors.
         # AV @ bi = 0
         b, info_null = get_nullspace(AV, tolerance=tol)
+        if b.shape[0] == 0:
+            return X, {"success": True, "rank": r, "iter": k}
+            break
 
         # chose one of the vectors
         idx = np.random.choice(b.shape[0])
