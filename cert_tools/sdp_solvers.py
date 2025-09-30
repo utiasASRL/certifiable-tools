@@ -9,8 +9,8 @@ import mosek.fusion as fu
 import numpy as np
 import scipy.sparse as sp
 
-from cert_tools import HomQCQP
 from cert_tools.fusion_tools import mat_fusion
+from cert_tools.hom_qcqp import HomQCQP
 
 # General tolerance parameter for SDPs (see "adjust_tol" function for its exact effect)
 TOL = 1e-11
