@@ -6,13 +6,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased] - 2026-04-06
 
-### Added 
+## [0.0.8] - 2026-04-08
 
 ### Changed 
 - Unfreezed scipy version and increased cvxpy version
-- Removed incompatible test problems
-
-### Fixed
+- Removed incompatible test problems and corresponding tests
+- Change to pyproject.toml
 
 ## [0.0.7] - 2025-09-09
 
