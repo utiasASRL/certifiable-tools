@@ -229,21 +229,6 @@ def off_test_eopt_cuts_poly(plot=True):
     assert min_eig >= -1e-6, ValueError("Minimum Eigenvalue not positive")
 
 
-def test_rangeonly():
-    # range-only with z=x^2+y^2
-    # test_eopt_cuts(prob_file="test_prob_10G.pkl", global_min=True)
-    # test_eopt_cuts(prob_file="test_prob_10Gc.pkl", global_min=True)
-
-    # test_eopt_cuts(prob_file="test_prob_10L.pkl", global_min=False)
-    # test_eopt_cuts(prob_file="test_prob_10Lc.pkl", global_min=False)
-
-    # range-only with z = [x^2, y^2, xy]
-    test_eopt(prob_file="test_prob_11G.pkl", global_min=True)
-    test_eopt(prob_file="test_prob_11Gc.pkl", global_min=True)
-    test_eopt(prob_file="test_prob_11L.pkl", global_min=False)
-    test_eopt(prob_file="test_prob_11Lc.pkl", global_min=False)
-
-
 def test_mw_localize():
     opts = dict(tol_null=1e-6)
     test_eopt(prob_file="test_prob_1.pkl", global_min=True, opts=opts)
@@ -299,7 +284,5 @@ if __name__ == "__main__":
     # test_subgradient_analytic()
     # test_grad_hess_numerical()
 
-    # test on a new polynomial's globoal minimum
-    # test_rangeonly()
     # test_polynomials()
     # test_mw_localize()

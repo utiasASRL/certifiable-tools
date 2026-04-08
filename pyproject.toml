@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cert_tools"
+version = "0.0.8"
+description = "tools for certifiable optimization"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Frederike Duembgen", email = "frederike.dumbgen@utoronto.ca" },
+  { name = "Connor Holmes", email = "connor.holmes@mail.utoronto.ca" }
+]
+dependencies = [
+  "casadi>=3.6",
+  "cvxpy>=1.6",
+  "matplotlib>=3.6",
+  "mosek>=11",
+  "numpy>=1.23",
+  "scipy>=1.15",
+  "igraph",
+  "chompack",
+  "poly_matrix @ git+https://github.com/utiasASRL/poly_matrix.git@v0.3.1"
+]
+
+[project.urls]
+Homepage = "https://github.com/utiasASRL/certifiable-tools.git"
+
+[tool.setuptools.packages.find]
+exclude = ["_test*"]
